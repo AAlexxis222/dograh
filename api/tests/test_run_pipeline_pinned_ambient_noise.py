@@ -1,11 +1,12 @@
-"""The transport entry points read ambient noise from the run's pinned definition.
+"""The transport entry points read ambient noise from the run's own configuration.
 
 ``save_workflow_draft`` mirrors the draft into ``WorkflowModel.workflow_configurations``,
 so reading that column would let an unpublished draft change the ambient noise of
-a live call. Both entry points must hand the transport the configuration pinned on
-``workflow_run.definition`` instead. The DB layer is mocked so this runs without
-Postgres; the end-to-end counterpart for the pipeline-level knobs lives in
-``tests/integrations/test_run_pipeline.py``.
+a live call. Both entry points must hand the transport the document frozen on the
+run (``workflow_run.effective_configurations``), falling back to the pinned
+definition only for runs created before the freeze existed. The DB layer is mocked
+so this runs without Postgres; the end-to-end counterpart for the pipeline-level
+knobs lives in ``tests/integrations/test_run_pipeline.py``.
 """
 
 from types import SimpleNamespace

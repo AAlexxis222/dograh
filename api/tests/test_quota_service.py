@@ -57,6 +57,7 @@ def _pinned_run(
     *,
     workflow_id: int = 7,
     workflow_configurations: dict | None = None,
+    effective_configurations: dict | None = None,
 ):
     return SimpleNamespace(
         workflow_id=workflow_id,
@@ -67,6 +68,7 @@ def _pinned_run(
                 else {"model_overrides": {}}
             ),
         ),
+        effective_configurations=effective_configurations,
     )
 
 
@@ -101,9 +103,7 @@ def _patch_workflow_context(monkeypatch, *, workflow=_UNSET, owner=None):
         quota_service,
         "load_effective_workflow_configurations",
         AsyncMock(
-            return_value=SimpleNamespace(
-                effective={"model_overrides": {}}, warnings=[]
-            )
+            return_value=SimpleNamespace(effective={"model_overrides": {}}, warnings=[])
         ),
     )
 
@@ -829,6 +829,53 @@ async def test_authorize_workflow_run_resolves_config_from_pinned_definition(
     get_config.assert_awaited_once_with(
         organization_id=42,
         workflow_configurations=pinned_configs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_authorize_workflow_run_prefers_frozen_configuration_over_pinned(
+    monkeypatch,
+):
+    """The correlation is minted for what the run froze, not for the definition
+    it was pinned to (which can be edited or republished afterwards)."""
+    pinned_configs = {"model_configuration_v2_override": {"key": "published"}}
+    frozen_configs = {"model_configuration_v2_override": {"key": "frozen"}}
+
+    get_config = AsyncMock(return_value=_byok_config())
+
+    monkeypatch.setattr(quota_service, "DEPLOYMENT_MODE", "saas")
+    _patch_workflow_context(monkeypatch)
+    monkeypatch.setattr(
+        quota_service.db_client,
+        "get_workflow_run",
+        AsyncMock(
+            return_value=_pinned_run(
+                workflow_configurations=pinned_configs,
+                effective_configurations=frozen_configs,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        quota_service,
+        "get_effective_ai_model_configuration_for_workflow",
+        get_config,
+    )
+    monkeypatch.setattr(
+        quota_service,
+        "_authorize_hosted_workflow_run_start",
+        AsyncMock(return_value=QuotaCheckResult(has_quota=True)),
+    )
+
+    result = await quota_service.authorize_workflow_run_start(
+        workflow_id=7,
+        organization_id=42,
+        workflow_run_id=88,
+    )
+
+    assert result.has_quota is True
+    get_config.assert_awaited_once_with(
+        organization_id=42,
+        workflow_configurations=frozen_configs,
     )
 
 
