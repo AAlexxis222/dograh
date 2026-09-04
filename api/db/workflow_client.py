@@ -334,6 +334,54 @@ class WorkflowClient(BaseDBClient):
                 return None
             return (row[0] or {}), row[1]
 
+    async def list_draft_definitions_for_backfill(
+        self, *, after_id: int, limit: int
+    ) -> list[tuple[int, int, int, dict]]:
+        """Draft definitions in id order, for the one-off sparse backfill.
+
+        Published/archived versions are run snapshots and are never listed.
+        """
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(
+                    WorkflowDefinitionModel.id,
+                    WorkflowDefinitionModel.workflow_id,
+                    WorkflowModel.organization_id,
+                    WorkflowDefinitionModel.workflow_configurations,
+                )
+                .join(
+                    WorkflowModel,
+                    WorkflowModel.id == WorkflowDefinitionModel.workflow_id,
+                )
+                .where(
+                    WorkflowDefinitionModel.status == "draft",
+                    WorkflowDefinitionModel.id > after_id,
+                )
+                .order_by(WorkflowDefinitionModel.id)
+                .limit(limit)
+            )
+            return [(row[0], row[1], row[2], row[3] or {}) for row in result.all()]
+
+    async def update_definition_configurations(
+        self, definition_id: int, configurations: dict
+    ) -> None:
+        """Rewrite one draft's configuration document.
+
+        The ``status`` predicate is part of the write, not a precondition read:
+        a definition published between the listing and this UPDATE is a run
+        snapshot by then and must not be rewritten.
+        """
+        async with self.async_session() as session:
+            await session.execute(
+                update(WorkflowDefinitionModel)
+                .where(
+                    WorkflowDefinitionModel.id == definition_id,
+                    WorkflowDefinitionModel.status == "draft",
+                )
+                .values(workflow_configurations=configurations)
+            )
+            await session.commit()
+
     async def get_workflow_versions(
         self,
         workflow_id: int,
