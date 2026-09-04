@@ -1496,6 +1496,9 @@ async def get_workflow_run(
         "call_type": run.call_type,
         "logs": run.logs,
         "annotations": run.annotations,
+        "effective_configurations": mask_workflow_configurations(
+            run.effective_configurations
+        ),
     }
 
 
