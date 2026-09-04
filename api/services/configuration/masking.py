@@ -13,14 +13,18 @@ from typing import Any, Dict, Optional
 
 from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
 from api.services.configuration.registry import ServiceConfig
-from api.services.configuration.secrets_registry import mask_secrets
+from api.services.configuration.secrets_registry import (
+    MODEL_OVERRIDE_SECTIONS,
+    SECRET_LEAF_NAMES,
+    mask_secrets,
+)
 from api.services.integrations import get_node_secret_fields
 
 VISIBLE_CHARS = 4  # number of trailing characters to reveal
 MASK_CHAR = "*"
 MASK_MARKER = "***"  # substring that indicates a masked key
-SERVICE_SECRET_FIELDS = ("api_key", "credentials", "aws_access_key", "aws_secret_key")
-MODEL_OVERRIDE_FIELDS = ("llm", "tts", "stt", "realtime")
+SERVICE_SECRET_FIELDS = SECRET_LEAF_NAMES
+MODEL_OVERRIDE_FIELDS = MODEL_OVERRIDE_SECTIONS
 VOICEMAIL_DETECTION_KEY = "voicemail_detection"
 
 
