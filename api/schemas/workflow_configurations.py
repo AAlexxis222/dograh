@@ -1,4 +1,4 @@
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -122,6 +122,23 @@ class AmbientNoiseConfigurationDefaults(BaseModel):
     volume: float = 0.3
 
 
+class VoicemailDetectionConfiguration(BaseModel):
+    """Shadow section read by run_pipeline (``voicemail_detection.enabled``)
+    and masked/merged by the secrets registry (``api_key``). Provider-specific
+    keys (``provider``, ``model``, ``use_workflow_llm``…) pass through."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = False
+    api_key: str | None = Field(default=None, json_schema_extra={"secret": True})
+
+
+class TranscriptConfiguration(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    include_end_timestamps: bool = False
+
+
 class WorkflowConfigurationDefaults(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -176,6 +193,24 @@ class WorkflowConfigurationDefaults(BaseModel):
         default_factory=list,
         max_length=MAX_EXTERNAL_PBX_LEAD_HEADERS,
     )
+    # --- Shadow keys the engine already reads (declared so they appear in the
+    # OpenAPI schema and the effective document; behaviour unchanged) ---
+    voicemail_detection: VoicemailDetectionConfiguration = Field(
+        default_factory=VoicemailDetectionConfiguration
+    )
+    transcript_configuration: TranscriptConfiguration = Field(
+        default_factory=TranscriptConfiguration
+    )
+    # Nullable on purpose: run_pipeline branches on key presence and applies a
+    # transport-dependent default when absent, so this must never materialise.
+    user_turn_stop_timeout: float | None = Field(default=None, gt=0)
+    # Owned by the AI-model cascade (ai_model_configuration.py); the workflow
+    # cascade passes them through untouched (spec §2.2).
+    model_overrides: dict[str, Any] | None = None
+    model_configuration_v2_override: dict[str, Any] | None = None
+    # When true, the workflow's call_dispositions extend the organization
+    # catalog (dedupe by code) instead of replacing it (spec §2.2).
+    call_dispositions_extend_org: bool = False
 
     @field_validator("call_dispositions")
     @classmethod
@@ -221,3 +256,8 @@ class TextChatInactivityTimeoutConstraints(BaseModel):
 
 def get_default_workflow_configurations() -> WorkflowConfigurationDefaults:
     return WorkflowConfigurationDefaults()
+
+
+def schema_defaults_document() -> dict[str, Any]:
+    """Layer 1 of the cascade: every declared default, nullable shadows omitted."""
+    return WorkflowConfigurationDefaults().model_dump(mode="json", exclude_none=True)
