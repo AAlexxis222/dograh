@@ -104,13 +104,15 @@ async def test_get_masks_stored_secret_defensively(
         response = await client.get(
             "/api/v1/organizations/workflow-configuration-defaults"
         )
-    assert response.json()["workflow_configurations"]["voicemail_detection"][
-        "api_key"
-    ].endswith("7890")
-    assert (
-        "*"
-        in response.json()["workflow_configurations"]["voicemail_detection"]["api_key"]
-    )
+        effective = await client.get(
+            "/api/v1/organizations/workflow-configuration-effective-defaults"
+        )
+    # Both reads of the stored base mask it: the effective document inlines the
+    # organization layer, so an unmasked one there leaks just as much.
+    for payload in (response.json(), effective.json()):
+        api_key = payload["workflow_configurations"]["voicemail_detection"]["api_key"]
+        assert api_key.endswith("7890")
+        assert "*" in api_key
 
 
 async def test_user_defaults_endpoint_unchanged_and_anonymous(
