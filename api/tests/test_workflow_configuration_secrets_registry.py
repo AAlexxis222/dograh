@@ -43,6 +43,9 @@ def test_find_secret_paths_covers_model_overrides_v2_and_voicemail():
         ("voicemail_detection", "api_key"),
     ]
     assert find_secret_paths({"knowledge_base": {"api_key": "not-registered"}}) == []
+    assert (
+        find_secret_paths({"model_overrides": {"embeddings": {"api_key": "x"}}}) == []
+    )
 
 
 def test_mask_secrets_masks_only_registered_paths_and_keeps_shape():
@@ -58,6 +61,26 @@ def test_mask_secrets_masks_only_registered_paths_and_keeps_shape():
     assert masked["knowledge_base"]["api_key"] == "plain"
     assert document["voicemail_detection"]["api_key"] == "vm-1234567890"
     assert mask_secrets(None) is None and mask_secrets({}) == {}
+
+
+def test_mask_secrets_descends_into_lists_under_model_configuration_v2_override():
+    document = {
+        "model_configuration_v2_override": {
+            "stt": [
+                {"provider": "deepgram", "credentials": "dg-1234567890"},
+                {"provider": "assemblyai", "credentials": "aai-1234567890"},
+            ]
+        }
+    }
+    masked = mask_secrets(document)
+    stt = masked["model_configuration_v2_override"]["stt"]
+    assert stt[0]["provider"] == "deepgram"
+    assert stt[0]["credentials"].endswith("7890") and "*" in stt[0]["credentials"]
+    assert stt[1]["credentials"].endswith("7890") and "*" in stt[1]["credentials"]
+    assert (
+        document["model_configuration_v2_override"]["stt"][0]["credentials"]
+        == "dg-1234567890"
+    )
 
 
 def test_mask_workflow_configurations_delegates_to_registry():
