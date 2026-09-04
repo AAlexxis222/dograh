@@ -372,6 +372,7 @@ async def initialize_embed_session(
             call_type=CallType.INBOUND,
             initial_context=initial_context,
             definition_id=run_inputs.definition_id,
+            effective_configurations=run_inputs.effective_configurations,
         )
         if is_chat:
             workflow_run = await db_client.update_workflow_run(

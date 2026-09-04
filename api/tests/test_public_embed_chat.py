@@ -222,10 +222,17 @@ def _patch_db(monkeypatch):
     async def _get_workflow(*_args, **_kwargs):
         return SimpleNamespace(
             id=1,
+            organization_id=11,
             released_definition=SimpleNamespace(id=55, template_context_variables={}),
             current_definition=None,
             template_context_variables={},
         )
+
+    async def _get_definition_configurations_with_owner(_definition_id):
+        return {}, 11
+
+    async def _get_configuration_value(_organization_id, _key, default=None):
+        return default
 
     async def _get_user(_user_id):
         return SimpleNamespace(id=7)
@@ -243,6 +250,11 @@ def _patch_db(monkeypatch):
         ("create_workflow_run", _create_workflow_run),
         ("update_workflow_run", _update_workflow_run),
         ("get_workflow", _get_workflow),
+        (
+            "get_definition_configurations_with_owner",
+            _get_definition_configurations_with_owner,
+        ),
+        ("get_configuration_value", _get_configuration_value),
         ("get_user_by_id", _get_user),
         ("create_embed_session", _noop),
         ("reserve_embed_token_usage", _allow),

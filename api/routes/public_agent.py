@@ -298,6 +298,7 @@ async def _execute_resolved_target(
             user_id=execution_user_id,
             organization_id=target.organization_id,
             definition_id=run_inputs.definition_id,
+            effective_configurations=run_inputs.effective_configurations,
         )
         await call_concurrency.bind_workflow_run(concurrency_slot, workflow_run.id)
     except Exception:

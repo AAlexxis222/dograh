@@ -3,10 +3,13 @@ from api.schemas.workflow_configurations import (
     WorkflowConfigurationDefaults,
     schema_defaults_document,
 )
+from types import SimpleNamespace
+
 from api.services.configuration.cascade import (
     merge_configuration_documents,
     normalize_root_nulls,
     resolve_effective_workflow_configurations,
+    run_configurations_for,
 )
 
 
@@ -187,3 +190,18 @@ def test_merge_does_not_mutate_inputs():
     merge_configuration_documents(base, overlay)
     assert base == {"ambient_noise_configuration": {"enabled": False}}
     assert overlay == {"ambient_noise_configuration": {"volume": 0.2}}
+
+
+def test_run_configurations_for_prefers_frozen_and_falls_back_to_pinned():
+    frozen = SimpleNamespace(
+        effective_configurations={"a": 1},
+        definition=SimpleNamespace(workflow_configurations={"a": 2}),
+    )
+    legacy = SimpleNamespace(
+        effective_configurations=None,
+        definition=SimpleNamespace(workflow_configurations={"a": 2}),
+    )
+    orphan = SimpleNamespace(effective_configurations=None, definition=None)
+    assert run_configurations_for(frozen) == {"a": 1}
+    assert run_configurations_for(legacy) == {"a": 2}
+    assert run_configurations_for(orphan) == {}

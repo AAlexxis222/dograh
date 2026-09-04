@@ -12,6 +12,16 @@ from api.services.auth.depends import get_user
 from api.services.call_concurrency import CallConcurrencyLimitError
 
 
+def _mock_configuration_cascade(mock_db, organization_id: int = 11) -> None:
+    """Run creation resolves the configuration cascade; these route tests own
+    neither layer, so the definition lookup returns an empty document owned by
+    the test organization and the organization defaults are empty."""
+    mock_db.get_definition_configurations_with_owner = AsyncMock(
+        return_value=({}, organization_id)
+    )
+    mock_db.get_configuration_value = AsyncMock(return_value={})
+
+
 def _make_test_app() -> FastAPI:
     app = FastAPI()
     app.include_router(router)
@@ -89,6 +99,7 @@ def test_initiate_call_rejects_incomplete_setup_before_run_creation():
             new=AsyncMock(return_value=SimpleNamespace(test_phone_number=None)),
         ),
     ):
+        _mock_configuration_cascade(mock_db)
         mock_db.get_default_telephony_configuration = AsyncMock(
             return_value=SimpleNamespace(id=55)
         )
@@ -156,6 +167,7 @@ def test_initiate_call_executes_as_workflow_owner_for_shared_org_workflow():
         mock_concurrency.release_slot = AsyncMock()
         mock_concurrency.release_workflow_run_slot = AsyncMock()
 
+        _mock_configuration_cascade(mock_db)
         mock_db.get_user_configurations = AsyncMock(
             return_value=SimpleNamespace(test_phone_number=None)
         )
@@ -256,6 +268,7 @@ def test_initiate_call_uses_draft_template_context_with_provider_overrides():
         mock_concurrency.release_slot = AsyncMock()
         mock_concurrency.release_workflow_run_slot = AsyncMock()
 
+        _mock_configuration_cascade(mock_db)
         mock_db.get_user_configurations = AsyncMock(
             return_value=SimpleNamespace(test_phone_number=None)
         )
@@ -320,6 +333,7 @@ def test_initiate_call_uses_organization_preference_phone_number():
         mock_concurrency.release_slot = AsyncMock()
         mock_concurrency.release_workflow_run_slot = AsyncMock()
 
+        _mock_configuration_cascade(mock_db)
         mock_db.get_user_configurations = AsyncMock(
             return_value=SimpleNamespace(test_phone_number="+15550000000")
         )
@@ -378,6 +392,7 @@ def test_initiate_call_rejects_existing_run_for_different_workflow():
         mock_concurrency.release_slot = AsyncMock()
         mock_concurrency.release_workflow_run_slot = AsyncMock()
 
+        _mock_configuration_cascade(mock_db)
         mock_db.get_user_configurations = AsyncMock(
             return_value=SimpleNamespace(test_phone_number=None)
         )
@@ -435,6 +450,7 @@ def test_initiate_call_rejects_when_concurrency_limit_reached():
                 max_concurrent=1,
             )
         )
+        _mock_configuration_cascade(mock_db)
         mock_db.get_default_telephony_configuration = AsyncMock(
             return_value=SimpleNamespace(id=55)
         )
@@ -503,6 +519,7 @@ async def test_inbound_run_rejects_when_concurrency_limit_reached():
         ),
         patch("api.routes.telephony.call_concurrency") as mock_concurrency,
     ):
+        _mock_configuration_cascade(mock_db)
         mock_db.find_inbound_route_by_account = AsyncMock(
             return_value=(config, phone_row)
         )
@@ -549,6 +566,7 @@ async def test_smallwebrtc_run_reaching_telephony_websocket_closes_without_runni
         ),
     ):
         mock_concurrency.unregister_active_call = AsyncMock()
+        _mock_configuration_cascade(mock_db)
         mock_db.get_workflow_run = AsyncMock(return_value=workflow_run)
         mock_db.get_workflow = AsyncMock(return_value=workflow)
         mock_db.update_workflow_run = AsyncMock()

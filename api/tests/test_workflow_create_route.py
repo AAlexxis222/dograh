@@ -203,6 +203,7 @@ def test_create_workflow_run_uses_draft_and_template_context():
 
     workflow = SimpleNamespace(
         id=33,
+        organization_id=11,
         released_definition=SimpleNamespace(
             id=77,
             template_context_variables={"name": "published"},
@@ -228,6 +229,10 @@ def test_create_workflow_run_uses_draft_and_template_context():
     with patch("api.routes.workflow.db_client") as mock_db:
         mock_db.get_workflow = AsyncMock(return_value=workflow)
         mock_db.get_draft_version = AsyncMock(return_value=draft)
+        mock_db.get_definition_configurations_with_owner = AsyncMock(
+            return_value=({}, workflow.organization_id)
+        )
+        mock_db.get_configuration_value = AsyncMock(return_value={})
         mock_db.create_workflow_run = AsyncMock(return_value=run)
 
         response = client.post(
@@ -251,7 +256,7 @@ def test_create_workflow_webrtc_run_can_simulate_outbound_from_template_context(
     app = _make_test_app()
     client = TestClient(app)
 
-    workflow = SimpleNamespace(id=33, current_definition=None)
+    workflow = SimpleNamespace(id=33, organization_id=11, current_definition=None)
     draft = SimpleNamespace(
         id=88,
         template_context_variables={"direction": " OUTBOUND "},
@@ -270,6 +275,10 @@ def test_create_workflow_webrtc_run_can_simulate_outbound_from_template_context(
     with patch("api.routes.workflow.db_client") as mock_db:
         mock_db.get_workflow = AsyncMock(return_value=workflow)
         mock_db.get_draft_version = AsyncMock(return_value=draft)
+        mock_db.get_definition_configurations_with_owner = AsyncMock(
+            return_value=({}, workflow.organization_id)
+        )
+        mock_db.get_configuration_value = AsyncMock(return_value={})
         mock_db.create_workflow_run = AsyncMock(return_value=run)
 
         response = client.post(

@@ -1427,6 +1427,7 @@ async def create_workflow_run(
         organization_id=user.selected_organization_id,
         definition_id=run_inputs.definition_id,
         initial_context=initial_context,
+        effective_configurations=run_inputs.effective_configurations,
     )
     return {
         "id": run.id,

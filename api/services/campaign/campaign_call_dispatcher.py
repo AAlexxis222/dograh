@@ -322,6 +322,7 @@ class CampaignCallDispatcher:
                 queued_run_id=queued_run.id,  # Link to queued run for retry tracking
                 organization_id=campaign.organization_id,
                 definition_id=run_inputs.definition_id,
+                effective_configurations=run_inputs.effective_configurations,
             )
             await call_concurrency.bind_workflow_run(concurrency_slot, workflow_run.id)
             slot_bound = True
