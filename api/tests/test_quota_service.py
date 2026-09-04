@@ -42,6 +42,7 @@ def _workflow():
         user_id=123,
         organization_id=42,
         workflow_configurations={"model_overrides": {}},
+        released_definition=SimpleNamespace(id=11),
     )
 
 
@@ -93,6 +94,17 @@ def _patch_workflow_context(monkeypatch, *, workflow=_UNSET, owner=None):
         quota_service.db_client,
         "get_user_by_id",
         AsyncMock(return_value=owner or _workflow_owner()),
+    )
+    # Pre-run authorization resolves the cascade instead of reading the
+    # workflow column; the cascade itself is covered by its own suite.
+    monkeypatch.setattr(
+        quota_service,
+        "load_effective_workflow_configurations",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                effective={"model_overrides": {}}, warnings=[]
+            )
+        ),
     )
 
 
@@ -821,10 +833,14 @@ async def test_authorize_workflow_run_resolves_config_from_pinned_definition(
 
 
 @pytest.mark.asyncio
-async def test_authorize_workflow_run_falls_back_to_workflow_configs_without_definition(
+async def test_authorize_workflow_run_ignores_workflow_column_without_definition(
     monkeypatch,
 ):
-    """Legacy runs without a pinned definition keep using the workflow column."""
+    """A run with neither a snapshot nor a definition resolves to nothing.
+
+    The workflow column tracks the draft, so falling back to it would mint the
+    correlation for a service key the run never uses.
+    """
     get_config = AsyncMock(return_value=_byok_config())
 
     monkeypatch.setattr(quota_service, "DEPLOYMENT_MODE", "saas")
@@ -854,8 +870,72 @@ async def test_authorize_workflow_run_falls_back_to_workflow_configs_without_def
     assert result.has_quota is True
     get_config.assert_awaited_once_with(
         organization_id=42,
-        workflow_configurations={"model_overrides": {}},
+        workflow_configurations={},
     )
+
+
+@pytest.mark.asyncio
+async def test_authorize_workflow_run_resolves_pre_run_config_from_published_definition(
+    monkeypatch,
+):
+    """Without a run row there is nothing frozen yet, so resolve the cascade
+    for the definition the runs will pin."""
+    get_config = AsyncMock(return_value=_byok_config())
+
+    monkeypatch.setattr(quota_service, "DEPLOYMENT_MODE", "saas")
+    _patch_workflow_context(monkeypatch)
+    monkeypatch.setattr(
+        quota_service,
+        "get_effective_ai_model_configuration_for_workflow",
+        get_config,
+    )
+    monkeypatch.setattr(
+        quota_service,
+        "_authorize_hosted_workflow_run_start",
+        AsyncMock(return_value=QuotaCheckResult(has_quota=True)),
+    )
+
+    result = await quota_service.authorize_workflow_run_start(
+        workflow_id=7,
+        organization_id=42,
+    )
+
+    assert result.has_quota is True
+    quota_service.load_effective_workflow_configurations.assert_awaited_once_with(
+        quota_service.db_client,
+        organization_id=42,
+        definition_id=11,
+    )
+
+
+@pytest.mark.asyncio
+async def test_authorize_workflow_run_denies_when_no_definition_to_resolve(
+    monkeypatch,
+):
+    """A workflow that was never published cannot authorize a campaign start."""
+    get_config = AsyncMock()
+
+    monkeypatch.setattr(quota_service, "DEPLOYMENT_MODE", "saas")
+    _patch_workflow_context(monkeypatch)
+    monkeypatch.setattr(
+        quota_service,
+        "load_effective_workflow_configurations",
+        AsyncMock(side_effect=quota_service.WorkflowDefinitionMissingError()),
+    )
+    monkeypatch.setattr(
+        quota_service,
+        "get_effective_ai_model_configuration_for_workflow",
+        get_config,
+    )
+
+    result = await quota_service.authorize_workflow_run_start(
+        workflow_id=7,
+        organization_id=42,
+    )
+
+    assert result.has_quota is False
+    assert result.error_code == "workflow_definition_missing"
+    get_config.assert_not_awaited()
 
 
 @pytest.mark.asyncio
