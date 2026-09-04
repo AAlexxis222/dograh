@@ -5,11 +5,14 @@ materialised document on every save, so most drafts carry every default as
 if the user had set it. With the cascade live those baked values would shadow
 the organization base forever. This rewrites ONLY draft definitions (never
 published/archived — those are run snapshots) and only removes leaves equal
-to the *schema* default, comparing Pydantic-normalised values.
+to the *schema* default, comparing Pydantic-normalised values. Surviving values
+are written back normalised — trimmed strings, de-duplicated lead headers,
+ints widened to floats — exactly as the workflow PUT already stores them.
 
 A workflow with no draft is left exactly as it is: its published definition is
 pinned by runs, and the legacy ``workflows.workflow_configurations`` column is
-re-synced from the draft on the next save (``workflow_client.py:203``).
+re-synced from the draft by ``WorkflowClient.save_workflow_draft`` on the next
+save.
 
     python -m scripts.backfill_workflow_configuration_defaults            # dry-run report
     python -m scripts.backfill_workflow_configuration_defaults --apply
