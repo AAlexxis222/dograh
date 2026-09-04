@@ -1,9 +1,13 @@
 from types import SimpleNamespace
 
+from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
 from api.schemas.workflow_configurations import (
     MAX_CALL_DURATION_SECONDS,
     WorkflowConfigurationDefaults,
     schema_defaults_document,
+)
+from api.services.configuration.ai_model_configuration import (
+    migrate_workflow_configuration_model_override_to_v2,
 )
 from api.services.configuration.cascade import (
     merge_configuration_documents,
@@ -16,6 +20,7 @@ from api.services.configuration.default_configurations import (
     EffectiveDefaultConfigurationsResponse,
     build_default_configurations_response,
 )
+from api.tests.integrations._run_pipeline_helpers import USER_CONFIGURATION
 
 
 def test_schema_defaults_document_has_no_null_and_no_user_turn_stop_timeout():
@@ -231,3 +236,23 @@ def test_effective_envelope_carries_warnings_and_the_shared_payload():
     assert set(EffectiveDefaultConfigurationsResponse.model_fields) - set(
         DefaultConfigurationsResponse.model_fields
     ) == {"warnings"}
+
+
+def test_v2_migration_preserves_sections_it_does_not_own():
+    base = EffectiveAIModelConfiguration.model_validate(USER_CONFIGURATION)
+    document = {
+        "model_overrides": {
+            "llm": {"provider": "openai", "model": "gpt-4.1", "api_key": "k"}
+        },
+        "service_tuning": {"tts": {"_all": {"silence_time_s": 0.4}}},
+        "turn": {"source": "auto"},
+        "soft_timeout": {"timeout_seconds": 4},
+        "voicemail_detection": {"enabled": True},
+    }
+    migrated, changed = migrate_workflow_configuration_model_override_to_v2(
+        document, base
+    )
+    assert changed is True
+    assert "model_overrides" not in migrated
+    for key in ("service_tuning", "turn", "soft_timeout", "voicemail_detection"):
+        assert migrated[key] == document[key]
