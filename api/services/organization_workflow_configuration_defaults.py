@@ -6,6 +6,8 @@ overrode it. Secrets, external-PBX keys and the AI-model sections are
 rejected on write — they have their own gates and their own cascade.
 """
 
+from dataclasses import replace
+
 from loguru import logger
 
 from api.db import db_client
@@ -70,6 +72,9 @@ async def get_effective_organization_workflow_configuration_defaults(
     organization_id: int,
 ) -> ResolvedWorkflowConfigurations:
     stored = await db_client.get_configuration_value(organization_id, _KEY, {})
-    return resolve_effective_workflow_configurations(
+    resolved = resolve_effective_workflow_configurations(
         organization_defaults=stored, definition_configurations={}
     )
+    # Same defence in depth as the sibling GET: a secret the PUT never accepted
+    # can still be in the store, and the effective document carries it through.
+    return replace(resolved, effective=mask_secrets(resolved.effective) or {})
