@@ -14,10 +14,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
+from api.app import (
+    handle_workflow_definition_missing,
+    handle_workflow_definition_not_visible,
+)
 from api.enums import CallType
 from api.routes.public_embed import PublicEmbedCORSMiddleware
 from api.routes.public_embed import router as public_embed_router
 from api.routes.public_embed_chat import router as public_embed_chat_router
+from api.services.configuration.cascade import (
+    WorkflowDefinitionMissingError,
+    WorkflowDefinitionNotVisibleError,
+)
 from api.services.workflow.embed_context import MAX_VALUE_LENGTH
 from api.services.workflow.embed_session_service import (
     authorize_embed_workflow_run_start,
@@ -44,6 +52,14 @@ app.add_middleware(
 app.add_middleware(PublicEmbedCORSMiddleware, api_prefix="/api/v1")
 app.include_router(public_embed_router, prefix="/api/v1")
 app.include_router(public_embed_chat_router, prefix="/api/v1")
+# Mirror api/app.py so the cascade errors map to 400/403 here too; without
+# them the route's own catch-all is the only thing under test.
+app.add_exception_handler(
+    WorkflowDefinitionMissingError, handle_workflow_definition_missing
+)
+app.add_exception_handler(
+    WorkflowDefinitionNotVisibleError, handle_workflow_definition_not_visible
+)
 client = TestClient(app, raise_server_exceptions=False)
 
 ORIGIN = "https://mysite.vercel.app"
@@ -385,6 +401,44 @@ def test_init_rejects_exhausted_usage_reservation(monkeypatch, _patch_db):
 
     monkeypatch.setattr(
         "api.routes.public_embed.db_client.reserve_embed_token_usage", _exhausted
+    )
+
+    resp = client.post(
+        "/api/v1/public/embed/init",
+        headers={"Origin": ORIGIN},
+        json={"token": "chat"},
+    )
+
+    assert resp.status_code == 403
+    assert _patch_db.created_runs == []
+
+
+def test_init_without_runnable_definition_is_400(monkeypatch, _patch_db):
+    async def _missing(_definition_id):
+        return None
+
+    monkeypatch.setattr(
+        "api.routes.public_embed.db_client.get_definition_configurations_with_owner",
+        _missing,
+    )
+
+    resp = client.post(
+        "/api/v1/public/embed/init",
+        headers={"Origin": ORIGIN},
+        json={"token": "chat"},
+    )
+
+    assert resp.status_code == 400
+    assert _patch_db.created_runs == []
+
+
+def test_init_with_foreign_definition_is_403(monkeypatch, _patch_db):
+    async def _other_tenant(_definition_id):
+        return {}, 999
+
+    monkeypatch.setattr(
+        "api.routes.public_embed.db_client.get_definition_configurations_with_owner",
+        _other_tenant,
     )
 
     resp = client.post(
