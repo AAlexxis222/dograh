@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from typing import List, Literal, Optional, TypedDict, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ValidationError
 
 from api.db import db_client
 from api.db.models import (
@@ -11,12 +11,7 @@ from api.db.models import (
 from api.errors.failure import ErrorSource, classify_exception, log_failure
 from api.errors.mps import MPSUnavailableError
 from api.schemas.onboarding_state import OnboardingState, OnboardingStateUpdate
-from api.schemas.widget_texts import WidgetTexts
 from api.schemas.workflow_configurations import (
-    CallDispositionOption,
-    TextChatInactivityTimeoutConstraints,
-    WorkflowConfigurationDefaults,
-    get_default_call_disposition_options,
     get_default_workflow_configurations,
 )
 from api.services.auth.depends import get_user
@@ -30,10 +25,12 @@ from api.services.configuration.check_validity import (
     APIKeyStatusResponse,
     UserConfigurationValidator,
 )
-from api.services.configuration.defaults import DEFAULT_SERVICE_PROVIDERS
+from api.services.configuration.default_configurations import (
+    DefaultConfigurationsResponse,
+    build_default_configurations_response,
+)
 from api.services.configuration.masking import check_for_masked_keys, mask_user_config
 from api.services.configuration.merge import merge_user_configurations
-from api.services.configuration.registry import REGISTRY, ServiceType
 from api.services.mps_service_key_client import mps_service_key_client
 from api.services.organization_preferences import (
     get_organization_preferences,
@@ -52,56 +49,11 @@ class AuthUserResponse(TypedDict):
     is_superuser: bool
 
 
-class DefaultConfigurationsResponse(BaseModel):
-    llm: dict[str, dict]
-    tts: dict[str, dict]
-    stt: dict[str, dict]
-    embeddings: dict[str, dict]
-    realtime: dict[str, dict]
-    default_providers: dict[str, str]
-    workflow_configurations: WorkflowConfigurationDefaults
-    default_call_dispositions: list[CallDispositionOption] = Field(
-        description=(
-            "Built-in suggestions for call-disposition extraction. They do not "
-            "enable extraction until saved in workflow_configurations.call_dispositions."
-        )
-    )
-    text_chat_inactivity_timeout_constraints: TextChatInactivityTimeoutConstraints
-    widget_text_defaults: WidgetTexts
-
-
 @router.get("/configurations/defaults")
 async def get_default_configurations() -> DefaultConfigurationsResponse:
-    configurations = {
-        "llm": {
-            provider: model_cls.model_json_schema()
-            for provider, model_cls in REGISTRY[ServiceType.LLM].items()
-        },
-        "tts": {
-            provider: model_cls.model_json_schema()
-            for provider, model_cls in REGISTRY[ServiceType.TTS].items()
-        },
-        "stt": {
-            provider: model_cls.model_json_schema()
-            for provider, model_cls in REGISTRY[ServiceType.STT].items()
-        },
-        "embeddings": {
-            provider: model_cls.model_json_schema()
-            for provider, model_cls in REGISTRY[ServiceType.EMBEDDINGS].items()
-        },
-        "realtime": {
-            provider: model_cls.model_json_schema()
-            for provider, model_cls in REGISTRY[ServiceType.REALTIME].items()
-        },
-        "default_providers": DEFAULT_SERVICE_PROVIDERS,
-        "workflow_configurations": get_default_workflow_configurations(),
-        "default_call_dispositions": get_default_call_disposition_options(),
-        "text_chat_inactivity_timeout_constraints": (
-            TextChatInactivityTimeoutConstraints()
-        ),
-        "widget_text_defaults": WidgetTexts(),
-    }
-    return DefaultConfigurationsResponse(**configurations)
+    return DefaultConfigurationsResponse(
+        **build_default_configurations_response(get_default_workflow_configurations())
+    )
 
 
 @router.get("/auth/user")
