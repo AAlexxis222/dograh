@@ -33,15 +33,24 @@ READ_PATTERN = re.compile(
 )
 
 
-def _runtime_files():
+def _python_files(*, exclude_stored_document_surfaces: bool):
+    """Yield every runtime .py file under the API root.
+
+    Both guards skip the non-runtime top-level dirs (migrations, the db
+    layer, and the test suite itself) and __pycache__. Only the read guard
+    also skips STORED_DOCUMENT_SURFACES: those files legitimately read the
+    stored document to build or edit it. The creator guard must NOT use that
+    whitelist — routes/workflow.py, run_creation.py and conftest.py all
+    contain (or could contain) a `create_workflow_run(` call that must still
+    be checked.
+    """
     for path in API_ROOT.rglob("*.py"):
         relative = path.relative_to(API_ROOT)
-        if (
-            relative.parts[0] in NON_RUNTIME_TOP_LEVEL
-            or relative in STORED_DOCUMENT_SURFACES
-        ):
+        if relative.parts[0] in NON_RUNTIME_TOP_LEVEL:
             continue
         if "__pycache__" in relative.parts:
+            continue
+        if exclude_stored_document_surfaces and relative in STORED_DOCUMENT_SURFACES:
             continue
         yield path, relative
 
@@ -49,7 +58,7 @@ def _runtime_files():
 def test_runtime_reads_workflow_configuration_only_through_the_cascade():
     violations = [
         f"{relative}:{number}: {line.strip()}"
-        for path, relative in _runtime_files()
+        for path, relative in _python_files(exclude_stored_document_surfaces=True)
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
         if READ_PATTERN.search(line) and not line.lstrip().startswith("#")
     ]
@@ -61,17 +70,20 @@ def test_runtime_reads_workflow_configuration_only_through_the_cascade():
 
 def test_every_run_creator_freezes_the_effective_configuration():
     missing = []
-    for path, relative in _runtime_files():
+    for path, relative in _python_files(exclude_stored_document_surfaces=False):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(relative))
         for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "create_workflow_run"
-                and not any(
-                    kw.arg == "effective_configurations" for kw in node.keywords
-                )
-            ):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Attribute):
+                callee_name = node.func.attr
+            elif isinstance(node.func, ast.Name):
+                callee_name = node.func.id
+            else:
+                continue
+            if callee_name != "create_workflow_run":
+                continue
+            if not any(kw.arg == "effective_configurations" for kw in node.keywords):
                 missing.append(f"{relative}:{node.lineno}")
     assert missing == [], (
         f"create_workflow_run without effective_configurations=: {missing}"
