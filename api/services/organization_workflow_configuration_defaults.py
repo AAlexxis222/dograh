@@ -1,4 +1,5 @@
-"""Organization-level workflow configuration base (spec §2.1).
+"""Organization-level workflow configuration base: the middle layer of the
+configuration cascade.
 
 The stored document is sparse: only the keys the organization actually set,
 so a later change to a schema default still reaches workflows that never
@@ -19,7 +20,10 @@ from api.services.configuration.cascade import (
     normalize_root_nulls,
     resolve_effective_workflow_configurations,
 )
-from api.services.configuration.secrets_registry import find_secret_paths, mask_secrets
+from api.services.configuration.secrets_registry import (
+    find_secret_named_paths,
+    mask_secrets,
+)
 
 _KEY = OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value
 
@@ -42,7 +46,9 @@ def validate_organization_workflow_configuration_document(document: dict) -> Non
         raise OrganizationWorkflowConfigurationRejected(
             f"keys not allowed at organization level: {', '.join(forbidden)}"
         )
-    secrets = find_secret_paths(document)
+    # Any depth, registered or not: the document accepts unknown keys, so a
+    # secret under an unknown section would be stored and read back in clear.
+    secrets = find_secret_named_paths(document)
     if secrets:
         raise OrganizationWorkflowConfigurationRejected(
             "secrets are not allowed at organization level: "
@@ -58,7 +64,9 @@ async def upsert_organization_workflow_configuration_defaults(
     )
     validate_organization_workflow_configuration_document(document)
     await db_client.upsert_configuration(organization_id, _KEY, document)
-    # Audit: keys only, never values (§1.5). No org role model exists yet (§2.5).
+    # Audit trail: keys only, never values, because the document can hold
+    # settings an operator should not see in a log. There is no organization
+    # role model yet, so this line is the only trace of who changed the base.
     logger.info(
         "organization {} workflow configuration defaults updated by user {}: keys={}",
         organization_id,

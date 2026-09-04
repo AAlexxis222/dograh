@@ -205,11 +205,11 @@ class WorkflowConfigurationDefaults(BaseModel):
     # transport-dependent default when absent, so this must never materialise.
     user_turn_stop_timeout: float | None = Field(default=None, gt=0)
     # Owned by the AI-model cascade (ai_model_configuration.py); the workflow
-    # cascade passes them through untouched (spec §2.2).
+    # cascade passes them through untouched.
     model_overrides: dict[str, Any] | None = None
     model_configuration_v2_override: dict[str, Any] | None = None
     # When true, the workflow's call_dispositions extend the organization
-    # catalog (dedupe by code) instead of replacing it (spec §2.2).
+    # catalog (dedupe by code) instead of replacing it.
     call_dispositions_extend_org: bool = False
 
     @field_validator("call_dispositions")

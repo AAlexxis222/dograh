@@ -20,7 +20,7 @@ STORED_DOCUMENT_SURFACES = {
     Path(
         "services/configuration/ai_model_configuration.py"
     ),  # v2 sweep rewrites stored docs
-    Path("services/workflow/duplicate.py"),  # copies the stored sparse document (F5)
+    Path("services/workflow/duplicate.py"),  # copies the stored sparse document
     Path("services/workflow/run_creation.py"),
     Path(
         "services/workflow/configuration_policy.py"

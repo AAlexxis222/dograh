@@ -159,7 +159,7 @@ class OrganizationConfigurationKey(Enum):
     ORGANIZATION_BOOTSTRAP = (
         "ORGANIZATION_BOOTSTRAP"  # Single-winner lease for post-signup provisioning
     )
-    WORKFLOW_CONFIGURATION_DEFAULTS = "WORKFLOW_CONFIGURATION_DEFAULTS"  # Org-level workflow configuration base (spec: cascade)
+    WORKFLOW_CONFIGURATION_DEFAULTS = "WORKFLOW_CONFIGURATION_DEFAULTS"  # Org-level base of the workflow configuration cascade
 
 
 class UserConfigurationKey(Enum):
