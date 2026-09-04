@@ -44,8 +44,10 @@ registered for the organization.
 
 ## Inherit or override
 
-A workflow inherits every key it does not set. Saving a single setting in the builder stores
-that key only, and the rest keeps following the organization base.
+A workflow inherits every key it does not set. The workflow save stores exactly the keys the
+request carries, so a sparse document keeps every other key following the organization base.
+The builder still sends the full document on every save; sparse saves from the UI arrive with
+the follow-up builder update.
 
 Lists replace by default: a workflow that sets `call_dispositions` replaces the organization
 catalog. To extend it instead, set the sibling flag:
@@ -91,8 +93,19 @@ Secrets are masked in that response. Runs created before this feature existed ha
 frozen snapshot; they keep reading the workflow definition they pinned at creation, so their
 behaviour is unchanged.
 
-If a stored value is out of range, the resolver clamps it and reports it in `warnings`
-instead of failing the run. Writes through the API still get a `422`.
+If a stored value is out of range, the resolver clamps it instead of failing the run. At run
+creation the clamp is written to the API logs and is not returned to the caller; the
+organization effective-defaults endpoint does return the same clamps in its `warnings` list.
+Writes through the API still get a `422`.
+
+## API clients
+
+The external-PBX keys behave differently from every other key. While the external-PBX
+integration is disabled for the organization, the workflow save no longer copies
+`external_pbx_field_mappings` and `external_pbx_lead_headers` back from the stored draft, and
+they cannot be set at the organization level either. A client that replaces the document
+without them therefore clears them. Send both keys with their current values to keep them.
+The builder does this already, so this only affects API, SDK and MCP clients.
 
 ## Backfill
 
