@@ -141,3 +141,22 @@ async def test_definition_null_is_400_and_cross_tenant_is_403(
         await load_effective_workflow_configurations(
             db_session, organization_id=org.id, definition_id=10**9
         )
+
+
+async def test_run_detail_exposes_masked_effective_configurations(
+    test_client_factory, db_session, org_user
+):
+    org, user = org_user
+    workflow = await _published_workflow(
+        db_session,
+        org,
+        user,
+        {"voicemail_detection": {"enabled": True, "api_key": "vm-1234567890"}},
+    )
+    run = await _create_run(db_session, workflow, user, org)
+    async with test_client_factory(user) as client:
+        response = await client.get(f"/api/v1/workflow/{workflow.id}/runs/{run.id}")
+    body = response.json()["effective_configurations"]
+    assert body["max_call_duration"] == 300
+    assert body["voicemail_detection"]["api_key"].endswith("7890")
+    assert "*" in body["voicemail_detection"]["api_key"]
