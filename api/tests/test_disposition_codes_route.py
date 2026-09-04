@@ -27,6 +27,7 @@ def _get_catalog(org_codes: list[str]) -> dict[str, list[str]]:
     client = TestClient(_make_test_app())
     with patch("api.routes.organization.db_client") as mock_db:
         mock_db.get_organization_disposition_codes = AsyncMock(return_value=org_codes)
+        mock_db.get_configuration_value = AsyncMock(return_value={})
         response = client.get("/organizations/disposition-codes")
 
     assert response.status_code == 200

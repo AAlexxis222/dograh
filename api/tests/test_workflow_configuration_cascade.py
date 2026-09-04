@@ -1,15 +1,20 @@
+from types import SimpleNamespace
+
 from api.schemas.workflow_configurations import (
     MAX_CALL_DURATION_SECONDS,
     WorkflowConfigurationDefaults,
     schema_defaults_document,
 )
-from types import SimpleNamespace
-
 from api.services.configuration.cascade import (
     merge_configuration_documents,
     normalize_root_nulls,
     resolve_effective_workflow_configurations,
     run_configurations_for,
+)
+from api.services.configuration.default_configurations import (
+    DefaultConfigurationsResponse,
+    EffectiveDefaultConfigurationsResponse,
+    build_default_configurations_response,
 )
 
 
@@ -205,3 +210,24 @@ def test_run_configurations_for_prefers_frozen_and_falls_back_to_pinned():
     assert run_configurations_for(frozen) == {"a": 1}
     assert run_configurations_for(legacy) == {"a": 2}
     assert run_configurations_for(orphan) == {}
+
+
+def test_effective_envelope_carries_warnings_and_the_shared_payload():
+    """The effective-defaults route serves the same envelope as the anonymous
+    platform defaults, plus the warnings raised while resolving the org layer."""
+    resolved = _resolve({"max_call_duration": MAX_CALL_DURATION_SECONDS + 1}, {})
+    payload = build_default_configurations_response(
+        WorkflowConfigurationDefaults.model_validate(resolved.effective)
+    )
+    envelope = EffectiveDefaultConfigurationsResponse(
+        **payload, warnings=resolved.warnings
+    )
+
+    assert envelope.workflow_configurations.max_call_duration == (
+        MAX_CALL_DURATION_SECONDS
+    )
+    assert envelope.warnings == resolved.warnings and envelope.warnings
+    # Same component as the anonymous endpoint: nothing but warnings is added.
+    assert set(EffectiveDefaultConfigurationsResponse.model_fields) - set(
+        DefaultConfigurationsResponse.model_fields
+    ) == {"warnings"}
