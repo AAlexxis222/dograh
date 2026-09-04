@@ -309,7 +309,18 @@ class TestDispatcherThreadsTelephonyConfig:
                 ),
             ),
         ):
-            mock_db.get_workflow = AsyncMock(return_value=SimpleNamespace(id=1))
+            mock_db.get_workflow = AsyncMock(
+                return_value=SimpleNamespace(
+                    id=1,
+                    organization_id=org_id,
+                    released_definition=SimpleNamespace(id=55),
+                    current_definition=None,
+                )
+            )
+            mock_db.get_definition_configurations_with_owner = AsyncMock(
+                return_value=({}, org_id)
+            )
+            mock_db.get_configuration_value = AsyncMock(return_value={})
             mock_db.get_telephony_configuration_for_org = AsyncMock(
                 return_value=SimpleNamespace(
                     id=config_id,
@@ -421,7 +432,18 @@ class TestDispatcherThreadsTelephonyConfig:
                 "api.services.campaign.campaign_call_dispatcher.call_concurrency"
             ) as mock_concurrency,
         ):
-            mock_db.get_workflow = AsyncMock(return_value=SimpleNamespace(id=1))
+            mock_db.get_workflow = AsyncMock(
+                return_value=SimpleNamespace(
+                    id=1,
+                    organization_id=org_id,
+                    released_definition=SimpleNamespace(id=55),
+                    current_definition=None,
+                )
+            )
+            mock_db.get_definition_configurations_with_owner = AsyncMock(
+                return_value=({}, org_id)
+            )
+            mock_db.get_configuration_value = AsyncMock(return_value={})
             mock_db.create_workflow_run = AsyncMock()
             mock_concurrency.release_slot = AsyncMock()
 

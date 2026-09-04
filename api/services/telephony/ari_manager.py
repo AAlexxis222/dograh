@@ -870,12 +870,9 @@ class ARIConnection:
             # the workflow's draft-synced legacy column.
             lead_fields = []
             if self.external_pbx_adapter is not None:
-                workflow_configurations = await db_client.get_definition_configurations(
-                    run_inputs.definition_id,
-                    organization_id=self.organization_id,
-                )
                 lead_fields = (
-                    workflow_configurations.get("external_pbx_lead_headers") or []
+                    run_inputs.effective_configurations.get("external_pbx_lead_headers")
+                    or []
                 )
             external_pbx_call = await self._capture_external_pbx_call(
                 channel_id, channel.get("name", ""), lead_fields
@@ -899,6 +896,7 @@ class ARIConnection:
                 },
                 organization_id=self.organization_id,
                 definition_id=run_inputs.definition_id,
+                effective_configurations=run_inputs.effective_configurations,
             )
             await call_concurrency.bind_workflow_run(concurrency_slot, workflow_run.id)
 

@@ -632,6 +632,11 @@ class WorkflowRunModel(Base):
     extra = Column(
         JSON, nullable=False, default=dict, server_default=text("'{}'::json")
     )
+    # Configuration the run executes with: schema defaults + organization
+    # defaults + pinned definition, resolved once at creation and frozen so
+    # authorization, the engine and every later reader see the same document
+    # (spec §2.2-bis). NULL only for runs created before this column existed.
+    effective_configurations = Column(JSON, nullable=True)
     # Store storage backend as string enum (s3, minio)
     storage_backend = Column(
         Enum("s3", "minio", name="storage_backend"),

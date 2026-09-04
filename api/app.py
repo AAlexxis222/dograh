@@ -36,6 +36,10 @@ from api.constants import REDIS_URL
 from api.errors.mps import MPS_UNAVAILABLE_PUBLIC_MESSAGE, MPSUnavailableError
 from api.mcp_server import mcp
 from api.routes.main import router as main_router
+from api.services.configuration.cascade import (
+    WorkflowDefinitionMissingError,
+    WorkflowDefinitionNotVisibleError,
+)
 from api.services.pipecat.tracing_config import (
     handle_langfuse_sync,
     load_all_org_langfuse_credentials,
@@ -111,6 +115,26 @@ async def handle_mps_unavailable_error(
         status_code=503,
         content={"detail": MPS_UNAVAILABLE_PUBLIC_MESSAGE},
     )
+
+
+@app.exception_handler(WorkflowDefinitionMissingError)
+async def handle_workflow_definition_missing(
+    _request: Request,
+    exc: WorkflowDefinitionMissingError,
+) -> JSONResponse:
+    """A run cannot start without a definition to bind its configuration to."""
+
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(WorkflowDefinitionNotVisibleError)
+async def handle_workflow_definition_not_visible(
+    _request: Request,
+    exc: WorkflowDefinitionNotVisibleError,
+) -> JSONResponse:
+    """The definition belongs to another tenant."""
+
+    return JSONResponse(status_code=403, content={"detail": str(exc)})
 
 
 # Configure CORS.

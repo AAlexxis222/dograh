@@ -30,6 +30,16 @@ def outbound_configuration_is_ready():
         yield guard
 
 
+def _mock_configuration_cascade(mock_db, organization_id: int = 11) -> None:
+    """Run creation resolves the configuration cascade; these route tests own
+    neither layer, so the definition lookup returns an empty document owned by
+    the test organization and the organization defaults are empty."""
+    mock_db.get_definition_configurations_with_owner = AsyncMock(
+        return_value=({}, organization_id)
+    )
+    mock_db.get_configuration_value = AsyncMock(return_value={})
+
+
 def _make_test_app() -> FastAPI:
     app = FastAPI()
     app.include_router(router)
@@ -102,6 +112,7 @@ async def test_public_agent_rejects_incomplete_outbound_setup_before_run_creatio
             new=AsyncMock(return_value=provider),
         ),
     ):
+        _mock_configuration_cascade(mock_db)
         mock_db.get_default_telephony_configuration = AsyncMock(
             return_value=SimpleNamespace(id=55)
         )
@@ -154,6 +165,7 @@ def test_trigger_route_executes_as_workflow_owner():
         mock_concurrency.release_workflow_run_slot = AsyncMock()
         mock_concurrency.release_slot = AsyncMock()
 
+        _mock_configuration_cascade(mock_db)
         mock_db.validate_api_key = AsyncMock(
             return_value=SimpleNamespace(id=7, organization_id=11, created_by=22)
         )
@@ -256,6 +268,7 @@ def test_trigger_route_uses_requested_configured_caller_id():
         mock_concurrency.bind_workflow_run = AsyncMock()
         mock_concurrency.release_workflow_run_slot = AsyncMock()
         mock_concurrency.release_slot = AsyncMock()
+        _mock_configuration_cascade(mock_db)
         mock_db.validate_api_key = AsyncMock(
             return_value=SimpleNamespace(id=7, organization_id=11, created_by=22)
         )
@@ -307,6 +320,7 @@ def test_trigger_route_rejects_caller_id_outside_resolved_config():
             new=AsyncMock(return_value=provider),
         ),
     ):
+        _mock_configuration_cascade(mock_db)
         mock_db.validate_api_key = AsyncMock(
             return_value=SimpleNamespace(id=7, organization_id=11, created_by=22)
         )
@@ -367,6 +381,7 @@ def test_workflow_uuid_route_uses_scoped_lookup_and_shared_execution():
         mock_concurrency.release_workflow_run_slot = AsyncMock()
         mock_concurrency.release_slot = AsyncMock()
 
+        _mock_configuration_cascade(mock_db)
         mock_db.validate_api_key = AsyncMock(
             return_value=SimpleNamespace(id=8, organization_id=11, created_by=22)
         )
@@ -458,6 +473,7 @@ def test_trigger_test_route_uses_draft_and_template_context_with_api_override():
         mock_concurrency.release_workflow_run_slot = AsyncMock()
         mock_concurrency.release_slot = AsyncMock()
 
+        _mock_configuration_cascade(mock_db)
         mock_db.validate_api_key = AsyncMock(
             return_value=SimpleNamespace(id=7, organization_id=11, created_by=22)
         )
@@ -556,6 +572,7 @@ def test_workflow_uuid_test_route_uses_draft_and_template_context():
         mock_concurrency.release_workflow_run_slot = AsyncMock()
         mock_concurrency.release_slot = AsyncMock()
 
+        _mock_configuration_cascade(mock_db)
         mock_db.validate_api_key = AsyncMock(
             return_value=SimpleNamespace(id=7, organization_id=11, created_by=22)
         )
@@ -631,6 +648,7 @@ def test_trigger_route_still_returns_success_when_metadata_persistence_fails():
         mock_concurrency.release_workflow_run_slot = AsyncMock()
         mock_concurrency.release_slot = AsyncMock()
 
+        _mock_configuration_cascade(mock_db)
         mock_db.validate_api_key = AsyncMock(
             return_value=SimpleNamespace(id=7, organization_id=11, created_by=22)
         )
@@ -683,6 +701,7 @@ def test_trigger_route_rejects_when_concurrency_limit_reached():
                 max_concurrent=2,
             )
         )
+        _mock_configuration_cascade(mock_db)
         mock_db.validate_api_key = AsyncMock(
             return_value=SimpleNamespace(id=7, organization_id=11, created_by=22)
         )
@@ -742,6 +761,7 @@ def test_trigger_route_releases_concurrency_slot_when_quota_fails():
         mock_concurrency.release_workflow_run_slot = AsyncMock()
         mock_concurrency.release_slot = AsyncMock()
 
+        _mock_configuration_cascade(mock_db)
         mock_db.validate_api_key = AsyncMock(
             return_value=SimpleNamespace(id=7, organization_id=11, created_by=22)
         )
@@ -778,6 +798,7 @@ def test_workflow_uuid_route_rejects_archived_workflows():
     workflow.status = "archived"
 
     with patch("api.routes.public_agent.db_client") as mock_db:
+        _mock_configuration_cascade(mock_db)
         mock_db.validate_api_key = AsyncMock(
             return_value=SimpleNamespace(id=9, organization_id=11, created_by=22)
         )

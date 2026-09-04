@@ -307,6 +307,33 @@ class WorkflowClient(BaseDBClient):
             )
             return result.scalars().first()
 
+    async def get_definition_configurations_with_owner(
+        self, definition_id: int
+    ) -> tuple[dict, int] | None:
+        """Configuration document of one definition plus the organization that
+        owns it, or ``None`` when the definition does not exist.
+
+        The cascade resolver compares the owner with the caller so it can
+        distinguish "missing" (400) from "another tenant's" (403) instead of
+        treating both as an empty document.
+        """
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(
+                    WorkflowDefinitionModel.workflow_configurations,
+                    WorkflowModel.organization_id,
+                )
+                .join(
+                    WorkflowModel,
+                    WorkflowModel.id == WorkflowDefinitionModel.workflow_id,
+                )
+                .where(WorkflowDefinitionModel.id == definition_id)
+            )
+            row = result.first()
+            if row is None:
+                return None
+            return (row[0] or {}), row[1]
+
     async def get_definition_configurations(
         self,
         definition_id: int | None,

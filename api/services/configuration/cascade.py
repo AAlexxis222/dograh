@@ -18,12 +18,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from loguru import logger
 from pydantic import ValidationError
 
 from api.constants import (
     MAX_TEXT_CHAT_INACTIVITY_TIMEOUT_SECONDS,
     MIN_TEXT_CHAT_INACTIVITY_TIMEOUT_SECONDS,
 )
+from api.enums import OrganizationConfigurationKey
 from api.schemas.workflow_configurations import (
     MAX_CALL_DURATION_SECONDS,
     WorkflowConfigurationDefaults,
@@ -227,3 +229,68 @@ def resolve_effective_workflow_configurations(
             f"(unique codes / description budget); kept the {provenance('call_dispositions')} layer only"
         )
     return ResolvedWorkflowConfigurations(effective=effective, warnings=warnings)
+
+
+class WorkflowDefinitionMissingError(LookupError):
+    """The run has no definition to bind to (``definition_id`` is NULL or gone)."""
+
+
+class WorkflowDefinitionNotVisibleError(PermissionError):
+    """The definition belongs to another organization."""
+
+
+async def load_effective_workflow_configurations(
+    db, *, organization_id: int | None, definition_id: int | None
+) -> ResolvedWorkflowConfigurations:
+    """Resolve the cascade for a run about to be created. Raises instead of
+    returning ``{}`` for a missing or foreign definition (§2.2).
+
+    ``organization_id`` is ``None`` only for legacy user-scoped workflows
+    (``WorkflowModel.organization_id`` is nullable, models.py:522): they have
+    no organization layer and no tenant check to fail.
+    """
+    if definition_id is None:
+        raise WorkflowDefinitionMissingError("workflow has no definition to run")
+    lookup = await db.get_definition_configurations_with_owner(definition_id)
+    if lookup is None:
+        raise WorkflowDefinitionMissingError(
+            f"workflow definition {definition_id} not found"
+        )
+    definition_configurations, owner_organization_id = lookup
+    if organization_id is not None and owner_organization_id != organization_id:
+        raise WorkflowDefinitionNotVisibleError(
+            f"workflow definition {definition_id} is not visible to "
+            f"organization {organization_id}"
+        )
+    organization_defaults = (
+        await db.get_configuration_value(
+            organization_id,
+            OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value,
+            {},
+        )
+        if organization_id is not None
+        else {}
+    )
+    resolved = resolve_effective_workflow_configurations(
+        organization_defaults=organization_defaults,
+        definition_configurations=definition_configurations,
+    )
+    for warning in resolved.warnings:
+        logger.warning(
+            "workflow configuration (definition {}): {}", definition_id, warning
+        )
+    return resolved
+
+
+def run_configurations_for(workflow_run) -> dict[str, Any]:
+    """Configuration a loaded run executes with; the in-memory twin of
+    ``get_workflow_run_configurations``."""
+    frozen = getattr(workflow_run, "effective_configurations", None)
+    if frozen is not None:
+        return frozen
+    definition = getattr(workflow_run, "definition", None)
+    return (
+        (getattr(definition, "workflow_configurations", None) or {})
+        if definition
+        else {}
+    )
