@@ -85,3 +85,34 @@ async def test_backfill_is_idempotent_and_touches_drafts_only(db_session, org_us
     assert again == {} or all(
         row["removed"] == [] for rows in again.values() for row in rows
     )
+
+
+async def test_update_definition_configurations_writes_drafts_only(
+    db_session, org_user
+):
+    """The write seam refuses a published definition even when handed its id:
+    one published between the listing and the UPDATE is a run snapshot by then.
+    """
+    org, user = org_user
+    baked = {"max_call_duration": 300, "dictionary": "mine"}
+    workflow = await db_session.create_workflow(
+        name="W",
+        workflow_definition=GRAPH,
+        user_id=user.id,
+        organization_id=org.id,
+    )
+    await db_session.save_workflow_draft(workflow.id, workflow_configurations=baked)
+    await db_session.publish_workflow_draft(workflow.id)
+    await db_session.save_workflow_draft(
+        workflow.id, workflow_configurations=dict(baked)
+    )
+    versions = await db_session.get_workflow_versions(workflow.id)
+    published = next(v for v in versions if v.status == "published")
+    draft = next(v for v in versions if v.status == "draft")
+
+    await db_session.update_definition_configurations(published.id, {"dictionary": "x"})
+    await db_session.update_definition_configurations(draft.id, {"dictionary": "x"})
+
+    versions = {v.id: v for v in await db_session.get_workflow_versions(workflow.id)}
+    assert versions[published.id].workflow_configurations == baked
+    assert versions[draft.id].workflow_configurations == {"dictionary": "x"}
