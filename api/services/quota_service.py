@@ -36,7 +36,7 @@ from api.services.managed_model_services import (
     uses_managed_model_services_v2,
 )
 from api.services.mps_service_key_client import mps_service_key_client
-from api.services.workflow.run_creation import _published_definition
+from api.services.workflow.run_creation import published_definition
 
 MINIMUM_DOGRAH_CREDITS_FOR_CALL = 0.10
 
@@ -769,7 +769,7 @@ async def authorize_workflow_run_start(
                         db_client,
                         organization_id=organization_id,
                         definition_id=getattr(
-                            _published_definition(workflow), "id", None
+                            published_definition(workflow), "id", None
                         ),
                     )
                 ).effective

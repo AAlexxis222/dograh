@@ -69,6 +69,9 @@ async def test_org_base_change_propagates_to_existing_workflow(
     "body",
     [
         {"voicemail_detection": {"enabled": True, "api_key": "sk-secret"}},
+        # Unknown section: the schema accepts extra keys, so the rejection may
+        # not be limited to the paths the secrets registry knows about.
+        {"my_integration": {"api_key": "sk-supersecret"}},
         {"model_overrides": {"llm": {"provider": "openai", "api_key": "sk"}}},
         {
             "external_pbx_field_mappings": [

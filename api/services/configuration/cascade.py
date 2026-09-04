@@ -1,10 +1,10 @@
 """Organization → workflow configuration cascade.
 
-Layers (spec §2.1): schema defaults → organization defaults → the definition
-pinned by the run. Resolved once when the run is created and frozen on the
-run row (§2.2-bis); nothing at runtime resolves again.
+Three layers, later wins: schema defaults → organization defaults → the
+definition pinned by the run. Resolved once when the run is created and frozen
+on the run row; nothing at runtime resolves again.
 
-Merge semantics (§2.2): dicts key by key, scalars replace, lists replace
+Merge semantics: dicts key by key, scalars replace, lists replace
 unless a rule declared *by path* opts into append-unique; the two AI-model
 sections pass through untouched because they have their own cascade.
 Validation is two-regime: the PUT keeps raising 422 through the schema; here
@@ -66,8 +66,8 @@ LIST_MERGE_RULES: dict[tuple[str, ...], ListMergeRule] = {
     ),
 }
 
-# (path, min, max) — schema bounds only. Provider ranges (§5) arrive with the
-# service_tuning PR and are appended here.
+# (path, min, max) — schema bounds only. Per-provider ranges are appended here
+# when service tuning lands.
 NUMERIC_BOUNDS: tuple[tuple[tuple[str, ...], float, float], ...] = (
     (("max_call_duration",), 1, MAX_CALL_DURATION_SECONDS),
     (
@@ -85,7 +85,7 @@ class ResolvedWorkflowConfigurations:
 
 
 def normalize_root_nulls(document: dict[str, Any] | None) -> dict[str, Any]:
-    """Root ``null`` means "unset" (§1.6); nested nulls are kept verbatim."""
+    """Root ``null`` means "unset"; nested nulls are kept verbatim."""
     if not isinstance(document, dict):
         return {}
     return {key: value for key, value in document.items() if value is not None}
@@ -160,7 +160,7 @@ def clamp_effective_configurations(
 ) -> tuple[dict[str, Any], list[str]]:
     """Clamp numeric bounds in place of raising. ``provenance(root_key)`` names
     the layer that set the key, for the warning. Values are logged only for
-    numeric scalars; sections are never dumped (§1.5)."""
+    numeric scalars; whole sections are never dumped, they can hold secrets."""
     clamped = copy.deepcopy(effective)
     warnings: list[str] = []
     for path, minimum, maximum in NUMERIC_BOUNDS:
@@ -212,7 +212,7 @@ def resolve_effective_workflow_configurations(
         effective, provenance=provenance
     )
 
-    # List invariants are not clamped: the lower layer wins whole (§2.2).
+    # List invariants are not clamped: the lower layer wins whole.
     if "call_dispositions" in effective and not _call_dispositions_valid(
         effective["call_dispositions"]
     ):
@@ -243,11 +243,11 @@ async def load_effective_workflow_configurations(
     db, *, organization_id: int | None, definition_id: int | None
 ) -> ResolvedWorkflowConfigurations:
     """Resolve the cascade for a run about to be created. Raises instead of
-    returning ``{}`` for a missing or foreign definition (§2.2).
+    returning ``{}`` for a missing or foreign definition.
 
     ``organization_id`` is ``None`` only for legacy user-scoped workflows
-    (``WorkflowModel.organization_id`` is nullable, models.py:522): they have
-    no organization layer and no tenant check to fail.
+    (``WorkflowModel.organization_id`` is nullable): they have no organization
+    layer and no tenant check to fail.
     """
     if definition_id is None:
         raise WorkflowDefinitionMissingError("workflow has no definition to run")

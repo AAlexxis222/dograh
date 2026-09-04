@@ -78,15 +78,32 @@ def _iter_leaves(
             yield from _iter_leaves(node[head], rest, path + (head,))
 
 
-def find_secret_paths(document: dict[str, Any] | None) -> list[tuple[str, ...]]:
-    """Paths of non-empty secret values present in ``document``."""
+def _find_non_empty(
+    document: dict[str, Any] | None, patterns: tuple[tuple[str, ...], ...]
+) -> list[tuple[str, ...]]:
     found: list[tuple[str, ...]] = []
     if isinstance(document, dict):
-        for pattern in SECRET_PATHS:
+        for pattern in patterns:
             for path, container, key in _iter_leaves(document, pattern, ()):
                 if container[key] not in (None, "", [], {}):
                     found.append(path)
     return sorted(set(found))
+
+
+def find_secret_paths(document: dict[str, Any] | None) -> list[tuple[str, ...]]:
+    """Paths of non-empty secret values present in ``document``."""
+    return _find_non_empty(document, SECRET_PATHS)
+
+
+def find_secret_named_paths(document: dict[str, Any] | None) -> list[tuple[str, ...]]:
+    """Paths of non-empty values held by a secret-named key at any depth,
+    registered or not. A document that accepts unknown keys can hide a secret
+    under a section this registry has never heard of, and masking would then
+    return it in clear; the writer that rejects secrets must use this walk
+    rather than the registered paths. Every registered path ends in one of
+    ``SECRET_LEAF_NAMES``, so this result is a superset of
+    ``find_secret_paths``."""
+    return _find_non_empty(document, tuple(("**", leaf) for leaf in SECRET_LEAF_NAMES))
 
 
 def mask_secrets(document: dict[str, Any] | None) -> dict[str, Any] | None:

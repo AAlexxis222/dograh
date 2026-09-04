@@ -22,7 +22,7 @@ async def test_disabled_policy_leaves_absent_keys_absent_and_does_not_load_workf
     monkeypatch,
 ):
     """Absent now means "inherited", not "the UI hid the section"; the server
-    must not re-materialise stored PBX keys into the document (spec D-7)."""
+    must not re-materialise stored PBX keys into the document."""
     monkeypatch.setattr(
         configuration_policy,
         "external_pbx_integrations_enabled",
@@ -149,7 +149,7 @@ async def test_disabled_policy_rejects_lead_header_changes(monkeypatch):
 async def test_disabled_policy_handles_workflow_without_released_definition(
     monkeypatch,
 ):
-    """Duplicate (F5) can leave released_definition None until publish."""
+    """Duplicating a workflow can leave released_definition None until publish."""
     monkeypatch.setattr(
         configuration_policy,
         "external_pbx_integrations_enabled",
