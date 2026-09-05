@@ -340,3 +340,19 @@ def test_v2_migration_preserves_sections_it_does_not_own():
     assert "model_overrides" not in migrated
     for key in ("service_tuning", "turn", "soft_timeout", "voicemail_detection"):
         assert migrated[key] == document[key]
+
+
+def test_workflow_effective_layers_are_consistent():
+    from api.services.configuration.workflow_effective import (
+        resolve_workflow_effective_configurations,
+    )
+
+    layers = resolve_workflow_effective_configurations(
+        organization_defaults={"max_call_duration": 600},
+        definition_configurations={"dictionary": "mine", "max_call_duration": None},
+    )
+    assert layers.own == {"dictionary": "mine"}  # root null normalised away
+    assert layers.base["max_call_duration"] == 600
+    assert layers.effective["max_call_duration"] == 600
+    assert layers.effective["dictionary"] == "mine"
+    assert layers.base["dictionary"] == ""  # schema default
