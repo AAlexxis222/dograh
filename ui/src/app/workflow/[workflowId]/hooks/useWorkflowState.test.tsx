@@ -131,6 +131,30 @@ describe("useWorkflowState configuration provenance", () => {
         await waitFor(() => expect(result.current.configurationState).not.toBeNull());
     });
 
+    it("keeps the current layers on screen while the re-read after a save is in flight", async () => {
+        const { result } = renderState();
+        await waitFor(() => expect(result.current.configurationState).not.toBeNull());
+        let resolveLayers: (value: unknown) => void = () => {};
+        mocks.getEffective.mockReturnValueOnce(new Promise((resolve) => { resolveLayers = resolve; }));
+        let saved: Promise<void> = Promise.resolve();
+        await act(async () => {
+            saved = result.current.saveWorkflowConfigurations(
+                { set: [{ path: ["max_call_duration"], value: 900 }], unset: [] },
+            );
+        });
+        // The PUT landed and the re-read is pending: the sections must stay
+        // mounted, so unsaved edits in other sections are not discarded.
+        expect(result.current.configurationState?.own).toEqual({ dictionary: "mine" });
+        expect(result.current.configurationLoadError).toBeNull();
+        await act(async () => {
+            resolveLayers({
+                data: { ...effectiveResponse, own: { dictionary: "mine", max_call_duration: 900 } },
+            });
+            await saved;
+        });
+        expect(result.current.configurationState?.own).toEqual({ dictionary: "mine", max_call_duration: 900 });
+    });
+
     it("ignores a stale load that resolves after a later one", async () => {
         const { result } = renderState();
         await waitFor(() => expect(result.current.configurationState).not.toBeNull());

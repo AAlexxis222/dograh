@@ -177,13 +177,18 @@ export const useWorkflowState = ({
     // text-chat constraints). Both must succeed for the editor to unblock.
     // Returns false when this call observed a failure and blocked the editor;
     // a superseded call returns true because the newer load owns the outcome.
-    const loadConfiguration = useCallback(async (): Promise<boolean> => {
+    // `reset` drops the current document before fetching: right for a mount or
+    // a workflow change, wrong for the re-read after a save, which must leave
+    // the editor mounted so unsaved edits in other sections survive.
+    const loadConfiguration = useCallback(async ({ reset }: { reset: boolean }): Promise<boolean> => {
         const seq = ++loadSeq.current;
-        // Drop the previous document before fetching: a save issued while the
-        // load is in flight (e.g. right after switching workflows) must throw
-        // "not loaded" rather than PUT the prior workflow's own leaves.
-        setConfigurationState(null);
-        setConfigurationLoadError(null);
+        // A save issued while a resetting load is in flight (e.g. right after
+        // switching workflows) must throw "not loaded" rather than PUT the
+        // prior workflow's own leaves.
+        if (reset) {
+            setConfigurationState(null);
+            setConfigurationLoadError(null);
+        }
         const [layers, envelope] = await Promise.all([
             getWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGet({
                 path: { workflow_id: workflowId },
@@ -212,9 +217,15 @@ export const useWorkflowState = ({
         return true;
     }, [workflowId, setConfigurationState]);
 
+    // Retry from the blocked editor: nothing is on screen to preserve.
+    const reloadConfiguration = useCallback(
+        () => loadConfiguration({ reset: true }),
+        [loadConfiguration],
+    );
+
     useEffect(() => {
         let cancelled = false;
-        loadConfiguration().catch((error) => {
+        loadConfiguration({ reset: true }).catch((error) => {
             if (cancelled) return;
             setConfigurationState(null);
             setConfigurationLoadError(String(error));
@@ -609,7 +620,9 @@ export const useWorkflowState = ({
             // and provenance come back from it rather than being recomputed here.
             // The write already landed; a failed re-read must not read as success
             // while the editor is blocked.
-            if (!(await loadConfiguration())) {
+            // Keep the current layers on screen while the re-read is in
+            // flight: sections stay mounted, so unsaved edits elsewhere live.
+            if (!(await loadConfiguration({ reset: false }))) {
                 throw new Error("Saved, but reloading the configuration failed; reload the page");
             }
             logger.info('Workflow configurations saved successfully');
@@ -655,7 +668,7 @@ export const useWorkflowState = ({
         templateContextVariables,
         configurationState,
         configurationLoadError,
-        reloadConfiguration: loadConfiguration,
+        reloadConfiguration,
         defaultCallDispositions,
         textChatInactivityTimeoutConstraints,
         widgetTextDefaults,
