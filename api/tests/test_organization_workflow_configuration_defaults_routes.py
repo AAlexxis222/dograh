@@ -96,36 +96,45 @@ async def test_org_base_change_propagates_to_existing_workflow(
     }
 
 
+# Which family a body is rejected for; each case pins one so a rejection for
+# the wrong reason still fails.
+SECRET = "secrets are not allowed at organization level"
+KEY = "keys not allowed at organization level"
+
+
 @pytest.mark.parametrize(
-    "body",
+    ("body", "expected"),
     [
-        {"voicemail_detection": {"enabled": True, "api_key": "sk-secret"}},
+        ({"voicemail_detection": {"enabled": True, "api_key": "sk-secret"}}, SECRET),
         # Unknown section: the schema accepts extra keys, so the rejection may
         # not be limited to the paths the secrets registry knows about.
-        {"my_integration": {"api_key": "sk-supersecret"}},
-        {"model_overrides": {"llm": {"provider": "openai", "api_key": "sk"}}},
-        {
-            "external_pbx_field_mappings": [
-                {"context_path": "a", "destination_field": "b"}
-            ]
-        },
-        {"external_pbx_lead_headers": ["first_name"]},
-        {"model_configuration_v2_override": {}},
-        {"max_call_duration": 99999},
+        ({"my_integration": {"api_key": "sk-supersecret"}}, SECRET),
+        ({"model_overrides": {"llm": {"provider": "openai", "api_key": "sk"}}}, KEY),
+        (
+            {
+                "external_pbx_field_mappings": [
+                    {"context_path": "a", "destination_field": "b"}
+                ]
+            },
+            KEY,
+        ),
+        ({"external_pbx_lead_headers": ["first_name"]}, KEY),
+        ({"model_configuration_v2_override": {}}, KEY),
+        ({"max_call_duration": 99999}, "max_call_duration"),
         # A credential is rejected however its key is spelled, and under any of
         # the names one is usually given.
-        {"my_integration": {"apiKey": "sk-secret"}},
-        {"my_integration": {"API_KEY": "sk-secret"}},
-        {"my_integration": {"Api-Key": "sk-secret"}},
-        {"my_integration": {"api_key ": "sk-secret"}},
-        {"my_integration": {"password": "hunter2"}},
-        {"my_integration": {"token": "t-secret"}},
-        {"my_integration": {"secret": "s-secret"}},
-        {"my_integration": {"apiKeys": ["sk-secret"]}},
+        ({"my_integration": {"apiKey": "sk-secret"}}, SECRET),
+        ({"my_integration": {"API_KEY": "sk-secret"}}, SECRET),
+        ({"my_integration": {"Api-Key": "sk-secret"}}, SECRET),
+        ({"my_integration": {"api_key ": "sk-secret"}}, SECRET),
+        ({"my_integration": {"password": "hunter2"}}, SECRET),
+        ({"my_integration": {"token": "t-secret"}}, SECRET),
+        ({"my_integration": {"secret": "s-secret"}}, SECRET),
+        ({"my_integration": {"apiKeys": ["sk-secret"]}}, SECRET),
     ],
 )
 async def test_org_defaults_reject_secrets_pbx_and_model_keys(
-    test_client_factory, org_user, body
+    test_client_factory, org_user, body, expected
 ):
     _, user = org_user
     async with test_client_factory(user) as client:
@@ -133,6 +142,7 @@ async def test_org_defaults_reject_secrets_pbx_and_model_keys(
             "/api/v1/organizations/workflow-configuration-defaults", json=body
         )
     assert response.status_code == 422, response.text
+    assert expected in response.text
 
 
 async def test_get_masks_stored_secret_defensively(

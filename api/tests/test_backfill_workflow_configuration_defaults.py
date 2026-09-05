@@ -73,6 +73,44 @@ async def test_backfill_reports_and_skips_a_non_object_document(monkeypatch):
     writes.assert_awaited_once_with(12, {"dictionary": "mine"})
 
 
+async def test_backfill_reports_and_skips_a_document_that_no_longer_validates(
+    monkeypatch,
+):
+    """A stored value outside today's bounds is pre-existing damage: report it
+    and leave the row alone. Rewriting it would turn damage into a fresh write,
+    and the resolver clamps such values at run time anyway."""
+    batches = [
+        [
+            (11, 1, 5, {"max_call_duration": 10**9}),
+            (12, 2, 5, {"max_call_duration": 300, "dictionary": "mine"}),
+        ],
+        [],
+    ]
+    monkeypatch.setattr(
+        backfill.db_client,
+        "list_draft_definitions_for_backfill",
+        AsyncMock(side_effect=batches),
+    )
+    writes = AsyncMock()
+    monkeypatch.setattr(backfill.db_client, "update_definition_configurations", writes)
+
+    report = await run_backfill(apply=True)
+
+    assert report[5][0] == {
+        "workflow_id": 1,
+        "definition_id": 11,
+        "skipped": 1,
+    }
+    writes.assert_awaited_once_with(12, {"dictionary": "mine"})
+
+
+def test_a_fully_default_section_is_reported_once_not_leaf_by_leaf():
+    _, removed = strip_schema_default_leaves(
+        {"ambient_noise_configuration": {"enabled": False, "volume": 0.3}}
+    )
+    assert removed == ["ambient_noise_configuration"]
+
+
 @pytest.fixture
 async def org_user(async_session):
     org = OrganizationModel(provider_id="test-org-backfill")
