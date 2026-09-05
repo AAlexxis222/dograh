@@ -7,6 +7,12 @@ After the cascade, runtime code reads the run's frozen effective document
 else lets a draft, the legacy workflow column, or a live organization edit
 change a running call. Editor surfaces that manage the stored document are
 whitelisted explicitly.
+
+Known blind spots of the creator guard, both matched by name at the call site:
+a creator reached through an alias or a ``functools.partial`` is invisible to
+it, and so is one added inside ``api/db/`` (skipped as non-runtime). Every
+creator in the tree today calls ``create_workflow_run`` directly from a service
+or a route.
 """
 
 import ast

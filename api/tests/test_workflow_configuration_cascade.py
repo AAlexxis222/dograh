@@ -1,4 +1,7 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
 from api.schemas.workflow_configurations import (
@@ -10,6 +13,9 @@ from api.services.configuration.ai_model_configuration import (
     migrate_workflow_configuration_model_override_to_v2,
 )
 from api.services.configuration.cascade import (
+    ORGANIZATION_FORBIDDEN_KEYS,
+    PASSTHROUGH_KEYS,
+    load_effective_workflow_configurations,
     merge_configuration_documents,
     normalize_root_nulls,
     resolve_effective_workflow_configurations,
@@ -20,7 +26,21 @@ from api.services.configuration.default_configurations import (
     EffectiveDefaultConfigurationsResponse,
     build_default_configurations_response,
 )
-from api.tests.integrations._run_pipeline_helpers import USER_CONFIGURATION
+
+# A minimal, valid effective AI-model configuration. Inlined rather than
+# imported from the pipeline integration helpers: this module is a fast unit
+# suite and must not pull in the processor chain.
+USER_CONFIGURATION = {
+    "is_realtime": False,
+    "stt": {"provider": "deepgram", "model": "nova-3", "api_key": "test-key"},
+    "tts": {
+        "provider": "cartesia",
+        "model": "sonic-2",
+        "api_key": "test-key",
+        "voice_id": "test-voice",
+    },
+    "llm": {"provider": "openai", "model": "gpt-4.1", "api_key": "test-key"},
+}
 
 
 def test_schema_defaults_document_has_no_null_and_no_user_turn_stop_timeout():
@@ -175,23 +195,66 @@ def test_list_invariant_violation_falls_back_to_lower_layer_with_warning():
     """append-unique cannot duplicate codes, but the total description budget
     (MAX_CALL_DISPOSITION_DESCRIPTIONS_TOTAL_LENGTH = 4000) is a list invariant
     the union of two valid layers can exceed."""
-    org = {"call_dispositions": [{"code": "a", "description": "x" * 2500}]}
+    org = {
+        "call_dispositions": [
+            {"code": f"o{index}", "description": "x" * 1000} for index in range(3)
+        ]
+    }
     wf = {
         "call_dispositions_extend_org": True,
-        "call_dispositions": [{"code": "b", "description": "y" * 2000}],
+        "call_dispositions": [
+            {"code": "w1", "description": "y" * 1000},
+            {"code": "w2", "description": "z" * 1000},
+        ],
     }
     resolved = _resolve(org, wf)
     assert resolved.effective["call_dispositions"] == wf["call_dispositions"]
     assert resolved.warnings and resolved.warnings[0].startswith("call_dispositions:")
 
 
-def test_org_layer_never_overrides_pinned_definition():
+def test_definition_layer_wins_over_the_organization_layer_key_by_key():
     resolved = _resolve(
         {"dictionary": "org words", "max_user_idle_timeout": 20.0},
         {"dictionary": "mine"},
     )
     assert resolved.effective["dictionary"] == "mine"
     assert resolved.effective["max_user_idle_timeout"] == 20.0
+
+
+def test_organization_forbidden_keys_are_the_pbx_and_ai_model_sections():
+    """The PUT's 422 list, pinned: the PBX keys are gated on the workflow save
+    and the AI-model sections have their own organization level."""
+    assert ORGANIZATION_FORBIDDEN_KEYS == {
+        "external_pbx_field_mappings",
+        "external_pbx_lead_headers",
+        "model_overrides",
+        "model_configuration_v2_override",
+    }
+    assert PASSTHROUGH_KEYS <= ORGANIZATION_FORBIDDEN_KEYS
+
+
+def test_invalid_fallback_catalog_resolves_to_an_empty_one_with_two_warnings():
+    """Nothing validates a document written straight to the store, so the layer
+    the resolver falls back to can be invalid on its own."""
+    org = {
+        "call_dispositions": [
+            {"code": f"o{index}", "description": "o" * 1000} for index in range(3)
+        ]
+    }
+    wf = {
+        "call_dispositions_extend_org": True,
+        # The union blows the total description budget, and this layer on its
+        # own repeats a code under casefold, so neither catalog validates.
+        "call_dispositions": [
+            {"code": "d1", "description": "a" * 1000},
+            {"code": "D1", "description": "b" * 1000},
+            {"code": "d2", "description": "c" * 1000},
+        ],
+    }
+    resolved = _resolve(org, wf)
+    assert resolved.effective["call_dispositions"] == []
+    assert len(resolved.warnings) == 2
+    assert resolved.warnings[1].endswith("resolved to an empty catalog")
 
 
 def test_merge_does_not_mutate_inputs():
@@ -215,6 +278,27 @@ def test_run_configurations_for_prefers_frozen_and_falls_back_to_pinned():
     assert run_configurations_for(frozen) == {"a": 1}
     assert run_configurations_for(legacy) == {"a": 2}
     assert run_configurations_for(orphan) == {}
+
+
+@pytest.mark.asyncio
+async def test_legacy_user_scoped_workflow_skips_the_tenant_check_and_org_layer():
+    """``WorkflowModel.organization_id`` is nullable: such a workflow has no
+    organization layer to inherit and no tenant to compare the definition to."""
+    get_configuration_value = AsyncMock(return_value={"max_call_duration": 600})
+    db = SimpleNamespace(
+        get_definition_configurations_with_owner=AsyncMock(
+            return_value=({"dictionary": "mine"}, 99)
+        ),
+        get_configuration_value=get_configuration_value,
+    )
+
+    resolved = await load_effective_workflow_configurations(
+        db, organization_id=None, definition_id=11
+    )
+
+    assert resolved.effective["dictionary"] == "mine"
+    assert resolved.effective["max_call_duration"] == 300
+    get_configuration_value.assert_not_awaited()
 
 
 def test_effective_envelope_carries_warnings_and_the_shared_payload():

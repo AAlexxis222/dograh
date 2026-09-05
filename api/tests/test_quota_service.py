@@ -877,6 +877,9 @@ async def test_authorize_workflow_run_prefers_frozen_configuration_over_pinned(
         organization_id=42,
         workflow_configurations=frozen_configs,
     )
+    # A run already carries its resolved document; resolving again would let a
+    # later organization edit change what an in-flight run is billed for.
+    quota_service.load_effective_workflow_configurations.assert_not_awaited()
 
 
 @pytest.mark.asyncio

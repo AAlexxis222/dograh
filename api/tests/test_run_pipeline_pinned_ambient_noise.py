@@ -21,6 +21,7 @@ PINNED_AMBIENT = {"enabled": True, "storage_key": "ambient-noise/1/1/published.w
 
 
 def _stub_db(monkeypatch):
+    """Wire the two DB reads and hand the caller the rows it wired."""
     workflow = SimpleNamespace(
         id=1,
         organization_id=5,
@@ -43,6 +44,7 @@ def _stub_db(monkeypatch):
         "get_workflow_run",
         AsyncMock(return_value=workflow_run),
     )
+    return workflow, workflow_run
 
 
 def _patch_effective_config():
@@ -113,8 +115,7 @@ async def test_run_pipeline_reads_frozen_effective_configurations_over_pinned(
     is only a fallback for legacy runs: a definition edited (or republished)
     after the run was created must not change what the run executes.
     """
-    _stub_db(monkeypatch)
-    workflow_run = await run_pipeline_module.db_client.get_workflow_run(42)
+    _, workflow_run = _stub_db(monkeypatch)
     workflow_run.definition.workflow_configurations = {
         "ambient_noise_configuration": {"enabled": False}
     }
