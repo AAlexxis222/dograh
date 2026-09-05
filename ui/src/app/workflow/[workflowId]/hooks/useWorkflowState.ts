@@ -574,63 +574,85 @@ export const useWorkflowState = ({
         }
     }, [workflowId, workflowName, user, setTemplateContextVariables]);
 
+    // Saves run back to back. Sections save independently, and the PUT carries
+    // the whole stored document, so a save that started from the `own` of a
+    // still-unfinished save would drop the other section's leaves. Each save
+    // waits for the previous one to settle before it reads `own`.
+    const saveChain = useRef<Promise<void>>(Promise.resolve());
+
     // Save workflow configurations as a sparse document: the PUT carries
     // own ∪ patch only, so leaves the workflow inherits from the organization
     // stay absent and keep following the cascade. The materialised
     // `effective` document is never sent.
-    const saveWorkflowConfigurations = useCallback(async (patch: ConfigurationPatch, newWorkflowName?: string) => {
-        if (!user?.id) return;
-        const current = useWorkflowStore.getState().configurationState;
-        if (!current) {
-            throw new Error("Workflow configuration not loaded; reload the page before saving");
-        }
-        const name = newWorkflowName ?? useWorkflowStore.getState().workflowName;
-        const nextOwn = applyConfigurationPatch(current.own, patch);
-        try {
-            const response = await updateWorkflowApiV1WorkflowWorkflowIdPut({
-                path: {
-                    workflow_id: workflowId,
-                },
-                body: {
-                    name,
-                    workflow_definition: null,
-                    // Only what the workflow owns: inherited leaves stay absent (sparse save).
-                    ...(isPatchEmpty(patch) ? {} : { workflow_configurations: nextOwn }),
-                },
-            });
+    const saveWorkflowConfigurations = useCallback((patch: ConfigurationPatch, newWorkflowName?: string) => {
+        if (!user?.id) return Promise.resolve();
+        const previous = saveChain.current;
+        const run = (async () => {
+            // Never rejects: the chain link below swallows failures, so one
+            // failed save does not block the next one.
+            await previous;
+            const current = useWorkflowStore.getState().configurationState;
+            if (!current) {
+                throw new Error("Workflow configuration not loaded; reload the page before saving");
+            }
+            const name = newWorkflowName ?? useWorkflowStore.getState().workflowName;
+            const nextOwn = applyConfigurationPatch(current.own, patch);
+            try {
+                const response = await updateWorkflowApiV1WorkflowWorkflowIdPut({
+                    path: {
+                        workflow_id: workflowId,
+                    },
+                    body: {
+                        name,
+                        workflow_definition: null,
+                        // Only what the workflow owns: inherited leaves stay absent (sparse save).
+                        ...(isPatchEmpty(patch) ? {} : { workflow_configurations: nextOwn }),
+                    },
+                });
 
-            if (response.error) {
-                const detail = (response.error as { detail?: unknown }).detail;
-                let msg = 'Failed to save workflow configurations';
-                if (typeof detail === 'string') {
-                    msg = detail;
-                } else if (Array.isArray(detail)) {
-                    msg = detail
-                        .map((e: { model?: string; message?: string; msg?: string }) =>
-                            e.model && e.message ? `${e.model}: ${e.message}` : (e.msg || JSON.stringify(e))
-                        )
-                        .join('\n');
+                if (response.error) {
+                    const detail = (response.error as { detail?: unknown }).detail;
+                    let msg = 'Failed to save workflow configurations';
+                    if (typeof detail === 'string') {
+                        msg = detail;
+                    } else if (Array.isArray(detail)) {
+                        msg = detail
+                            .map((e: { model?: string; message?: string; msg?: string }) =>
+                                e.model && e.message ? `${e.model}: ${e.message}` : (e.msg || JSON.stringify(e))
+                            )
+                            .join('\n');
+                    }
+                    throw new Error(msg);
                 }
-                throw new Error(msg);
-            }
 
-            // Set name directly in the store to avoid setWorkflowName which marks isDirty: true
-            useWorkflowStore.setState({ workflowName: name });
-            // Re-read the layers: the API is the only merger, so `effective`
-            // and provenance come back from it rather than being recomputed here.
-            // The write already landed; a failed re-read must not read as success
-            // while the editor is blocked.
-            // Keep the current layers on screen while the re-read is in
-            // flight: sections stay mounted, so unsaved edits elsewhere live.
-            if (!(await loadConfiguration({ reset: false }))) {
-                throw new Error("Saved, but reloading the configuration failed; reload the page");
+                // Set name directly in the store to avoid setWorkflowName which marks isDirty: true
+                useWorkflowStore.setState({ workflowName: name });
+                // Adopt the stored document the PUT echoed back, so the window
+                // before the re-read already shows what the server holds.
+                const savedOwn = response.data?.workflow_configurations;
+                const stored = useWorkflowStore.getState().configurationState;
+                if (savedOwn && stored) {
+                    setConfigurationState({ ...stored, own: savedOwn });
+                }
+                // Re-read the layers: the API is the only merger, so `effective`
+                // and provenance come back from it rather than being recomputed here.
+                // The write already landed; a failed re-read must not read as success
+                // while the editor is blocked.
+                // Keep the current layers on screen while the re-read is in
+                // flight: sections stay mounted, so unsaved edits elsewhere live.
+                if (!(await loadConfiguration({ reset: false }))) {
+                    throw new Error("Saved, but reloading the configuration failed; reload the page");
+                }
+                logger.info('Workflow configurations saved successfully');
+            } catch (error) {
+                logger.error(`Error saving workflow configurations: ${error}`);
+                throw error;
             }
-            logger.info('Workflow configurations saved successfully');
-        } catch (error) {
-            logger.error(`Error saving workflow configurations: ${error}`);
-            throw error;
-        }
-    }, [workflowId, user, loadConfiguration]);
+        })();
+        // The chain link never rejects; the caller still gets `run` and owns its failure.
+        saveChain.current = run.catch(() => {});
+        return run;
+    }, [workflowId, user, loadConfiguration, setConfigurationState]);
 
     // Name-only PUT: renaming never touches the configuration document.
     const renameWorkflow = useCallback(async (name: string) => {

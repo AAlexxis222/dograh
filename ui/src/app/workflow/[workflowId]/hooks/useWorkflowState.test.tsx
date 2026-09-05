@@ -155,6 +155,61 @@ describe("useWorkflowState configuration provenance", () => {
         expect(result.current.configurationState?.own).toEqual({ dictionary: "mine", max_call_duration: 900 });
     });
 
+    it("serializes overlapping saves so the second builds on the first", async () => {
+        const { result } = renderState();
+        await waitFor(() => expect(result.current.configurationState).not.toBeNull());
+        let resolveFirstPut: (value: unknown) => void = () => {};
+        mocks.updateWorkflow.mockReturnValueOnce(new Promise((resolve) => { resolveFirstPut = resolve; }));
+        mocks.getEffective.mockResolvedValueOnce({
+            data: { ...effectiveResponse, own: { dictionary: "mine", max_call_duration: 900 } },
+        });
+        let first: Promise<void> = Promise.resolve();
+        let second: Promise<void> = Promise.resolve();
+        await act(async () => {
+            first = result.current.saveWorkflowConfigurations(
+                { set: [{ path: ["max_call_duration"], value: 900 }], unset: [] },
+            );
+            second = result.current.saveWorkflowConfigurations(
+                { set: [{ path: ["dictionary"], value: "second" }], unset: [] },
+            );
+        });
+        // The second save waits: its document must be built on the first result.
+        expect(mocks.updateWorkflow).toHaveBeenCalledTimes(1);
+        await act(async () => {
+            resolveFirstPut({
+                data: { name: "W", workflow_configurations: { dictionary: "mine", max_call_duration: 900 } },
+            });
+            await first;
+            await second;
+        });
+        expect(mocks.updateWorkflow.mock.calls[1][0].body.workflow_configurations)
+            .toEqual({ dictionary: "second", max_call_duration: 900 });
+    });
+
+    it("adopts the stored document the PUT echoes back before the re-read lands", async () => {
+        const { result } = renderState();
+        await waitFor(() => expect(result.current.configurationState).not.toBeNull());
+        mocks.updateWorkflow.mockResolvedValueOnce({
+            data: { name: "W", workflow_configurations: { dictionary: "mine", max_call_duration: 900 } },
+        });
+        let resolveLayers: (value: unknown) => void = () => {};
+        mocks.getEffective.mockReturnValueOnce(new Promise((resolve) => { resolveLayers = resolve; }));
+        let saved: Promise<void> = Promise.resolve();
+        await act(async () => {
+            saved = result.current.saveWorkflowConfigurations(
+                { set: [{ path: ["max_call_duration"], value: 900 }], unset: [] },
+            );
+        });
+        expect(result.current.configurationState?.own).toEqual({ dictionary: "mine", max_call_duration: 900 });
+        await act(async () => {
+            resolveLayers({
+                data: { ...effectiveResponse, own: { dictionary: "mine", max_call_duration: 900 } },
+            });
+            await saved;
+        });
+        expect(result.current.configurationState?.own).toEqual({ dictionary: "mine", max_call_duration: 900 });
+    });
+
     it("ignores a stale load that resolves after a later one", async () => {
         const { result } = renderState();
         await waitFor(() => expect(result.current.configurationState).not.toBeNull());
