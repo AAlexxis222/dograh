@@ -1,0 +1,132 @@
+from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
+from api.services.configuration.masking import mask_key, mask_workflow_configurations
+from api.services.configuration.secrets_registry import (
+    REJECTED_SECRET_NAMES,
+    SECRET_PATHS,
+    find_secret_paths,
+    find_unregistered_secret_named_paths,
+    mask_secrets,
+)
+
+
+def _secret_marked_paths(schema: dict, defs: dict, prefix=()) -> set[tuple[str, ...]]:
+    found = set()
+    for name, prop in schema.get("properties", {}).items():
+        if prop.get("secret") is True:
+            found.add(prefix + (name,))
+        ref = prop.get("$ref") or next(
+            (item.get("$ref") for item in prop.get("anyOf", []) if item.get("$ref")),
+            None,
+        )
+        if ref:
+            found |= _secret_marked_paths(
+                defs[ref.rsplit("/", 1)[-1]], defs, prefix + (name,)
+            )
+    return found
+
+
+def test_every_schema_field_marked_secret_is_registered():
+    schema = WorkflowConfigurationDefaults.model_json_schema()
+    marked = _secret_marked_paths(schema, schema.get("$defs", {}))
+    assert marked == {("voicemail_detection", "api_key")}
+    assert marked <= set(SECRET_PATHS)
+
+
+def test_find_secret_paths_covers_model_overrides_v2_and_voicemail():
+    document = {
+        "max_call_duration": 300,
+        "model_overrides": {"llm": {"provider": "openai", "api_key": "sk-llm"}},
+        "model_configuration_v2_override": {"stt": {"deepgram": {"credentials": "c"}}},
+        "voicemail_detection": {"enabled": True, "api_key": "sk-vm"},
+    }
+    assert sorted(find_secret_paths(document)) == [
+        ("model_configuration_v2_override", "stt", "deepgram", "credentials"),
+        ("model_overrides", "llm", "api_key"),
+        ("voicemail_detection", "api_key"),
+    ]
+    assert find_secret_paths({"knowledge_base": {"api_key": "not-registered"}}) == []
+    assert (
+        find_secret_paths({"model_overrides": {"embeddings": {"api_key": "x"}}}) == []
+    )
+
+
+def test_mask_secrets_masks_only_registered_paths_and_keeps_shape():
+    document = {
+        "model_overrides": {"llm": {"provider": "openai", "api_key": "sk-1234567890"}},
+        "voicemail_detection": {"enabled": True, "api_key": "vm-1234567890"},
+        "knowledge_base": {"api_key": "plain"},
+    }
+    masked = mask_secrets(document)
+    assert masked["model_overrides"]["llm"]["api_key"].endswith("7890")
+    assert "*" in masked["model_overrides"]["llm"]["api_key"]
+    assert masked["voicemail_detection"]["api_key"].endswith("7890")
+    assert masked["knowledge_base"]["api_key"] == "plain"
+    assert document["voicemail_detection"]["api_key"] == "vm-1234567890"
+    assert mask_secrets(None) is None and mask_secrets({}) == {}
+
+
+def test_mask_secrets_masks_every_item_of_a_list_valued_secret():
+    """A registered leaf may hold several keys; each one is masked, and a list
+    with a non-string item is left alone rather than raised on."""
+    document = {
+        "model_overrides": {"llm": {"api_key": ["sk-aaaa1111", "sk-bbbb2222"]}},
+        "voicemail_detection": {"api_key": ["vm-1234567890", 7]},
+    }
+    masked = mask_secrets(document)
+    assert masked["model_overrides"]["llm"]["api_key"] == [
+        mask_key("sk-aaaa1111"),
+        mask_key("sk-bbbb2222"),
+    ]
+    assert masked["voicemail_detection"]["api_key"] == ["vm-1234567890", 7]
+
+
+def test_mask_secrets_descends_into_lists_under_model_configuration_v2_override():
+    document = {
+        "model_configuration_v2_override": {
+            "stt": [
+                {"provider": "deepgram", "credentials": "dg-1234567890"},
+                {"provider": "assemblyai", "credentials": "aai-1234567890"},
+            ]
+        }
+    }
+    masked = mask_secrets(document)
+    stt = masked["model_configuration_v2_override"]["stt"]
+    assert stt[0]["provider"] == "deepgram"
+    assert stt[0]["credentials"].endswith("7890") and "*" in stt[0]["credentials"]
+    assert stt[1]["credentials"].endswith("7890") and "*" in stt[1]["credentials"]
+    assert (
+        document["model_configuration_v2_override"]["stt"][0]["credentials"]
+        == "dg-1234567890"
+    )
+
+
+def test_mask_workflow_configurations_masks_a_registered_secret():
+    document = {"voicemail_detection": {"api_key": "vm-1234567890"}}
+    masked = mask_workflow_configurations(document)
+    assert masked == {"voicemail_detection": {"api_key": mask_key("vm-1234567890")}}
+    assert document["voicemail_detection"]["api_key"] == "vm-1234567890"
+
+
+def test_unregistered_secret_named_paths_exclude_the_registered_ones():
+    """The write surfaces reject exactly what masking cannot protect."""
+    document = {
+        "model_overrides": {"llm": {"api_key": "sk-registered"}},
+        "voicemail_detection": {"api_key": "vm-registered"},
+        "model_configuration_v2_override": {"stt": {"deepgram": {"credentials": "c"}}},
+        "my_integration": {"token": "t", "apiKey": "k"},
+        "nested": {"deeper": {"password": "p"}},
+    }
+    assert find_unregistered_secret_named_paths(
+        document, extra_names=REJECTED_SECRET_NAMES
+    ) == [
+        ("my_integration", "apiKey"),
+        ("my_integration", "token"),
+        ("nested", "deeper", "password"),
+    ]
+    assert find_unregistered_secret_named_paths(None) == []
+    assert (
+        find_unregistered_secret_named_paths(
+            {"my_integration": {"token": ""}}, extra_names=REJECTED_SECRET_NAMES
+        )
+        == []
+    )

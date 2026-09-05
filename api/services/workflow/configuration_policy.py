@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any
 
 from api.db import db_client
+from api.enums import OrganizationConfigurationKey
+from api.services.configuration.cascade import resolve_effective_workflow_configurations
 from api.services.organization_preferences import external_pbx_integrations_enabled
 
-# Configuration keys owned by the External PBX UI section. All of them vanish
-# from the request payload while that section is hidden, so all of them must be
-# preserved from storage rather than silently reset to their defaults.
+# Configuration keys owned by the External PBX UI section. They cannot be
+# inherited from the organization layer, so the workflow document is the only
+# place they live.
 _EXTERNAL_PBX_CONFIGURATION_KEYS = (
     "external_pbx_field_mappings",
     "external_pbx_lead_headers",
@@ -31,16 +32,31 @@ async def apply_external_pbx_mapping_policy(
     workflow_id: int,
     organization_id: int,
 ) -> dict[str, Any] | None:
-    """Preserve hidden settings and reject edits while external PBX is disabled.
+    """Protect the external-PBX keys of a saved workflow document.
 
-    Workflow configuration updates replace the stored configuration document. When
-    the External PBX UI is hidden, its settings are absent from the request, so
-    they must be copied from the active draft or published definition before the
-    update is persisted.
+    Two rules, both about keys the request did or did not send:
+
+    - A key the request omits means "leave it as it is". These keys have no
+      organization-level value to fall back on, so the stored value is copied
+      back into the outgoing document instead of being dropped.
+    - A key the request sends while the integration is disabled for the
+      organization may not differ from the value already in effect.
     """
-    if workflow_configurations is None or await external_pbx_integrations_enabled(
-        organization_id
-    ):
+    if workflow_configurations is None:
+        return workflow_configurations
+
+    sent_keys = [
+        key
+        for key in _EXTERNAL_PBX_CONFIGURATION_KEYS
+        if key in workflow_configurations
+    ]
+    absent_keys = [
+        key
+        for key in _EXTERNAL_PBX_CONFIGURATION_KEYS
+        if key not in workflow_configurations
+    ]
+    integration_enabled = await external_pbx_integrations_enabled(organization_id)
+    if not absent_keys and integration_enabled:
         return workflow_configurations
 
     workflow = await db_client.get_workflow(
@@ -50,30 +66,37 @@ async def apply_external_pbx_mapping_policy(
         raise WorkflowConfigurationNotFoundError(
             f"Workflow with id {workflow_id} not found"
         )
-
     draft = await db_client.get_draft_version(workflow_id)
-    stored_configurations = (
+    released = getattr(workflow, "released_definition", None)
+    stored = (
         draft.workflow_configurations
         if draft
-        else workflow.released_definition.workflow_configurations
-    )
-    prepared_configurations = dict(workflow_configurations)
-    preserved_any = False
-    for key in _EXTERNAL_PBX_CONFIGURATION_KEYS:
-        stored_value = (stored_configurations or {}).get(key, [])
-        incoming_value = workflow_configurations.get(key, stored_value)
+        else (released.workflow_configurations if released else {})
+    ) or {}
 
-        if incoming_value != stored_value:
-            raise ExternalPBXConfigurationDisabledError(
-                "External PBX integrations are disabled for this organization. "
-                "Enable them in Platform Settings before changing external PBX "
-                "settings."
-            )
+    if sent_keys and not integration_enabled:
+        organization_defaults = await db_client.get_configuration_value(
+            organization_id,
+            OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value,
+            {},
+        )
+        effective = resolve_effective_workflow_configurations(
+            organization_defaults=organization_defaults,
+            definition_configurations=stored,
+        ).effective
+        for key in sent_keys:
+            # The [] default is unreachable while the schema declares both PBX
+            # keys with a list default, so the effective document always has
+            # them. Kept because this comparison must never raise on a document
+            # that lost a key.
+            if workflow_configurations[key] != effective.get(key, []):
+                raise ExternalPBXConfigurationDisabledError(
+                    "External PBX integrations are disabled for this organization. "
+                    "Enable them in Platform Settings before changing external PBX "
+                    "settings."
+                )
 
-        if stored_value:
-            prepared_configurations[key] = deepcopy(stored_value)
-            preserved_any = True
-
-    if not preserved_any:
+    restored = {key: stored[key] for key in absent_keys if key in stored}
+    if not restored:
         return workflow_configurations
-    return prepared_configurations
+    return {**workflow_configurations, **restored}

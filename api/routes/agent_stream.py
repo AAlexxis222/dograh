@@ -73,6 +73,11 @@ async def agent_stream_websocket(
         "provider": provider_name,
         "direction": "inbound",
     }
+    # This is a WebSocket scope: the JSON exception handlers registered on the
+    # app never run here, so a configuration error closes the socket through
+    # the generic path rather than as 400/403. Accepted: the local handler
+    # below still releases the concurrency slot, only the close code is not the
+    # policy-violation 1008 used above.
     try:
         run_inputs = await prepare_workflow_run_inputs(db_client, workflow)
         workflow_run = await db_client.create_workflow_run(
@@ -84,6 +89,7 @@ async def agent_stream_websocket(
             initial_context=initial_context,
             organization_id=workflow.organization_id,
             definition_id=run_inputs.definition_id,
+            effective_configurations=run_inputs.effective_configurations,
         )
         await call_concurrency.bind_workflow_run(concurrency_slot, workflow_run.id)
     except Exception:

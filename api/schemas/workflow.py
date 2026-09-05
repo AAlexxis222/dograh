@@ -30,3 +30,6 @@ class WorkflowRunResponseSchema(BaseModel):
     call_type: CallType
     logs: Dict[str, Any] | None = None
     annotations: Dict[str, Any] | None = None
+    effective_configurations: dict | None = (
+        None  # frozen at creation; None for runs created before the column existed
+    )

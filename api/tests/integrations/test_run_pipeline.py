@@ -68,6 +68,10 @@ WORKFLOW_DEFINITION = {
     ],
 }
 
+# Lives only in the organization layer, so it can only reach the pipeline
+# through the document frozen on the run.
+ORGANIZATION_MAX_CALL_DURATION = 987
+
 
 @pytest.fixture
 async def workflow_run_setup(db_session, async_session):
@@ -79,6 +83,9 @@ async def workflow_run_setup(db_session, async_session):
         workflow_definition=WORKFLOW_DEFINITION,
         name_prefix="Event Handler Integration",
         provider_id_suffix="event-handlers",
+        organization_configuration_defaults={
+            "max_call_duration": ORGANIZATION_MAX_CALL_DURATION
+        },
     )
 
 
@@ -219,19 +226,23 @@ async def test_call_stays_registered_for_drain_until_artifacts_uploaded(
 
 
 @pytest.mark.asyncio
-async def test_run_pipeline_reads_configuration_from_pinned_definition(
+async def test_run_pipeline_reads_configuration_from_frozen_snapshot(
     workflow_run_setup, db_session
 ):
-    """An unpublished draft must not change the behaviour of a run pinned to
-    the published definition.
+    """An unpublished draft must not change the behaviour of a live run.
 
     ``save_workflow_draft`` mirrors the draft into the legacy
     ``WorkflowModel.workflow_configurations`` column; the pipeline used to read
-    ``context_compaction_enabled`` and ``voicemail_detection`` from that column
-    instead of from ``workflow_run.definition``.
+    ``context_compaction_enabled`` and ``voicemail_detection`` from that column.
+    It now reads the document frozen on the run, which is also the only place
+    the organization-level ``max_call_duration`` exists: the pinned definition
+    carries an empty configuration and the workflow column carries the draft.
     """
     from pipecat.extensions.voicemail.voicemail_detector import VoicemailDetector
 
+    from api.services.pipecat.pipeline_engine_callbacks_processor import (
+        PipelineEngineCallbacksProcessor,
+    )
     from api.services.workflow.pipecat_engine import PipecatEngine
 
     workflow_run, user, workflow = workflow_run_setup
@@ -267,6 +278,10 @@ async def test_run_pipeline_reads_configuration_from_pinned_definition(
             "api.services.pipecat.run_pipeline.VoicemailDetector",
             wraps=VoicemailDetector,
         ) as voicemail_cls,
+        patch(
+            "api.services.pipecat.run_pipeline.PipelineEngineCallbacksProcessor",
+            wraps=PipelineEngineCallbacksProcessor,
+        ) as callbacks_cls,
     ):
         run_task = asyncio.create_task(
             _run_pipeline(
@@ -294,3 +309,7 @@ async def test_run_pipeline_reads_configuration_from_pinned_definition(
 
     assert engine_cls.call_args.kwargs["context_compaction_enabled"] is False
     voicemail_cls.assert_not_called()
+    assert (
+        callbacks_cls.call_args.kwargs["max_call_duration_seconds"]
+        == ORGANIZATION_MAX_CALL_DURATION
+    )

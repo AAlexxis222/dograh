@@ -17,6 +17,7 @@ from api.schemas.workflow_configurations import (
     WorkflowConfigurationDefaults,
 )
 from api.services.call_concurrency import call_concurrency
+from api.services.configuration.cascade import run_configurations_for
 from api.services.configuration.registry import ServiceProviders
 from api.services.integrations import (
     IntegrationRuntimeContext,
@@ -352,10 +353,11 @@ async def _run_pipeline_telephony_impl(
         get_effective_ai_model_configuration_for_workflow,
     )
 
-    # Read every setting from the run's pinned definition. The workflow row's
-    # workflow_configurations column tracks the latest *draft*, so reading it
-    # here would let unpublished edits change live call behaviour.
-    run_configs = workflow_run.definition.workflow_configurations or {}
+    # Read every setting from the configuration frozen on the run. The workflow
+    # row's workflow_configurations column tracks the latest *draft*, and the
+    # pinned definition can still be edited, so either would let later edits
+    # change live call behaviour.
+    run_configs = run_configurations_for(workflow_run)
     ambient_noise_config = run_configs.get("ambient_noise_configuration")
     user_config = await get_effective_ai_model_configuration_for_workflow(
         organization_id=workflow.organization_id,
@@ -388,6 +390,7 @@ async def _run_pipeline_telephony_impl(
             workflow_run=workflow_run,
             resolved_user_config=user_config,
             organization_id=organization_id,
+            run_configurations=run_configs,
         )
     except Exception as e:
         # Closest layer to the failure and the only one with the traceback, so
@@ -477,10 +480,8 @@ async def _run_pipeline_smallwebrtc_impl(
             detail="workflow_run_workflow_mismatch",
         )
 
-    # Pinned definition, not the workflow row (which mirrors the draft).
-    run_configs = (
-        (workflow_run.definition.workflow_configurations or {}) if workflow_run else {}
-    )
+    # The run's frozen snapshot, not the workflow row (which mirrors the draft).
+    run_configs = run_configurations_for(workflow_run)
     ambient_noise_config = run_configs.get("ambient_noise_configuration")
     user_config = await get_effective_ai_model_configuration_for_workflow(
         organization_id=workflow.organization_id if workflow else None,
@@ -506,6 +507,7 @@ async def _run_pipeline_smallwebrtc_impl(
         workflow_run=workflow_run,
         resolved_user_config=user_config,
         organization_id=organization_id,
+        run_configurations=run_configs,
     )
 
 
@@ -520,6 +522,7 @@ async def _run_pipeline(
     workflow_run=None,
     resolved_user_config=None,
     organization_id: int | None = None,
+    run_configurations: dict | None = None,
 ) -> None:
     """Run the pipeline with active-call drain accounting."""
     register_worker_active_call(workflow_run_id)
@@ -535,6 +538,7 @@ async def _run_pipeline(
             workflow_run=workflow_run,
             resolved_user_config=resolved_user_config,
             organization_id=organization_id,
+            run_configurations=run_configurations,
         )
     finally:
         try:
@@ -554,6 +558,7 @@ async def _run_pipeline_impl(
     workflow_run=None,
     resolved_user_config=None,
     organization_id: int | None = None,
+    run_configurations: dict | None = None,
 ) -> None:
     """
     Run the pipeline with the given transport and configuration
@@ -566,6 +571,8 @@ async def _run_pipeline_impl(
         workflow_run: Pre-fetched workflow run row. Fetched here if None.
         resolved_user_config: Organization model configuration with workflow
             model_overrides already applied. Fetched and resolved here if None.
+        run_configurations: The run's frozen effective configuration. Resolved
+            here from the run row if None (never from the workflow row).
     """
     workflow_scope = (
         {"organization_id": organization_id}
@@ -602,12 +609,17 @@ async def _run_pipeline_impl(
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
-    # Use the run's pinned definition for graph + configs (not the workflow's current)
+    # Graph from the run's pinned definition, configuration from the snapshot
+    # frozen on the run (not the workflow row, which mirrors the draft).
     run_definition = workflow_run.definition
     run_workflow_json = run_definition.workflow_json
-    run_configs = run_definition.workflow_configurations or {}
+    run_configs = (
+        run_configurations
+        if run_configurations is not None
+        else run_configurations_for(workflow_run)
+    )
 
-    # Extract configurations from the version's workflow_configurations
+    # Extract configurations from the run's effective configuration
     max_call_duration_seconds = DEFAULT_MAX_CALL_DURATION_SECONDS
     max_user_idle_timeout = DEFAULT_MAX_USER_IDLE_TIMEOUT_SECONDS
     keyterms = None  # Dictionary words for STT boosting

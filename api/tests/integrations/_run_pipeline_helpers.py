@@ -21,8 +21,9 @@ Provided here:
   instances are constructed per-call.
 - ``create_workflow_run_rows``: helper that creates the org / user /
   user-configuration / workflow / workflow-run rows for an integration
-  test. Each test wires this through its own thin fixture so the
-  workflow definition stays local to the test.
+  test, resolving and freezing the effective configuration on the run the
+  way the real run creators do. Each test wires this through its own thin
+  fixture so the workflow definition stays local to the test.
 """
 
 from contextlib import ExitStack, contextmanager
@@ -177,6 +178,7 @@ async def create_workflow_run_rows(
     workflow_definition: dict,
     name_prefix: str,
     provider_id_suffix: str,
+    organization_configuration_defaults: dict | None = None,
 ):
     """Create org / user / user-configuration / workflow / workflow-run rows
     in the test database for a ``_run_pipeline`` integration test.
@@ -191,6 +193,10 @@ async def create_workflow_run_rows(
         provider_id_suffix: Used to generate unique ``provider_id`` values
             for the org and user rows so concurrent or repeated test runs
             don't collide.
+        organization_configuration_defaults: Optional organization-level
+            workflow configuration defaults. They become part of the
+            document frozen on the run, so a test can assert on a value
+            that exists only in the frozen snapshot.
 
     Returns:
         Tuple of (workflow_run, user, workflow).
@@ -200,6 +206,7 @@ async def create_workflow_run_rows(
     from api.services.configuration.ai_model_configuration import (
         convert_legacy_ai_model_configuration_to_v2,
     )
+    from api.services.workflow.run_creation import prepare_workflow_run_inputs
 
     org = OrganizationModel(provider_id=f"test-org-{provider_id_suffix}")
     async_session.add(org)
@@ -231,12 +238,25 @@ async def create_workflow_run_rows(
         organization_id=org.id,
     )
 
+    if organization_configuration_defaults is not None:
+        await db_session.upsert_configuration(
+            org.id,
+            OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value,
+            organization_configuration_defaults,
+        )
+
+    # Freeze the resolved cascade on the run exactly like the real creators
+    # do; runtime reads that snapshot, not the definition it was pinned to.
+    workflow = await db_session.get_workflow(workflow.id, organization_id=org.id)
+    run_inputs = await prepare_workflow_run_inputs(db_session, workflow)
+
     workflow_run = await db_session.create_workflow_run(
         name=f"{name_prefix} Run",
         workflow_id=workflow.id,
         mode=WorkflowRunMode.SMALLWEBRTC.value,
         user_id=user.id,
-        definition_id=workflow.released_definition_id,
+        definition_id=run_inputs.definition_id,
+        effective_configurations=run_inputs.effective_configurations,
     )
 
     return workflow_run, user, workflow
