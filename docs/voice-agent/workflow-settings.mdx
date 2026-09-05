@@ -46,8 +46,10 @@ registered for the organization.
 
 A workflow inherits every key it does not set. The workflow save stores exactly the keys the
 request carries, so a sparse document keeps every other key following the organization base.
-The builder still sends the full document on every save; sparse saves from the UI arrive with
-the follow-up builder update.
+The builder saves only the settings you change. Every setting shows an **Inherited** or
+**Custom** badge; *Use organization default* removes the workflow's own value so the setting
+follows the organization base again (the change is stored on save). A custom value equal to
+the organization default stays custom until you use that action.
 
 Lists replace by default: a workflow that sets `call_dispositions` replaces the organization
 catalog. To extend it instead, set the sibling flag:
@@ -71,6 +73,32 @@ appends the workflow's terms to the inherited list instead of replacing it.
 
 Nested `null` values are kept as written; only a `null` at the root of the document means
 "unset".
+
+## Reading a workflow's effective configuration
+
+One endpoint returns the three layers a client needs to show a setting without merging
+anything itself:
+
+```
+GET /api/v1/workflow/{workflow_id}/configuration-effective
+```
+
+| Field | Contains |
+| --- | --- |
+| `effective` | What the workflow would run with today: schema defaults, organization base and the workflow's own values merged |
+| `own` | Only the keys the workflow stores itself — a leaf missing here is inherited |
+| `base` | Schema defaults merged with the organization base, i.e. what an absent leaf falls back to |
+| `warnings` | The same clamp messages the organization effective-defaults endpoint returns |
+| `definition_id`, `definition_status` | The definition the answer was read from |
+
+It reads the **draft** definition when one exists, and the published definition otherwise —
+the same choice the builder makes when it opens a workflow. Secrets are masked in all three
+layers, so the response is not a way to read stored credentials back.
+
+A setting is *custom* when its path is present in `own`, and *inherited* otherwise. That is a
+question about presence, not about values: a workflow value that happens to equal the
+organization default is still custom, and returns to inherited only when the key is removed
+from the stored document.
 
 ## What a run executes
 
@@ -122,6 +150,10 @@ baked values would shadow the organization base forever. A one-off script strips
 python -m scripts.backfill_workflow_configuration_defaults            # dry-run report
 python -m scripts.backfill_workflow_configuration_defaults --apply    # write changes
 ```
+
+Run the backfill after deploying this builder update: a workflow saved from the previous
+builder re-bakes the defaults, so a backfill run before the update can be undone by the next
+save from an old client.
 
 It rewrites **draft** definitions only — published and archived definitions are run snapshots
 and are never touched, and a workflow with no draft is left as it is. It removes only leaves
