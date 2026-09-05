@@ -4503,7 +4503,7 @@ export type OrganizationWorkflowConfigurationDefaultsResponse = {
     /**
      * Workflow Configurations
      *
-     * Sparse organization base: only the keys the organization set. Workflows inherit every key they do not set themselves.
+     * Sparse organization base: only the keys the organization set. Workflows inherit every key they do not set themselves. The PUT replaces the whole document, so a body that omits a key the organization had set deletes it.
      */
     workflow_configurations: {
         [key: string]: unknown;
