@@ -186,30 +186,6 @@ describe("useWorkflowState configuration provenance", () => {
             .toEqual({ dictionary: "second", max_call_duration: 900 });
     });
 
-    it("adopts the stored document the PUT echoes back before the re-read lands", async () => {
-        const { result } = renderState();
-        await waitFor(() => expect(result.current.configurationState).not.toBeNull());
-        mocks.updateWorkflow.mockResolvedValueOnce({
-            data: { name: "W", workflow_configurations: { dictionary: "mine", max_call_duration: 900 } },
-        });
-        let resolveLayers: (value: unknown) => void = () => {};
-        mocks.getEffective.mockReturnValueOnce(new Promise((resolve) => { resolveLayers = resolve; }));
-        let saved: Promise<void> = Promise.resolve();
-        await act(async () => {
-            saved = result.current.saveWorkflowConfigurations(
-                { set: [{ path: ["max_call_duration"], value: 900 }], unset: [] },
-            );
-        });
-        expect(result.current.configurationState?.own).toEqual({ dictionary: "mine", max_call_duration: 900 });
-        await act(async () => {
-            resolveLayers({
-                data: { ...effectiveResponse, own: { dictionary: "mine", max_call_duration: 900 } },
-            });
-            await saved;
-        });
-        expect(result.current.configurationState?.own).toEqual({ dictionary: "mine", max_call_duration: 900 });
-    });
-
     it("ignores a stale load that resolves after a later one", async () => {
         const { result } = renderState();
         await waitFor(() => expect(result.current.configurationState).not.toBeNull());

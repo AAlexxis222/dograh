@@ -627,13 +627,6 @@ export const useWorkflowState = ({
 
                 // Set name directly in the store to avoid setWorkflowName which marks isDirty: true
                 useWorkflowStore.setState({ workflowName: name });
-                // Adopt the stored document the PUT echoed back, so the window
-                // before the re-read already shows what the server holds.
-                const savedOwn = response.data?.workflow_configurations;
-                const stored = useWorkflowStore.getState().configurationState;
-                if (savedOwn && stored) {
-                    setConfigurationState({ ...stored, own: savedOwn });
-                }
                 // Re-read the layers: the API is the only merger, so `effective`
                 // and provenance come back from it rather than being recomputed here.
                 // The write already landed; a failed re-read must not read as success
@@ -652,7 +645,7 @@ export const useWorkflowState = ({
         // The chain link never rejects; the caller still gets `run` and owns its failure.
         saveChain.current = run.catch(() => {});
         return run;
-    }, [workflowId, user, loadConfiguration, setConfigurationState]);
+    }, [workflowId, user, loadConfiguration]);
 
     // Name-only PUT: renaming never touches the configuration document.
     const renameWorkflow = useCallback(async (name: string) => {
