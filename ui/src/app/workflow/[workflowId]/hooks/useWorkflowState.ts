@@ -167,10 +167,22 @@ export const useWorkflowState = ({
     const canUndo = useWorkflowStore((state) => state.canUndo());
     const canRedo = useWorkflowStore((state) => state.canRedo());
 
+    // Load sequence: the store is module-global and loads can overlap (mount,
+    // reloadConfiguration, the re-read after a save), so only the latest call
+    // may write its outcome; earlier ones become no-ops when they resolve.
+    const loadSeq = useRef(0);
+
     // Load the three configuration layers for this workflow plus the
     // organization envelope (dispositions catalog, widget text defaults,
     // text-chat constraints). Both must succeed for the editor to unblock.
-    const loadConfiguration = useCallback(async () => {
+    // Returns false when this call observed a failure and blocked the editor;
+    // a superseded call returns true because the newer load owns the outcome.
+    const loadConfiguration = useCallback(async (): Promise<boolean> => {
+        const seq = ++loadSeq.current;
+        // Drop the previous document before fetching: a save issued while the
+        // load is in flight (e.g. right after switching workflows) must throw
+        // "not loaded" rather than PUT the prior workflow's own leaves.
+        setConfigurationState(null);
         setConfigurationLoadError(null);
         const [layers, envelope] = await Promise.all([
             getWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGet({
@@ -178,15 +190,16 @@ export const useWorkflowState = ({
             }),
             getWorkflowConfigurationEffectiveDefaultsApiV1OrganizationsWorkflowConfigurationEffectiveDefaultsGet(),
         ]);
+        if (seq !== loadSeq.current) return true;
         if (layers.error || !layers.data) {
             setConfigurationState(null);
             setConfigurationLoadError(detailFromError(layers.error, "Failed to load workflow configuration"));
-            return;
+            return false;
         }
         if (envelope.error || !envelope.data) {
             setConfigurationState(null);
             setConfigurationLoadError(detailFromError(envelope.error, "Failed to load organization defaults"));
-            return;
+            return false;
         }
         setConfigurationState(resolveWorkflowConfigurations(layers.data));
         setDefaultCallDispositions(envelope.data.default_call_dispositions ?? []);
@@ -196,6 +209,7 @@ export const useWorkflowState = ({
         if (layers.data.warnings?.length) {
             logger.warn(`Workflow configuration warnings: ${layers.data.warnings.length}`);
         }
+        return true;
     }, [workflowId, setConfigurationState]);
 
     useEffect(() => {
@@ -593,7 +607,11 @@ export const useWorkflowState = ({
             useWorkflowStore.setState({ workflowName: name });
             // Re-read the layers: the API is the only merger, so `effective`
             // and provenance come back from it rather than being recomputed here.
-            await loadConfiguration();
+            // The write already landed; a failed re-read must not read as success
+            // while the editor is blocked.
+            if (!(await loadConfiguration())) {
+                throw new Error("Saved, but reloading the configuration failed; reload the page");
+            }
             logger.info('Workflow configurations saved successfully');
         } catch (error) {
             logger.error(`Error saving workflow configurations: ${error}`);
