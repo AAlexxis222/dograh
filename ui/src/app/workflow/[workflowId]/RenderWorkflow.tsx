@@ -21,7 +21,6 @@ import { Sheet, SheetContent } from '@/components/ui/sheet';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useOnboarding } from '@/context/OnboardingContext';
 import { detailFromError } from '@/lib/apiError';
-import { WorkflowConfigurations } from '@/types/workflow-configurations';
 
 import AddNodePanel from "../../../components/flow/AddNodePanel";
 import CustomEdge from "../../../components/flow/edges/CustomEdge";
@@ -58,7 +57,6 @@ interface RenderWorkflowProps {
         };
     };
     initialTemplateContextVariables?: Record<string, string>;
-    initialWorkflowConfigurations?: WorkflowConfigurations;
     initialVersionNumber?: number | null;
     initialVersionStatus?: string | null;
     user: { id: string; email?: string };
@@ -72,7 +70,6 @@ function RenderWorkflow({
     openTesterOnLoad = false,
     initialFlow,
     initialTemplateContextVariables,
-    initialWorkflowConfigurations,
     initialVersionNumber,
     initialVersionStatus,
     user,
@@ -120,8 +117,7 @@ function RenderWorkflow({
         setIsAddNodePanelOpen,
         handleNodeSelect,
         saveWorkflow,
-        workflowConfigurations,
-        saveWorkflowConfigurations,
+        renameWorkflow,
         onConnect,
         onEdgesChange,
         onNodesChange,
@@ -131,7 +127,6 @@ function RenderWorkflow({
         workflowId,
         initialFlow,
         initialTemplateContextVariables,
-        initialWorkflowConfigurations,
         user,
     });
 
@@ -529,17 +524,6 @@ function RenderWorkflow({
         }
     }, [saveWorkflow, isViewingHistoricalVersion, fetchVersions]);
 
-    const renameWorkflow = useCallback(async (newName: string) => {
-        // The header doesn't render the pencil until the page has mounted with
-        // initial data, so workflowConfigurations is non-null by the time this
-        // runs. Throw rather than silently sending fallback workflow configurations,
-        // which would overwrite the saved server-side config.
-        if (!workflowConfigurations) {
-            throw new Error("Workflow configurations not loaded");
-        }
-        await saveWorkflowConfigurations(workflowConfigurations, newName);
-    }, [saveWorkflowConfigurations, workflowConfigurations]);
-
     const updateTool = useCallback(
         (toolUuid: string, updater: (tool: ToolResponse) => ToolResponse) => {
             setTools((prev) =>
@@ -826,7 +810,7 @@ export default React.memo(RenderWorkflow, (prevProps, nextProps) => {
         prevProps.workflowId === nextProps.workflowId &&
         prevProps.initialWorkflowName === nextProps.initialWorkflowName &&
         prevProps.user.id === nextProps.user.id
-        // Note: We intentionally don't compare initialFlow, initialTemplateContextVariables,
-        // or initialWorkflowConfigurations because they're only used for initialization
+        // Note: We intentionally don't compare initialFlow or initialTemplateContextVariables
+        // because they're only used for initialization
     );
 });

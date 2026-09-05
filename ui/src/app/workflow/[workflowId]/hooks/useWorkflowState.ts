@@ -15,7 +15,8 @@ import { toast } from "sonner";
 import { useWorkflowStore } from "@/app/workflow/[workflowId]/stores/workflowStore";
 import {
     createWorkflowRunApiV1WorkflowWorkflowIdRunsPost,
-    getDefaultConfigurationsApiV1UserConfigurationsDefaultsGet,
+    getWorkflowConfigurationEffectiveDefaultsApiV1OrganizationsWorkflowConfigurationEffectiveDefaultsGet,
+    getWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGet,
     updateWorkflowApiV1WorkflowWorkflowIdPut,
     validateWorkflowApiV1WorkflowWorkflowIdValidatePost
 } from "@/client";
@@ -33,10 +34,11 @@ import { detailFromError } from "@/lib/apiError";
 import logger from '@/lib/logger';
 import { getNextNodeId, getRandomId } from "@/lib/utils";
 import {
-    resolveWorkflowConfigurations,
-    type WorkflowConfigurationDefaults,
-    type WorkflowConfigurations,
-} from "@/types/workflow-configurations";
+    applyConfigurationPatch,
+    type ConfigurationPatch,
+    isPatchEmpty,
+} from "@/lib/workflowConfigurationLeaves";
+import { resolveWorkflowConfigurations } from "@/types/workflow-configurations";
 
 // Pull a WorkflowError[] out of any validate-shaped payload — works whether
 // the body is the raw `{ is_valid, errors }` (validate success-with-errors)
@@ -109,7 +111,6 @@ interface UseWorkflowStateProps {
         };
     };
     initialTemplateContextVariables?: Record<string, string>;
-    initialWorkflowConfigurations?: WorkflowConfigurations;
     user: { id: string; email?: string } | null;
 }
 
@@ -118,20 +119,17 @@ export const useWorkflowState = ({
     workflowId,
     initialFlow,
     initialTemplateContextVariables,
-    initialWorkflowConfigurations,
     user,
 }: UseWorkflowStateProps) => {
     const router = useRouter();
     const rfInstance = useRef<ReactFlowInstance<FlowNode, FlowEdge> | null>(null);
-    const [workflowConfigurationDefaults, setWorkflowConfigurationDefaults] =
-        useState<WorkflowConfigurationDefaults | null>(null);
+    // Set ⇒ the configuration editor is blocked until reloadConfiguration succeeds.
+    const [configurationLoadError, setConfigurationLoadError] = useState<string | null>(null);
     const [defaultCallDispositions, setDefaultCallDispositions] =
         useState<CallDispositionOption[]>([]);
     const [textChatInactivityTimeoutConstraints, setTextChatInactivityTimeoutConstraints] =
         useState<TextChatInactivityTimeoutConstraints | null>(null);
     const [widgetTextDefaults, setWidgetTextDefaults] = useState<WidgetTexts | null>(null);
-    const [workflowConfigurationDefaultsLoaded, setWorkflowConfigurationDefaultsLoaded] =
-        useState(false);
 
     // Spec catalog. Workflow init waits on this to populate defaults; node
     // creation looks up per-type schemas through it.
@@ -146,7 +144,7 @@ export const useWorkflowState = ({
         isAddNodePanelOpen,
         workflowValidationErrors,
         templateContextVariables,
-        workflowConfigurations,
+        configurationState,
         initializeWorkflow,
         commitDeletion,
         setNodes,
@@ -156,9 +154,7 @@ export const useWorkflowState = ({
         setIsAddNodePanelOpen,
         setWorkflowValidationErrors,
         setTemplateContextVariables,
-        setWorkflowConfigurations,
-        setDictionary,
-        dictionary,
+        setConfigurationState,
         clearValidationErrors,
         markNodeAsInvalid,
         markEdgeAsInvalid,
@@ -171,57 +167,52 @@ export const useWorkflowState = ({
     const canUndo = useWorkflowStore((state) => state.canUndo());
     const canRedo = useWorkflowStore((state) => state.canRedo());
 
+    // Load the three configuration layers for this workflow plus the
+    // organization envelope (dispositions catalog, widget text defaults,
+    // text-chat constraints). Both must succeed for the editor to unblock.
+    const loadConfiguration = useCallback(async () => {
+        setConfigurationLoadError(null);
+        const [layers, envelope] = await Promise.all([
+            getWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGet({
+                path: { workflow_id: workflowId },
+            }),
+            getWorkflowConfigurationEffectiveDefaultsApiV1OrganizationsWorkflowConfigurationEffectiveDefaultsGet(),
+        ]);
+        if (layers.error || !layers.data) {
+            setConfigurationState(null);
+            setConfigurationLoadError(detailFromError(layers.error, "Failed to load workflow configuration"));
+            return;
+        }
+        if (envelope.error || !envelope.data) {
+            setConfigurationState(null);
+            setConfigurationLoadError(detailFromError(envelope.error, "Failed to load organization defaults"));
+            return;
+        }
+        setConfigurationState(resolveWorkflowConfigurations(layers.data));
+        setDefaultCallDispositions(envelope.data.default_call_dispositions ?? []);
+        setTextChatInactivityTimeoutConstraints(envelope.data.text_chat_inactivity_timeout_constraints);
+        setWidgetTextDefaults(envelope.data.widget_text_defaults);
+        // Counts only, never the document.
+        if (layers.data.warnings?.length) {
+            logger.warn(`Workflow configuration warnings: ${layers.data.warnings.length}`);
+        }
+    }, [workflowId, setConfigurationState]);
+
     useEffect(() => {
         let cancelled = false;
+        loadConfiguration().catch((error) => {
+            if (cancelled) return;
+            setConfigurationState(null);
+            setConfigurationLoadError(String(error));
+        });
+        return () => { cancelled = true; };
+    }, [loadConfiguration, setConfigurationState]);
 
-        const loadWorkflowConfigurationDefaults = async () => {
-            try {
-                const response = await getDefaultConfigurationsApiV1UserConfigurationsDefaultsGet();
-                if (cancelled) return;
-
-                if (response.error || !response.data?.workflow_configurations) {
-                    logger.error(
-                        `Failed to load workflow configuration defaults: ${JSON.stringify(response.error)}`,
-                    );
-                    setWorkflowConfigurationDefaults(null);
-                    setDefaultCallDispositions([]);
-                    setTextChatInactivityTimeoutConstraints(null);
-                    setWidgetTextDefaults(null);
-                } else {
-                    setWorkflowConfigurationDefaults(response.data.workflow_configurations);
-                    setDefaultCallDispositions(
-                        response.data.default_call_dispositions ?? [],
-                    );
-                    setTextChatInactivityTimeoutConstraints(
-                        response.data.text_chat_inactivity_timeout_constraints,
-                    );
-                    setWidgetTextDefaults(response.data.widget_text_defaults);
-                }
-            } catch (error) {
-                if (cancelled) return;
-                logger.error(`Failed to load workflow configuration defaults: ${error}`);
-                setWorkflowConfigurationDefaults(null);
-                setDefaultCallDispositions([]);
-                setTextChatInactivityTimeoutConstraints(null);
-                setWidgetTextDefaults(null);
-            } finally {
-                if (!cancelled) {
-                    setWorkflowConfigurationDefaultsLoaded(true);
-                }
-            }
-        };
-
-        loadWorkflowConfigurationDefaults();
-
-        return () => {
-            cancelled = true;
-        };
-    }, []);
-
-    // Initialize workflow on mount. Waits for the spec catalog so defaults
-    // (allow_interrupt, prompt placeholders, etc.) come from one source.
+    // Initialize the canvas on mount. Waits for the spec catalog so defaults
+    // (allow_interrupt, prompt placeholders, etc.) come from one source; it
+    // does not wait for the configuration layers, which load independently.
     useEffect(() => {
-        if (specsLoading || !workflowConfigurationDefaultsLoaded) return;
+        if (specsLoading) return;
 
         const startSpec = bySpecName.get(NodeType.START_CALL);
         const fallbackStartNodes: FlowNode[] = startSpec
@@ -245,21 +236,14 @@ export const useWorkflowState = ({
             })
             : fallbackStartNodes;
 
-        const resolvedInitialWorkflowConfigurations = resolveWorkflowConfigurations(
-            initialWorkflowConfigurations,
-            workflowConfigurationDefaults,
-        );
-
         initializeWorkflow(
             workflowId,
             initialWorkflowName,
             initialNodes,
             initialFlow?.edges ?? [],
             initialTemplateContextVariables,
-            resolvedInitialWorkflowConfigurations,
-            resolvedInitialWorkflowConfigurations.dictionary ?? ''
         );
-    }, [workflowId, initialWorkflowName, initialFlow?.nodes, initialFlow?.edges, initialTemplateContextVariables, initialWorkflowConfigurations, initializeWorkflow, specsLoading, bySpecName, workflowConfigurationDefaultsLoaded, workflowConfigurationDefaults]);
+    }, [workflowId, initialWorkflowName, initialFlow?.nodes, initialFlow?.edges, initialTemplateContextVariables, initializeWorkflow, specsLoading, bySpecName]);
 
     // Set up keyboard shortcuts for undo/redo
     useEffect(() => {
@@ -565,21 +549,28 @@ export const useWorkflowState = ({
         }
     }, [workflowId, workflowName, user, setTemplateContextVariables]);
 
-    // Save workflow configurations
-    const saveWorkflowConfigurations = useCallback(async (configurations: WorkflowConfigurations, newWorkflowName: string) => {
+    // Save workflow configurations as a sparse document: the PUT carries
+    // own ∪ patch only, so leaves the workflow inherits from the organization
+    // stay absent and keep following the cascade. The materialised
+    // `effective` document is never sent.
+    const saveWorkflowConfigurations = useCallback(async (patch: ConfigurationPatch, newWorkflowName?: string) => {
         if (!user?.id) return;
-        // Preserve the current dictionary when saving other configurations
-        const currentDictionary = useWorkflowStore.getState().dictionary;
-        const configurationsWithDictionary: WorkflowConfigurations = { ...configurations, dictionary: currentDictionary };
+        const current = useWorkflowStore.getState().configurationState;
+        if (!current) {
+            throw new Error("Workflow configuration not loaded; reload the page before saving");
+        }
+        const name = newWorkflowName ?? useWorkflowStore.getState().workflowName;
+        const nextOwn = applyConfigurationPatch(current.own, patch);
         try {
             const response = await updateWorkflowApiV1WorkflowWorkflowIdPut({
                 path: {
                     workflow_id: workflowId,
                 },
                 body: {
-                    name: newWorkflowName,
+                    name,
                     workflow_definition: null,
-                    workflow_configurations: configurationsWithDictionary as Record<string, unknown>,
+                    // Only what the workflow owns: inherited leaves stay absent (sparse save).
+                    ...(isPatchEmpty(patch) ? {} : { workflow_configurations: nextOwn }),
                 },
             });
 
@@ -598,50 +589,30 @@ export const useWorkflowState = ({
                 throw new Error(msg);
             }
 
-            const savedConfigurations = resolveWorkflowConfigurations(
-                response.data?.workflow_configurations
-                    ? (response.data.workflow_configurations as Partial<WorkflowConfigurations>)
-                    : configurationsWithDictionary,
-                workflowConfigurationDefaults,
-            );
-            setWorkflowConfigurations(savedConfigurations);
             // Set name directly in the store to avoid setWorkflowName which marks isDirty: true
-            useWorkflowStore.setState({ workflowName: newWorkflowName });
+            useWorkflowStore.setState({ workflowName: name });
+            // Re-read the layers: the API is the only merger, so `effective`
+            // and provenance come back from it rather than being recomputed here.
+            await loadConfiguration();
             logger.info('Workflow configurations saved successfully');
         } catch (error) {
             logger.error(`Error saving workflow configurations: ${error}`);
             throw error;
         }
-    }, [workflowId, user, setWorkflowConfigurations, workflowConfigurationDefaults]);
+    }, [workflowId, user, loadConfiguration]);
 
-    // Save dictionary
-    const saveDictionary = useCallback(async (newDictionary: string) => {
-        if (!user) return;
-        const currentConfigurations =
-            useWorkflowStore.getState().workflowConfigurations
-            ?? resolveWorkflowConfigurations(null, workflowConfigurationDefaults);
-        const updatedConfigurations: WorkflowConfigurations = { ...currentConfigurations, dictionary: newDictionary };
-        try {
-            const response = await updateWorkflowApiV1WorkflowWorkflowIdPut({
-                path: {
-                    workflow_id: workflowId,
-                },
-                body: {
-                    name: workflowName,
-                    workflow_definition: null,
-                    workflow_configurations: updatedConfigurations as Record<string, unknown>,
-                },
-            });
-            if (response.error) {
-                throw new Error(detailFromError(response.error, "Failed to save dictionary"));
-            }
-            setDictionary(newDictionary);
-            setWorkflowConfigurations(updatedConfigurations);
-        } catch (error) {
-            logger.error(`Error saving dictionary: ${error}`);
-            throw error;
+    // Name-only PUT: renaming never touches the configuration document.
+    const renameWorkflow = useCallback(async (name: string) => {
+        if (!user?.id) return;
+        const response = await updateWorkflowApiV1WorkflowWorkflowIdPut({
+            path: { workflow_id: workflowId },
+            body: { name, workflow_definition: null },
+        });
+        if (response.error) {
+            throw new Error(detailFromError(response.error, "Failed to rename workflow"));
         }
-    }, [workflowId, workflowName, user, setDictionary, setWorkflowConfigurations, workflowConfigurationDefaults]);
+        useWorkflowStore.setState({ workflowName: name });
+    }, [workflowId, user]);
 
     // Update rfInstance when it changes
     useEffect(() => {
@@ -664,11 +635,12 @@ export const useWorkflowState = ({
         isDirty,
         workflowValidationErrors,
         templateContextVariables,
-        workflowConfigurations,
+        configurationState,
+        configurationLoadError,
+        reloadConfiguration: loadConfiguration,
         defaultCallDispositions,
         textChatInactivityTimeoutConstraints,
         widgetTextDefaults,
-        dictionary,
         setNodes,
         setEdges,
         setIsDirty,
@@ -683,7 +655,7 @@ export const useWorkflowState = ({
         onRun,
         saveTemplateContextVariables,
         saveWorkflowConfigurations,
-        saveDictionary,
+        renameWorkflow,
         // Export undo/redo state
         undo,
         redo,
