@@ -30,6 +30,10 @@ from api.routes.turn_credentials import (
 )
 from api.schemas.embed_chat import PublicEmbedChatSessionResponse
 from api.schemas.widget_texts import WidgetTexts
+from api.services.configuration.cascade import (
+    WorkflowDefinitionMissingError,
+    WorkflowDefinitionNotVisibleError,
+)
 from api.services.workflow.embed_chat_limiter import allow_embed_chat_init
 from api.services.workflow.embed_context import sanitize_embed_context_variables
 from api.services.workflow.embed_session_service import (
@@ -372,12 +376,18 @@ async def initialize_embed_session(
             call_type=CallType.INBOUND,
             initial_context=initial_context,
             definition_id=run_inputs.definition_id,
+            effective_configurations=run_inputs.effective_configurations,
         )
         if is_chat:
             workflow_run = await db_client.update_workflow_run(
                 workflow_run.id,
                 annotations={"embed": {"source": "embed_widget", "modality": "text"}},
             )
+    except (WorkflowDefinitionMissingError, WorkflowDefinitionNotVisibleError):
+        # A workflow with no runnable definition, or a definition owned by
+        # another tenant, is a 400/403 from the app-level handlers — not the
+        # generic 500 the catch-all below would report.
+        raise
     except Exception as e:
         logger.error(f"Failed to create workflow run: {e}")
         raise HTTPException(status_code=500, detail="Failed to create workflow run")
