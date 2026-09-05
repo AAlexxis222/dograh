@@ -85,6 +85,10 @@ async def apply_external_pbx_mapping_policy(
             definition_configurations=stored,
         ).effective
         for key in sent_keys:
+            # The [] default is unreachable while the schema declares both PBX
+            # keys with a list default, so the effective document always has
+            # them. Kept because this comparison must never raise on a document
+            # that lost a key.
             if workflow_configurations[key] != effective.get(key, []):
                 raise ExternalPBXConfigurationDisabledError(
                     "External PBX integrations are disabled for this organization. "

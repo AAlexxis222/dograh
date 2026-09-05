@@ -117,6 +117,9 @@ async def handle_mps_unavailable_error(
     )
 
 
+# One route does not use these handlers: the inbound telephony webhook answers
+# the carrier with a hangup instruction instead, because a JSON error body
+# means nothing to a carrier and a failed webhook is a dropped call.
 @app.exception_handler(WorkflowDefinitionMissingError)
 async def handle_workflow_definition_missing(
     _request: Request,
