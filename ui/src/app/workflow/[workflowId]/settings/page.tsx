@@ -78,6 +78,7 @@ import {
     normalizeCallDispositions,
     validateCallDispositionRows,
 } from "./components/CallDispositionEditor";
+import { InheritedBadge } from "./components/InheritedBadge";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -319,6 +320,11 @@ const GENERAL_LEAVES = {
     externalPbxLeadHeaders: ["external_pbx_lead_headers"],
 } as const satisfies Record<string, LeafPath>;
 
+// The organization's dispositions are a list of objects; JSON inside a link
+// label is unreadable, so the badge says how many would be inherited.
+const formatCallDispositionsBase = (value: unknown): string =>
+    Array.isArray(value) ? `${value.length} option${value.length === 1 ? "" : "s"}` : String(value);
+
 function GeneralSection({
     configuration,
     defaultCallDispositions,
@@ -392,6 +398,9 @@ function GeneralSection({
     );
     const externalPbxSettingsValid =
         externalPbxFieldMappingsValid && externalPbxLeadHeadersValid;
+    // Empty means "inherit"; any value present must satisfy the schema's gt=0.
+    const userTurnStopTimeoutValid =
+        userTurnStopTimeout === undefined || userTurnStopTimeout > 0;
     const normalizedCallDispositions = useMemo(
         () => normalizeCallDispositions(callDispositionRows),
         [callDispositionRows],
@@ -402,9 +411,8 @@ function GeneralSection({
     );
 
     // Put one leaf back on the base value and mark it for `unset` on save. It
-    // lives here because it owns the section's setters; the controls that call
-    // it (the per-leaf "inherited" badges) land in the next change.
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars, unused-imports/no-unused-vars
+    // lives here because it owns the section's setters; the per-leaf
+    // "inherited" badges call it.
     const revertLeaf = (path: LeafPath) => {
         const key = leafKey(path);
         const value = getAtPath(base, path);
@@ -631,19 +639,25 @@ function GeneralSection({
                     </div>
                     <div className="flex items-center justify-between">
                         <Label htmlFor="ambient-noise-enabled" className="text-sm">Use Ambient Noise</Label>
-                        <Switch
-                            id="ambient-noise-enabled"
-                            checked={ambientNoiseConfig.enabled}
-                            onCheckedChange={(checked) => {
-                                unrevert(GENERAL_LEAVES.ambientEnabled);
-                                setAmbientNoiseConfig((prev) => ({ ...prev, enabled: checked }));
-                            }}
-                        />
+                        <div className="flex items-center gap-3">
+                            <InheritedBadge path={GENERAL_LEAVES.ambientEnabled} configuration={configuration} reverted={reverted} onRevert={revertLeaf} />
+                            <Switch
+                                id="ambient-noise-enabled"
+                                checked={ambientNoiseConfig.enabled}
+                                onCheckedChange={(checked) => {
+                                    unrevert(GENERAL_LEAVES.ambientEnabled);
+                                    setAmbientNoiseConfig((prev) => ({ ...prev, enabled: checked }));
+                                }}
+                            />
+                        </div>
                     </div>
                     {ambientNoiseConfig.enabled && (
                         <div className="space-y-4">
                             <div className="space-y-2">
-                                <Label htmlFor="ambient-volume" className="text-xs">Volume</Label>
+                                <div className="flex items-center justify-between">
+                                    <Label htmlFor="ambient-volume" className="text-xs">Volume</Label>
+                                    <InheritedBadge path={GENERAL_LEAVES.ambientVolume} configuration={configuration} reverted={reverted} onRevert={revertLeaf} />
+                                </div>
                                 <Input
                                     id="ambient-volume"
                                     type="number"
@@ -662,7 +676,10 @@ function GeneralSection({
 
                             {/* Custom Audio File */}
                             <div className="space-y-2">
-                                <Label className="text-xs">Custom Audio File</Label>
+                                <div className="flex items-center justify-between">
+                                    <Label className="text-xs">Custom Audio File</Label>
+                                    <InheritedBadge path={GENERAL_LEAVES.ambientStorageKey} configuration={configuration} reverted={reverted} onRevert={revertLeaf} />
+                                </div>
                                 <p className="text-xs text-muted-foreground">
                                     Upload your own audio file or use the default office ambience.
                                 </p>
@@ -760,7 +777,10 @@ function GeneralSection({
                         </p>
                     </div>
                     <div className="space-y-2">
-                        <Label htmlFor="turn_stop_strategy" className="text-xs">Detection Strategy</Label>
+                        <div className="flex items-center justify-between">
+                            <Label htmlFor="turn_stop_strategy" className="text-xs">Detection Strategy</Label>
+                            <InheritedBadge path={GENERAL_LEAVES.turnStopStrategy} configuration={configuration} reverted={reverted} onRevert={revertLeaf} />
+                        </div>
                         <Select
                             value={turnStopStrategy}
                             onValueChange={(value: TurnStopStrategy) => {
@@ -784,9 +804,12 @@ function GeneralSection({
                     </div>
                     {turnStopStrategy === "turn_analyzer" && (
                         <div className="space-y-2">
-                            <Label htmlFor="smart_turn_stop_secs" className="text-xs">
-                                Incomplete Turn Timeout (seconds)
-                            </Label>
+                            <div className="flex items-center justify-between">
+                                <Label htmlFor="smart_turn_stop_secs" className="text-xs">
+                                    Incomplete Turn Timeout (seconds)
+                                </Label>
+                                <InheritedBadge path={GENERAL_LEAVES.smartTurnStopSecs} configuration={configuration} reverted={reverted} onRevert={revertLeaf} />
+                            </div>
                             <Input
                                 id="smart_turn_stop_secs"
                                 type="number"
@@ -819,7 +842,10 @@ function GeneralSection({
                         </p>
                     </div>
                     <div className="space-y-2">
-                        <Label htmlFor="turn_start_strategy" className="text-xs">Interruption Strategy</Label>
+                        <div className="flex items-center justify-between">
+                            <Label htmlFor="turn_start_strategy" className="text-xs">Interruption Strategy</Label>
+                            <InheritedBadge path={GENERAL_LEAVES.turnStartStrategy} configuration={configuration} reverted={reverted} onRevert={revertLeaf} />
+                        </div>
                         <Select
                             value={turnStartStrategy}
                             onValueChange={(value: TurnStartStrategy) => {
@@ -849,9 +875,12 @@ function GeneralSection({
                     </div>
                     {turnStartStrategy === "min_words" && (
                         <div className="space-y-2">
-                            <Label htmlFor="turn_start_min_words" className="text-xs">
-                                Minimum Words Before Interruption
-                            </Label>
+                            <div className="flex items-center justify-between">
+                                <Label htmlFor="turn_start_min_words" className="text-xs">
+                                    Minimum Words Before Interruption
+                                </Label>
+                                <InheritedBadge path={GENERAL_LEAVES.turnStartMinWords} configuration={configuration} reverted={reverted} onRevert={revertLeaf} />
+                            </div>
                             <Input
                                 id="turn_start_min_words"
                                 type="number"
@@ -873,9 +902,12 @@ function GeneralSection({
                     )}
                     {turnStartStrategy === "provisional_vad" && (
                         <div className="space-y-2">
-                            <Label htmlFor="provisional_vad_pause_secs" className="text-xs">
-                                Provisional Pause (seconds)
-                            </Label>
+                            <div className="flex items-center justify-between">
+                                <Label htmlFor="provisional_vad_pause_secs" className="text-xs">
+                                    Provisional Pause (seconds)
+                                </Label>
+                                <InheritedBadge path={GENERAL_LEAVES.provisionalVadPauseSecs} configuration={configuration} reverted={reverted} onRevert={revertLeaf} />
+                            </div>
                             <Input
                                 id="provisional_vad_pause_secs"
                                 type="number"
@@ -911,14 +943,17 @@ function GeneralSection({
                         <Label htmlFor="transcript-end-timestamps-enabled" className="text-sm">
                             Enhanced Timestamped Transcript
                         </Label>
-                        <Switch
-                            id="transcript-end-timestamps-enabled"
-                            checked={includeTranscriptEndTimestamps}
-                            onCheckedChange={(checked) => {
-                                unrevert(GENERAL_LEAVES.transcriptEndTimestamps);
-                                setIncludeTranscriptEndTimestamps(checked);
-                            }}
-                        />
+                        <div className="flex items-center gap-3">
+                            <InheritedBadge path={GENERAL_LEAVES.transcriptEndTimestamps} configuration={configuration} reverted={reverted} onRevert={revertLeaf} />
+                            <Switch
+                                id="transcript-end-timestamps-enabled"
+                                checked={includeTranscriptEndTimestamps}
+                                onCheckedChange={(checked) => {
+                                    unrevert(GENERAL_LEAVES.transcriptEndTimestamps);
+                                    setIncludeTranscriptEndTimestamps(checked);
+                                }}
+                            />
+                        </div>
                     </div>
                     <div className="rounded-md border bg-muted/20 p-3">
                         <pre className="whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
@@ -942,27 +977,35 @@ function GeneralSection({
                         <Label htmlFor="context-compaction-enabled" className="text-sm">
                             Enable Context Compaction
                         </Label>
-                        <Switch
-                            id="context-compaction-enabled"
-                            checked={contextCompactionEnabled}
-                            onCheckedChange={(checked) => {
-                                unrevert(GENERAL_LEAVES.contextCompactionEnabled);
-                                setContextCompactionEnabled(checked);
-                            }}
-                        />
+                        <div className="flex items-center gap-3">
+                            <InheritedBadge path={GENERAL_LEAVES.contextCompactionEnabled} configuration={configuration} reverted={reverted} onRevert={revertLeaf} />
+                            <Switch
+                                id="context-compaction-enabled"
+                                checked={contextCompactionEnabled}
+                                onCheckedChange={(checked) => {
+                                    unrevert(GENERAL_LEAVES.contextCompactionEnabled);
+                                    setContextCompactionEnabled(checked);
+                                }}
+                            />
+                        </div>
                     </div>
                 </div>
 
                 <Separator />
 
-                <CallDispositionEditor
-                    rows={callDispositionRows}
-                    onChange={(rows) => {
-                        unrevert(GENERAL_LEAVES.callDispositions);
-                        setCallDispositionRows(rows);
-                    }}
-                    defaultDispositions={defaultCallDispositions}
-                />
+                <div className="space-y-3">
+                    <div className="flex items-center justify-end">
+                        <InheritedBadge path={GENERAL_LEAVES.callDispositions} configuration={configuration} reverted={reverted} onRevert={revertLeaf} formatBase={formatCallDispositionsBase} />
+                    </div>
+                    <CallDispositionEditor
+                        rows={callDispositionRows}
+                        onChange={(rows) => {
+                            unrevert(GENERAL_LEAVES.callDispositions);
+                            setCallDispositionRows(rows);
+                        }}
+                        defaultDispositions={defaultCallDispositions}
+                    />
+                </div>
 
                 <Separator />
 
@@ -976,7 +1019,10 @@ function GeneralSection({
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
-                            <Label htmlFor="max_call_duration" className="text-xs">Max Call Duration (seconds)</Label>
+                            <div className="flex items-center justify-between">
+                                <Label htmlFor="max_call_duration" className="text-xs">Max Call Duration (seconds)</Label>
+                                <InheritedBadge path={GENERAL_LEAVES.maxCallDuration} configuration={configuration} reverted={reverted} onRevert={revertLeaf} />
+                            </div>
                             <Input
                                 id="max_call_duration"
                                 type="number"
@@ -992,9 +1038,12 @@ function GeneralSection({
                             <p className="text-xs text-muted-foreground">Default: 600 (10 minutes)</p>
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="max_user_idle_timeout" className="text-xs">
-                                Max User Idle Timeout (seconds)
-                            </Label>
+                            <div className="flex items-center justify-between">
+                                <Label htmlFor="max_user_idle_timeout" className="text-xs">
+                                    Max User Idle Timeout (seconds)
+                                </Label>
+                                <InheritedBadge path={GENERAL_LEAVES.maxUserIdleTimeout} configuration={configuration} reverted={reverted} onRevert={revertLeaf} />
+                            </div>
                             <Input
                                 id="max_user_idle_timeout"
                                 type="number"
@@ -1008,6 +1057,32 @@ function GeneralSection({
                                 }}
                             />
                             <p className="text-xs text-muted-foreground">Default: 10 seconds</p>
+                        </div>
+                        <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                                <Label htmlFor="user_turn_stop_timeout" className="text-xs">
+                                    User Turn Stop Timeout (seconds)
+                                </Label>
+                                <InheritedBadge path={GENERAL_LEAVES.userTurnStopTimeout} configuration={configuration} reverted={reverted} onRevert={revertLeaf} />
+                            </div>
+                            <Input
+                                id="user_turn_stop_timeout"
+                                type="number"
+                                min={0.1}
+                                step={0.1}
+                                placeholder="Platform default"
+                                value={userTurnStopTimeout ?? ""}
+                                onChange={(e) => {
+                                    unrevert(GENERAL_LEAVES.userTurnStopTimeout);
+                                    setUserTurnStopTimeout(e.target.value === "" ? undefined : Number(e.target.value));
+                                }}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                Seconds of silence after which the user turn ends when no turn signal arrives. Leave empty to inherit.
+                            </p>
+                            {!userTurnStopTimeoutValid && (
+                                <p className="text-xs text-destructive">Must be greater than 0.</p>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -1161,6 +1236,7 @@ function GeneralSection({
                         isSaving
                         || !isDirty
                         || !callDispositionsValid
+                        || !userTurnStopTimeoutValid
                         || (externalPbxIntegrationsEnabled && !externalPbxSettingsValid)
                     }
                 >
@@ -1299,7 +1375,8 @@ function TemplateVariablesSection({
 // Section: Dictionary
 // ---------------------------------------------------------------------------
 
-const DICTIONARY_LEAVES: readonly LeafPath[] = [["dictionary"]];
+const DICTIONARY_LEAF: LeafPath = ["dictionary"];
+const DICTIONARY_LEAVES: readonly LeafPath[] = [DICTIONARY_LEAF];
 
 function DictionarySection({
     configuration,
@@ -1317,13 +1394,19 @@ function DictionarySection({
 
     useUnsavedChanges("dictionary", isDirty);
 
+    // Show the organization value straight away; the save turns it into `unset`.
+    const handleRevert = () => {
+        setPendingRevert(true);
+        setDictionaryValue(configuration.base.dictionary ?? "");
+    };
+
     const handleSave = async () => {
         setIsSaving(true);
         try {
             await onSave(
                 pendingRevert
-                    ? { set: [], unset: [["dictionary"]] }
-                    : { set: [{ path: ["dictionary"], value: dictionaryValue }], unset: [] },
+                    ? { set: [], unset: [DICTIONARY_LEAF] }
+                    : { set: [{ path: DICTIONARY_LEAF, value: dictionaryValue }], unset: [] },
             );
             toast.success(`Dictionary saved. ${PUBLISH_WORKFLOW_REMINDER}`);
         } catch (error) {
@@ -1336,9 +1419,17 @@ function DictionarySection({
     return (
         <Card id="dictionary">
             <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base">
-                    <BookA className="h-4 w-4" />
-                    Dictionary
+                <CardTitle className="flex items-center justify-between gap-2 text-base">
+                    <span className="flex items-center gap-2">
+                        <BookA className="h-4 w-4" />
+                        Dictionary
+                    </span>
+                    <InheritedBadge
+                        path={DICTIONARY_LEAF}
+                        configuration={configuration}
+                        reverted={pendingRevert ? new Set([leafKey(DICTIONARY_LEAF)]) : undefined}
+                        onRevert={handleRevert}
+                    />
                 </CardTitle>
                 <CardDescription>
                     Add words the agent should actively listen for &mdash; company jargon, names,
@@ -1371,7 +1462,15 @@ function DictionarySection({
 // Section: Voicemail Detection
 // ---------------------------------------------------------------------------
 
-const VOICEMAIL_LEAVES: readonly LeafPath[] = [["voicemail_detection"]];
+const VOICEMAIL_LEAF: LeafPath = ["voicemail_detection"];
+const VOICEMAIL_LEAVES: readonly LeafPath[] = [VOICEMAIL_LEAF];
+
+// The organization block is a whole object (long system prompt, masked key):
+// the badge label says only what the operator would get back.
+const formatVoicemailBase = (value: unknown): string => {
+    if (!value || typeof value !== "object") return String(value);
+    return (value as VoicemailDetectionConfiguration).enabled ? "enabled" : "disabled";
+};
 
 function VoicemailSection({
     configuration,
@@ -1422,6 +1521,22 @@ function VoicemailSection({
         setter(value);
     };
 
+    // Re-seed the controls from the organization block; the save sends `unset`.
+    const handleRevert = () => {
+        const baseConfig: VoicemailDetectionConfiguration = {
+            ...DEFAULT_VOICEMAIL_DETECTION_CONFIGURATION,
+            ...configuration.base.voicemail_detection,
+        };
+        setPendingRevert(true);
+        setEnabled(baseConfig.enabled);
+        setUseWorkflowLlm(baseConfig.use_workflow_llm);
+        setProvider(baseConfig.provider || "openai");
+        setModel(baseConfig.model || "gpt-4.1");
+        setApiKey(baseConfig.api_key || "");
+        setSystemPrompt(baseConfig.system_prompt || DEFAULT_VOICEMAIL_SYSTEM_PROMPT);
+        setLongSpeechTimeout(baseConfig.long_speech_timeout);
+    };
+
     const handleSave = async () => {
         setIsSaving(true);
         try {
@@ -1437,8 +1552,8 @@ function VoicemailSection({
             };
             await onSave(
                 pendingRevert
-                    ? { set: [], unset: [["voicemail_detection"]] }
-                    : { set: [{ path: ["voicemail_detection"], value: voicemailConfig }], unset: [] },
+                    ? { set: [], unset: [VOICEMAIL_LEAF] }
+                    : { set: [{ path: VOICEMAIL_LEAF, value: voicemailConfig }], unset: [] },
             );
             toast.success(`Voicemail settings saved. ${PUBLISH_WORKFLOW_REMINDER}`);
         } catch (error) {
@@ -1451,9 +1566,18 @@ function VoicemailSection({
     return (
         <Card id="voicemail">
             <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base">
-                    <PhoneOff className="h-4 w-4" />
-                    Voicemail Detection
+                <CardTitle className="flex items-center justify-between gap-2 text-base">
+                    <span className="flex items-center gap-2">
+                        <PhoneOff className="h-4 w-4" />
+                        Voicemail Detection
+                    </span>
+                    <InheritedBadge
+                        path={VOICEMAIL_LEAF}
+                        configuration={configuration}
+                        reverted={pendingRevert ? new Set([leafKey(VOICEMAIL_LEAF)]) : undefined}
+                        onRevert={handleRevert}
+                        formatBase={formatVoicemailBase}
+                    />
                 </CardTitle>
                 <CardDescription>
                     Automatically detect and end calls when a voicemail system is reached.
