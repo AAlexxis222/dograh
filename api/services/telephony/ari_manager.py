@@ -864,6 +864,10 @@ class ARIConnection:
 
             # 3. Create workflow run
             call_id = channel_id
+            # A missing or foreign definition raises out of here on purpose:
+            # the catch-all below marks the run failed, releases the
+            # concurrency slot and hangs the channel up. Catching it here would
+            # return before the slot is released and leak it.
             run_inputs = await prepare_workflow_run_inputs(db_client, workflow)
             # Capture the configured external PBX identity from SIP headers.
             # Lead fields come from the definition this run binds to, not from

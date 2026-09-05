@@ -316,6 +316,11 @@ class WorkflowClient(BaseDBClient):
         The cascade resolver compares the owner with the caller so it can
         distinguish "missing" (400) from "another tenant's" (403) instead of
         treating both as an empty document.
+
+        Deliberately unscoped, so the tenant check lives in Python rather than
+        in the WHERE clause. The architecture test that guards configuration
+        reads matches this method name, so a caller outside the cascade fails
+        that test and cannot quietly skip the check.
         """
         async with self.async_session() as session:
             result = await session.execute(
@@ -340,6 +345,11 @@ class WorkflowClient(BaseDBClient):
         """Draft definitions in id order, for the one-off sparse backfill.
 
         Published/archived versions are run snapshots and are never listed.
+
+        Intentionally unscoped by organization — the one exception to the rule
+        that every data access carries an organization id. This is a one-off
+        maintenance sweep over every tenant; a request-serving caller must not
+        copy the pattern.
         """
         async with self.async_session() as session:
             result = await session.execute(
@@ -370,6 +380,9 @@ class WorkflowClient(BaseDBClient):
         The ``status`` predicate is part of the write, not a precondition read:
         a definition published between the listing and this UPDATE is a run
         snapshot by then and must not be rewritten.
+
+        Unscoped by organization for the same reason as the listing above: it
+        exists for the one-off sweep, not for request handling.
         """
         async with self.async_session() as session:
             await session.execute(
