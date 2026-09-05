@@ -2,7 +2,8 @@
 
 After the cascade, runtime code reads the run's frozen effective document
 (``run_configurations_for`` / ``get_workflow_run_configurations``). Reading
-``.workflow_configurations`` or ``get_definition_configurations(`` anywhere
+``.workflow_configurations`` (however it is spelled) or
+``get_definition_configurations_with_owner(`` anywhere
 else lets a draft, the legacy workflow column, or a live organization edit
 change a running call. Editor surfaces that manage the stored document are
 whitelisted explicitly.
@@ -29,7 +30,11 @@ STORED_DOCUMENT_SURFACES = {
 }
 # Negative lookbehind: ``api.schemas.workflow_configurations`` imports are not reads.
 READ_PATTERN = re.compile(
-    r"(?<!schemas)\.workflow_configurations\b|get_definition_configurations\("
+    r"(?<!schemas)\.workflow_configurations\b"
+    # The same read spelled dynamically: getattr(x, "workflow_configurations")
+    # or x["workflow_configurations"], in either quote style.
+    r"|[\[(,]\s*[\"']workflow_configurations[\"']"
+    r"|get_definition_configurations_with_owner\("
 )
 
 
