@@ -50,6 +50,7 @@ import {
     buildConfigurationPatch,
     type ConfigurationPatch,
     getAtPath,
+    hasPath,
     isPatchEmpty,
     leafKey,
     type LeafPath,
@@ -83,6 +84,18 @@ import {
 // ---------------------------------------------------------------------------
 
 const PUBLISH_WORKFLOW_REMINDER = "Publish the agent to apply the changes.";
+
+// Remount key for one section: it changes only when the server values that
+// section reads change (its effective values and whether each leaf is its own),
+// so a save in one section never re-seeds another section's unsaved edits.
+function sectionKey(configuration: WorkflowConfigurationState, paths: readonly LeafPath[]): string {
+    return JSON.stringify(
+        paths.map((path) => [
+            getAtPath(configuration.effective, path),
+            hasPath(configuration.own, path),
+        ]),
+    );
+}
 
 const DEFAULT_VOICEMAIL_SYSTEM_PROMPT = `You are a voicemail detection classifier for an OUTBOUND calling system. A bot has called a phone number and you need to determine if a human answered or if the call went to voicemail based on the provided text.
 
@@ -1286,6 +1299,8 @@ function TemplateVariablesSection({
 // Section: Dictionary
 // ---------------------------------------------------------------------------
 
+const DICTIONARY_LEAVES: readonly LeafPath[] = [["dictionary"]];
+
 function DictionarySection({
     configuration,
     onSave,
@@ -1355,6 +1370,8 @@ function DictionarySection({
 // ---------------------------------------------------------------------------
 // Section: Voicemail Detection
 // ---------------------------------------------------------------------------
+
+const VOICEMAIL_LEAVES: readonly LeafPath[] = [["voicemail_detection"]];
 
 function VoicemailSection({
     configuration,
@@ -1571,6 +1588,11 @@ function AgentUuidSection({ workflowUuid }: { workflowUuid: string }) {
 // Section: Model Overrides
 // ---------------------------------------------------------------------------
 
+const MODEL_OVERRIDE_LEAVES: readonly LeafPath[] = [
+    ["model_overrides"],
+    ["model_configuration_v2_override"],
+];
+
 function WorkflowModelOverridesSection({
     configuration,
     onSave,
@@ -1721,6 +1743,8 @@ function WorkflowModelOverridesSection({
     );
 }
 
+const EMBED_LEAVES: readonly LeafPath[] = [["text_chat_inactivity_timeout_seconds"]];
+
 // ---------------------------------------------------------------------------
 // Main Page
 // ---------------------------------------------------------------------------
@@ -1850,17 +1874,6 @@ function WorkflowSettingsInner({
         user,
     });
 
-    // Each successful load hands down a fresh `configurationState` object. The
-    // sections seed their local state from it once, so bump a key to remount
-    // them on every load instead of leaving stale values on screen.
-    const [configurationVersion, setConfigurationVersion] = useState(0);
-    const lastConfigurationState = useRef(configurationState);
-    useEffect(() => {
-        if (lastConfigurationState.current === configurationState) return;
-        lastConfigurationState.current = configurationState;
-        setConfigurationVersion((version) => version + 1);
-    }, [configurationState]);
-
     useEffect(() => {
         if (hasFetchedModelConfiguration.current) return;
         hasFetchedModelConfiguration.current = true;
@@ -1957,7 +1970,7 @@ function WorkflowSettingsInner({
                         <>
                             {/* General */}
                             <GeneralSection
-                                key={configurationVersion}
+                                key={sectionKey(configurationState, Object.values(GENERAL_LEAVES))}
                                 configuration={configurationState}
                                 defaultCallDispositions={defaultCallDispositions}
                                 workflowName={workflowName || workflow.name}
@@ -1966,7 +1979,7 @@ function WorkflowSettingsInner({
                             />
 
                             <WorkflowModelOverridesSection
-                                key={`models-${configurationVersion}`}
+                                key={sectionKey(configurationState, MODEL_OVERRIDE_LEAVES)}
                                 configuration={configurationState}
                                 onSave={saveWorkflowConfigurations}
                                 modelConfigurationDefaults={modelConfigurationDefaults}
@@ -1984,14 +1997,14 @@ function WorkflowSettingsInner({
 
                             {/* Dictionary */}
                             <DictionarySection
-                                key={`dictionary-${configurationVersion}`}
+                                key={sectionKey(configurationState, DICTIONARY_LEAVES)}
                                 configuration={configurationState}
                                 onSave={saveWorkflowConfigurations}
                             />
 
                             {/* Voicemail Detection */}
                             <VoicemailSection
-                                key={`voicemail-${configurationVersion}`}
+                                key={sectionKey(configurationState, VOICEMAIL_LEAVES)}
                                 configuration={configurationState}
                                 onSave={saveWorkflowConfigurations}
                             />
@@ -2078,6 +2091,7 @@ function WorkflowSettingsInner({
             {/* Dialogs for complex sections */}
             {configurationState && (
                 <EmbedDialog
+                    key={sectionKey(configurationState, EMBED_LEAVES)}
                     open={isEmbedDialogOpen}
                     onOpenChange={setIsEmbedDialogOpen}
                     workflowId={workflowId}
