@@ -117,6 +117,46 @@ describe("useWorkflowState configuration provenance", () => {
         expect(useWorkflowStore.getState().workflowName).toBe("New");
     });
 
+    it("drops the previous document while a reload is in flight", async () => {
+        const { result } = renderState();
+        await waitFor(() => expect(result.current.configurationState).not.toBeNull());
+        let resolveLayers: (value: unknown) => void = () => {};
+        mocks.getEffective.mockReturnValueOnce(new Promise((resolve) => { resolveLayers = resolve; }));
+        act(() => { void result.current.reloadConfiguration(); });
+        expect(result.current.configurationState).toBeNull();
+        expect(result.current.configurationLoadError).toBeNull();
+        await expect(result.current.saveWorkflowConfigurations({ set: [{ path: ["dictionary"], value: "x" }], unset: [] }))
+            .rejects.toThrow(/not loaded/);
+        await act(async () => { resolveLayers({ data: effectiveResponse }); });
+        await waitFor(() => expect(result.current.configurationState).not.toBeNull());
+    });
+
+    it("ignores a stale load that resolves after a later one", async () => {
+        const { result } = renderState();
+        await waitFor(() => expect(result.current.configurationState).not.toBeNull());
+        let resolveStale: (value: unknown) => void = () => {};
+        mocks.getEffective.mockReturnValueOnce(new Promise((resolve) => { resolveStale = resolve; }));
+        mocks.getEffective.mockResolvedValueOnce({ data: { ...effectiveResponse, own: { dictionary: "new" } } });
+        act(() => { void result.current.reloadConfiguration(); });
+        await act(() => result.current.reloadConfiguration());
+        expect(result.current.configurationState?.own).toEqual({ dictionary: "new" });
+        await act(async () => { resolveStale({ data: { ...effectiveResponse, own: { dictionary: "stale" } } }); });
+        expect(result.current.configurationState?.own).toEqual({ dictionary: "new" });
+        expect(result.current.configurationLoadError).toBeNull();
+    });
+
+    it("rejects when the re-read after a successful PUT fails", async () => {
+        const { result } = renderState();
+        await waitFor(() => expect(result.current.configurationState).not.toBeNull());
+        mocks.getEffective.mockResolvedValueOnce({ error: { detail: "boom" } });
+        await expect(act(() => result.current.saveWorkflowConfigurations(
+            { set: [{ path: ["max_call_duration"], value: 900 }], unset: [] },
+        ))).rejects.toThrow(/reloading/);
+        expect(mocks.updateWorkflow).toHaveBeenCalledTimes(1);
+        expect(result.current.configurationState).toBeNull();
+        expect(result.current.configurationLoadError).not.toBeNull();
+    });
+
     it("refuses to save before the layers are loaded", async () => {
         mocks.getEffective.mockResolvedValueOnce({ error: { detail: "boom" } });
         const { result } = renderState();
