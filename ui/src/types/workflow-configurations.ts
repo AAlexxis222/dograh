@@ -3,9 +3,8 @@ import type {
     CallDispositionOption as GeneratedCallDispositionOption,
     OrganizationAiModelConfigurationV2,
     WorkflowConfigurationDefaults as GeneratedWorkflowConfigurationDefaults,
+    WorkflowEffectiveConfigurationResponse,
 } from "@/client/types.gen";
-
-export type WorkflowConfigurationDefaults = GeneratedWorkflowConfigurationDefaults;
 
 export type AmbientNoiseConfiguration = Omit<
     AmbientNoiseConfigurationDefaults,
@@ -150,109 +149,28 @@ export type WorkflowConfigurations = WorkflowConfigurationBase & {
     [key: string]: unknown;  // Allow additional properties for future configurations
 };
 
-const FALLBACK_WORKFLOW_CONFIGURATIONS: WorkflowConfigurations = {
-    ambient_noise_configuration: {
-        enabled: false,
-        volume: 0.3
-    },
-    max_call_duration: 300,
-    max_user_idle_timeout: 10,  // 10 seconds
-    smart_turn_stop_secs: 2,  // 2 seconds
-    turn_start_strategy: 'default',  // Default to platform-chosen user turn start detection
-    turn_start_min_words: DEFAULT_TURN_START_MIN_WORDS,
-    provisional_vad_pause_secs: DEFAULT_PROVISIONAL_VAD_PAUSE_SECS,
-    turn_stop_strategy: 'transcription',  // Default to transcription-based detection
-    dictionary: '',
-    transcript_configuration: DEFAULT_TRANSCRIPT_CONFIGURATION,
-    context_compaction_enabled: false,
-    call_dispositions: [],
-    external_pbx_field_mappings: [],
-    external_pbx_lead_headers: [],
-};
+export type SparseWorkflowConfigurations = Record<string, unknown>;
 
+export interface WorkflowConfigurationState {
+    effective: WorkflowConfigurations;        // materialised, what runs
+    own: SparseWorkflowConfigurations;        // exactly what the workflow stores (masked secrets)
+    base: WorkflowConfigurations;             // schema <- organization: what an absent leaf inherits
+    warnings: string[];
+}
+
+/**
+ * The API resolves schema <- organization <- workflow (cascade.py) and returns
+ * the three layers; the UI never merges. `effective` and `base` are
+ * materialised documents, so the cast mirrors the one the editor already made
+ * on `WorkflowResponse.workflow_configurations`.
+ */
 export function resolveWorkflowConfigurations(
-    configurations?: Partial<WorkflowConfigurations> | null,
-    defaults?: WorkflowConfigurationDefaults | null,
-): WorkflowConfigurations {
+    response: WorkflowEffectiveConfigurationResponse,
+): WorkflowConfigurationState {
     return {
-        ...FALLBACK_WORKFLOW_CONFIGURATIONS,
-        ...defaults,
-        ...configurations,
-        ambient_noise_configuration: {
-            ...FALLBACK_WORKFLOW_CONFIGURATIONS.ambient_noise_configuration,
-            ...defaults?.ambient_noise_configuration,
-            ...configurations?.ambient_noise_configuration,
-        },
-        max_call_duration:
-            configurations?.max_call_duration
-            ?? defaults?.max_call_duration
-            ?? FALLBACK_WORKFLOW_CONFIGURATIONS.max_call_duration,
-        max_user_idle_timeout:
-            configurations?.max_user_idle_timeout
-            ?? defaults?.max_user_idle_timeout
-            ?? FALLBACK_WORKFLOW_CONFIGURATIONS.max_user_idle_timeout,
-        smart_turn_stop_secs:
-            configurations?.smart_turn_stop_secs
-            ?? defaults?.smart_turn_stop_secs
-            ?? FALLBACK_WORKFLOW_CONFIGURATIONS.smart_turn_stop_secs,
-        turn_start_strategy:
-            configurations?.turn_start_strategy
-            ?? defaults?.turn_start_strategy
-            ?? FALLBACK_WORKFLOW_CONFIGURATIONS.turn_start_strategy,
-        turn_start_min_words:
-            configurations?.turn_start_min_words
-            ?? defaults?.turn_start_min_words
-            ?? FALLBACK_WORKFLOW_CONFIGURATIONS.turn_start_min_words,
-        provisional_vad_pause_secs:
-            configurations?.provisional_vad_pause_secs
-            ?? defaults?.provisional_vad_pause_secs
-            ?? FALLBACK_WORKFLOW_CONFIGURATIONS.provisional_vad_pause_secs,
-        turn_stop_strategy:
-            configurations?.turn_stop_strategy
-            ?? defaults?.turn_stop_strategy
-            ?? FALLBACK_WORKFLOW_CONFIGURATIONS.turn_stop_strategy,
-        dictionary:
-            configurations?.dictionary
-            ?? defaults?.dictionary
-            ?? FALLBACK_WORKFLOW_CONFIGURATIONS.dictionary,
-        context_compaction_enabled:
-            configurations?.context_compaction_enabled
-            ?? defaults?.context_compaction_enabled
-            ?? FALLBACK_WORKFLOW_CONFIGURATIONS.context_compaction_enabled,
-        call_dispositions:
-            configurations?.call_dispositions
-            ?? defaults?.call_dispositions
-            ?? FALLBACK_WORKFLOW_CONFIGURATIONS.call_dispositions,
-        text_chat_inactivity_timeout_seconds:
-            configurations?.text_chat_inactivity_timeout_seconds
-            ?? defaults?.text_chat_inactivity_timeout_seconds,
-        external_pbx_field_mappings:
-            configurations?.external_pbx_field_mappings
-            ?? defaults?.external_pbx_field_mappings
-            ?? FALLBACK_WORKFLOW_CONFIGURATIONS.external_pbx_field_mappings,
-        external_pbx_lead_headers:
-            configurations?.external_pbx_lead_headers
-            // Cast until `npm run generate-client` runs against a backend
-            // carrying this field; the generated defaults type predates it.
-            ?? (defaults?.external_pbx_lead_headers as string[] | undefined)
-            ?? FALLBACK_WORKFLOW_CONFIGURATIONS.external_pbx_lead_headers,
-        model_overrides:
-            configurations?.model_overrides
-            ?? (defaults?.model_overrides as ModelOverrides | undefined)
-            ?? undefined,
-        model_configuration_v2_override:
-            configurations?.model_configuration_v2_override
-            ?? (defaults?.model_configuration_v2_override as OrganizationAiModelConfigurationV2 | undefined)
-            ?? undefined,
-        voicemail_detection:
-            configurations?.voicemail_detection
-            // Cast because the generated defaults model only carries the fields
-            // the API declares; the UI keeps a richer shape for the settings form.
-            ?? (defaults?.voicemail_detection as VoicemailDetectionConfiguration | undefined),
-        transcript_configuration: {
-            ...DEFAULT_TRANSCRIPT_CONFIGURATION,
-            ...(defaults?.transcript_configuration as Partial<TranscriptConfiguration> | undefined),
-            ...(configurations?.transcript_configuration as Partial<TranscriptConfiguration> | undefined),
-        },
+        effective: response.effective as WorkflowConfigurations,
+        own: response.own ?? {},
+        base: response.base as WorkflowConfigurations,
+        warnings: response.warnings ?? [],
     };
 }

@@ -13,7 +13,6 @@ import { PostHogEvent } from '@/constants/posthog-events';
 import { detailFromError } from '@/lib/apiError';
 import { useAuth } from '@/lib/auth';
 import logger from '@/lib/logger';
-import { WorkflowConfigurations } from '@/types/workflow-configurations';
 
 import WorkflowLayout from '../WorkflowLayout';
 
@@ -106,11 +105,6 @@ export default function WorkflowDetailPage() {
                     viewport: { x: 0, y: 0, zoom: 0 }
                 }}
                 initialTemplateContextVariables={workflow.template_context_variables as Record<string, string> || {}}
-                initialWorkflowConfigurations={
-                    workflow.workflow_configurations
-                        ? (workflow.workflow_configurations as WorkflowConfigurations)
-                        : undefined
-                }
                 initialVersionNumber={workflow.version_number ?? null}
                 initialVersionStatus={workflow.version_status ?? null}
                 user={stableUser}
