@@ -2,7 +2,7 @@ import json
 import re
 import uuid
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -49,6 +49,9 @@ from api.services.configuration.resolve import (
 from api.services.configuration.secrets_registry import (
     REJECTED_SECRET_NAMES,
     find_unregistered_secret_named_paths,
+)
+from api.services.configuration.workflow_effective import (
+    load_workflow_effective_configurations,
 )
 from api.services.mps_service_key_client import mps_service_key_client
 from api.services.posthog_client import capture_event
@@ -357,6 +360,20 @@ class WorkflowVersionResponse(BaseModel):
     workflow_json: dict
     workflow_configurations: dict | None = None
     template_context_variables: dict | None = None
+
+
+class WorkflowEffectiveConfigurationResponse(BaseModel):
+    """Everything the builder needs to edit a workflow's configuration without
+    merging layers itself. ``own`` is the sparse document of the definition being
+    edited (draft, else published); ``effective`` is schema <- organization <- own;
+    ``base`` is what any leaf absent from ``own`` inherits."""
+
+    effective: dict[str, Any]
+    own: dict[str, Any]
+    base: dict[str, Any]
+    warnings: list[str] = Field(default_factory=list)
+    definition_id: int | None = None
+    definition_status: str | None = None
 
 
 class UpdateWorkflowStatusRequest(BaseModel):
@@ -850,6 +867,43 @@ async def get_workflow_versions(
         for v in versions
         if v.version_number is not None
     ]
+
+
+@router.get(
+    "/{workflow_id}/configuration-effective",
+    response_model=WorkflowEffectiveConfigurationResponse,
+)
+async def get_workflow_effective_configuration(
+    workflow_id: int,
+    user: UserModel = Depends(get_user),
+):
+    """The draft's (else the published definition's) configuration in three
+    layers, secrets masked. The builder edits ``own`` and reads ``effective``."""
+    workflow = await db_client.get_workflow(
+        workflow_id, organization_id=user.selected_organization_id
+    )
+    if workflow is None:
+        raise HTTPException(
+            status_code=404, detail=f"Workflow with id {workflow_id} not found"
+        )
+    # Same choice as GET /fetch: the editor works on the draft when there is one.
+    definition = (
+        await db_client.get_draft_version(workflow_id) or workflow.released_definition
+    )
+    layers = await load_workflow_effective_configurations(
+        organization_id=user.selected_organization_id,
+        definition_configurations=(
+            definition.workflow_configurations if definition else None
+        ),
+    )
+    return WorkflowEffectiveConfigurationResponse(
+        effective=layers.effective,
+        own=layers.own,
+        base=layers.base,
+        warnings=layers.warnings,
+        definition_id=definition.id if definition else None,
+        definition_status=definition.status if definition else None,
+    )
 
 
 @router.post("/{workflow_id}/publish")
