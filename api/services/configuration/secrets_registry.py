@@ -6,6 +6,11 @@ level and ``**`` for any depth; either may pass through a list (broadcast
 over every item, no index recorded in the path — ``find_secret_paths``
 dedupes). A schema field marked ``json_schema_extra={"secret": True}`` must
 appear here (guarded by test_workflow_configuration_secrets_registry.py).
+
+``find_secret_paths`` and ``mask_secrets`` disagree on non-scalar values by
+design: a registered path holding a dict or a number is reported as a secret
+present, but left untouched by the masking walk, which only rewrites strings
+and lists of strings.
 """
 
 from __future__ import annotations
@@ -21,10 +26,26 @@ SECRET_LEAF_NAMES: tuple[str, ...] = (
     "aws_secret_key",
 )
 
-# The only sections merge.py restores real secrets into (MODEL_OVERRIDE_FIELDS
-# in masking.py is an alias of this); a section outside this list (e.g.
-# "embeddings") is never unmasked on merge, so it must never be masked either.
+# The ``model_overrides`` sections merge.py restores real secrets into
+# (MODEL_OVERRIDE_FIELDS in masking.py is an alias of this); a section outside
+# this list (e.g. "embeddings") is never unmasked on merge, so it must never be
+# masked either. The rule holds for ``model_overrides`` only:
+# ``model_configuration_v2_override`` is masked below and merge.py does not
+# restore it, so a masked value sent back on that section would be stored as
+# the mask string. What stops that today is the explicit masked-value check in
+# ai_model_configuration.py, not the merger. Unifying the two descriptions of
+# the secret set is a tracked follow-up.
 MODEL_OVERRIDE_SECTIONS: tuple[str, ...] = ("llm", "tts", "stt", "realtime")
+
+# Key names the write surfaces refuse on top of the registered secret leaves.
+# Configuration documents accept unknown keys, so a credential can arrive under
+# any name; these are the names a credential is usually given.
+REJECTED_SECRET_NAMES: tuple[str, ...] = (
+    "token",
+    "secret",
+    "password",
+    "api_keys",
+)
 
 SECRET_PATHS: tuple[tuple[str, ...], ...] = tuple(
     [
@@ -40,7 +61,7 @@ SECRET_PATHS: tuple[tuple[str, ...], ...] = tuple(
 
 def _iter_leaves(
     node: Any, pattern: tuple[str, ...], path: tuple[str, ...]
-) -> Iterator[tuple[tuple[str, ...], dict, str]]:
+) -> Iterator[tuple[tuple[str, ...], dict[str, Any], str]]:
     """Yield ``(path, container, key)`` for every leaf ``container[key]``
     matched by ``pattern`` under ``node``. A list encountered anywhere before
     the leaf is broadcast over (each item walked with the same remaining
@@ -143,10 +164,33 @@ def find_secret_named_paths(
     return sorted(set(found))
 
 
+def find_unregistered_secret_named_paths(
+    document: dict[str, Any] | None, *, extra_names: tuple[str, ...] = ()
+) -> list[tuple[str, ...]]:
+    """Secret-named paths a writer must refuse: everything
+    ``find_secret_named_paths`` reports that this registry does not declare.
+
+    A registered path is legitimate — it is masked on read and restored from
+    storage on write — so it stays accepted. Anything else would be stored in
+    clear and read back in clear, because the masking walk only knows the
+    registered paths. Masking the unregistered names on read instead is not an
+    option: clients send the whole document back, so a mask string would be
+    persisted over the real value on the next save. Rejecting on write is the
+    defence.
+    """
+    registered = set(find_secret_paths(document))
+    return [
+        path
+        for path in find_secret_named_paths(document, extra_names=extra_names)
+        if path not in registered
+    ]
+
+
 def mask_secrets(document: dict[str, Any] | None) -> dict[str, Any] | None:
     """Copy of ``document`` with every registered secret masked. A secret
     value that is not a string, or a list of strings, is left untouched
-    (e.g. a malformed ``api_key: 123``) rather than raised on."""
+    (e.g. a malformed ``api_key: 123``) rather than raised on. An empty or
+    ``None`` document is returned unchanged rather than copied."""
     from api.services.configuration.masking import mask_key  # circular at import time
 
     if not document:

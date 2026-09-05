@@ -606,10 +606,8 @@ async def get_disposition_codes(
     custom_codes = await db_client.get_organization_disposition_codes(
         user.selected_organization_id
     )
-    organization_base = await db_client.get_configuration_value(
-        user.selected_organization_id,
-        OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value,
-        {},
+    organization_base = await get_organization_workflow_configuration_defaults(
+        user.selected_organization_id
     )
     base_codes = [
         option.get("code")
@@ -651,7 +649,9 @@ async def save_preferences(
 class OrganizationWorkflowConfigurationDefaultsResponse(BaseModel):
     workflow_configurations: dict[str, Any] = Field(
         description="Sparse organization base: only the keys the organization set. "
-        "Workflows inherit every key they do not set themselves."
+        "Workflows inherit every key they do not set themselves. The PUT "
+        "replaces the whole document, so a body that omits a key the "
+        "organization had set deletes it."
     )
 
 

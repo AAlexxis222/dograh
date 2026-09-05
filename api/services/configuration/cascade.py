@@ -16,7 +16,7 @@ from __future__ import annotations
 import copy
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from pydantic import ValidationError
@@ -31,6 +31,9 @@ from api.schemas.workflow_configurations import (
     WorkflowConfigurationDefaults,
     schema_defaults_document,
 )
+
+if TYPE_CHECKING:
+    from api.db.db_client import DBClient
 
 # Owned by api/services/configuration/ai_model_configuration.py: replaced
 # whole by the lowest layer that carries them, never deep-merged.
@@ -100,7 +103,9 @@ def _item_key(item: Any, dedupe_key: str | None) -> Any:
     return item
 
 
-def _append_unique(base: list, overlay: list, dedupe_key: str | None) -> list:
+def _append_unique(
+    base: list[Any], overlay: list[Any], dedupe_key: str | None
+) -> list[Any]:
     merged = copy.deepcopy(base)
     index = {
         _item_key(item, dedupe_key): position for position, item in enumerate(merged)
@@ -115,14 +120,23 @@ def _append_unique(base: list, overlay: list, dedupe_key: str | None) -> list:
     return merged
 
 
-def _merge(base: dict, overlay: dict, path: tuple[str, ...]) -> dict:
-    merged = copy.deepcopy(base)
+def _merge(
+    base: dict[str, Any],
+    overlay: dict[str, Any],
+    path: tuple[str, ...],
+    *,
+    base_is_owned: bool = False,
+) -> dict[str, Any]:
+    """``base_is_owned`` says the caller already copied ``base`` and nobody
+    else holds it, so the recursive descent can merge into it in place."""
+    merged = base if base_is_owned else copy.deepcopy(base)
     for key, value in overlay.items():
         current = merged.get(key)
         if not path and key in PASSTHROUGH_KEYS:
             merged[key] = copy.deepcopy(value)
         elif isinstance(current, dict) and isinstance(value, dict):
-            merged[key] = _merge(current, value, path + (key,))
+            # ``current`` lives inside ``merged``, which is this call's own copy.
+            merged[key] = _merge(current, value, path + (key,), base_is_owned=True)
         elif isinstance(current, list) and isinstance(value, list):
             rule = LIST_MERGE_RULES.get(path + (key,))
             if rule is not None and overlay.get(rule.flag) is True:
@@ -134,12 +148,14 @@ def _merge(base: dict, overlay: dict, path: tuple[str, ...]) -> dict:
     return merged
 
 
-def merge_configuration_documents(base: dict, overlay: dict) -> dict:
+def merge_configuration_documents(
+    base: dict[str, Any], overlay: dict[str, Any]
+) -> dict[str, Any]:
     """Pure deep merge; neither input is mutated."""
     return _merge(base, overlay, ())
 
 
-def _get_path(document: dict, path: tuple[str, ...]) -> Any:
+def _get_path(document: dict[str, Any], path: tuple[str, ...]) -> Any:
     node: Any = document
     for part in path:
         if not isinstance(node, dict) or part not in node:
@@ -148,11 +164,17 @@ def _get_path(document: dict, path: tuple[str, ...]) -> Any:
     return node
 
 
-def _set_path(document: dict, path: tuple[str, ...], value: Any) -> None:
-    node = document
+def _set_path(document: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
+    """Write ``value`` at ``path``; a missing intermediate node is left alone,
+    the same way ``_get_path`` reads one. Every bound is a root key today, so
+    the guard only matters once nested bounds are declared."""
+    node: Any = document
     for part in path[:-1]:
+        if not isinstance(node, dict) or part not in node:
+            return
         node = node[part]
-    node[path[-1]] = value
+    if isinstance(node, dict):
+        node[path[-1]] = value
 
 
 def clamp_effective_configurations(
@@ -221,13 +243,22 @@ def resolve_effective_workflow_configurations(
             if "call_dispositions" in definition_layer
             else organization_layer
         )
-        effective["call_dispositions"] = copy.deepcopy(
-            fallback_layer.get("call_dispositions", [])
-        )
+        fallback = copy.deepcopy(fallback_layer.get("call_dispositions", []))
         warnings.append(
             "call_dispositions: merged catalog violates the schema invariants "
             f"(unique codes / description budget); kept the {provenance('call_dispositions')} layer only"
         )
+        # The layer we fell back to can be invalid on its own (nothing
+        # validates a document written straight to the store), and a
+        # "repaired" document that is still invalid is worse than an empty
+        # catalog: the caller would trust the warning and get neither.
+        if not _call_dispositions_valid(fallback):
+            fallback = []
+            warnings.append(
+                "call_dispositions: the layer kept is not a valid catalog "
+                "either; resolved to an empty catalog"
+            )
+        effective["call_dispositions"] = fallback
     return ResolvedWorkflowConfigurations(effective=effective, warnings=warnings)
 
 
@@ -240,7 +271,7 @@ class WorkflowDefinitionNotVisibleError(PermissionError):
 
 
 async def load_effective_workflow_configurations(
-    db, *, organization_id: int | None, definition_id: int | None
+    db: "DBClient", *, organization_id: int | None, definition_id: int | None
 ) -> ResolvedWorkflowConfigurations:
     """Resolve the cascade for a run about to be created. Raises instead of
     returning ``{}`` for a missing or foreign definition.
@@ -284,12 +315,17 @@ async def load_effective_workflow_configurations(
 
 def run_configurations_for(workflow_run) -> dict[str, Any]:
     """Configuration a loaded run executes with; the in-memory twin of
-    ``get_workflow_run_configurations``."""
+    ``get_workflow_run_configurations``.
+
+    The result is a copy: both sources are columns of a loaded ORM row, and a
+    consumer that edited the returned document in place would dirty the row and
+    have the edit flushed back to the database on the next commit.
+    """
     frozen = getattr(workflow_run, "effective_configurations", None)
     if frozen is not None:
-        return frozen
+        return copy.deepcopy(frozen)
     definition = getattr(workflow_run, "definition", None)
-    return (
+    return copy.deepcopy(
         (getattr(definition, "workflow_configurations", None) or {})
         if definition
         else {}

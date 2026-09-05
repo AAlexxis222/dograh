@@ -9,6 +9,12 @@ to the *schema* default, comparing Pydantic-normalised values. Surviving values
 are written back normalised — trimmed strings, de-duplicated lead headers,
 ints widened to floats — exactly as the workflow PUT already stores them.
 
+A stored document that no longer validates is reported and skipped, never
+rewritten: the sweep must not turn pre-existing damage into a fresh write, and
+the resolver clamps such values at run time anyway. A nested null under a
+declared, typed field is one such case — it fails validation and skips the
+whole row, so only nulls under keys the schema does not declare survive.
+
 A workflow with no draft is left exactly as it is: its published definition is
 pinned by runs, and the legacy ``workflows.workflow_configurations`` column is
 re-synced from the draft by ``WorkflowClient.save_workflow_draft`` on the next
@@ -43,6 +49,7 @@ def _strip(value: Any, default: Any, path: str, removed: list[str]) -> Any:
     when nothing of the user's own is left. Keys the schema does not declare
     are kept verbatim (they carry no default to compare against)."""
     if isinstance(value, dict) and isinstance(default, dict):
+        mark = len(removed)
         kept = {}
         for key, child in value.items():
             if key in default:
@@ -52,6 +59,9 @@ def _strip(value: Any, default: Any, path: str, removed: list[str]) -> Any:
             else:
                 kept[key] = child
         if not kept:
+            # The whole section was default: name the section once instead of
+            # every leaf under it, so the operator report stays readable.
+            del removed[mark:]
             removed.append(path)
             return _ABSENT
         return kept
@@ -86,6 +96,8 @@ def strip_schema_default_leaves(
 async def run_backfill(
     *, apply: bool, batch_size: int = BATCH
 ) -> dict[int, list[dict]]:
+    # Keyed by organization id, which is nullable for legacy user-scoped
+    # workflows: those rows land under the JSON key "null" in the report.
     report: dict[int, list[dict]] = {}
     after_id = 0
     while True:

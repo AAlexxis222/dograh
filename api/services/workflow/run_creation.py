@@ -11,7 +11,6 @@ class WorkflowRunInputs:
     definition_id: int | None
     initial_context: dict[str, Any]
     effective_configurations: dict[str, Any]
-    configuration_warnings: list[str]
 
 
 def published_definition(workflow) -> object | None:
@@ -69,5 +68,4 @@ async def prepare_workflow_run_inputs(
             **(initial_context or {}),
         },
         effective_configurations=resolved.effective,
-        configuration_warnings=resolved.warnings,
     )
