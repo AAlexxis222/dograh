@@ -22,21 +22,12 @@ from api.services.configuration.cascade import (
     resolve_effective_workflow_configurations,
 )
 from api.services.configuration.secrets_registry import (
+    REJECTED_SECRET_NAMES,
     find_secret_named_paths,
     mask_secrets,
 )
 
 _KEY = OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value
-
-# Key names this layer refuses on top of the registered secret leaves. The
-# organization document accepts unknown keys, so a credential can arrive under
-# any name; these are the names a credential is usually given.
-_REJECTED_SECRET_NAMES: tuple[str, ...] = (
-    "token",
-    "secret",
-    "password",
-    "api_keys",
-)
 
 # The document is one row of configuration, not a payload store. The cap keeps
 # a single organization from parking megabytes behind every configuration read.
@@ -63,11 +54,14 @@ def validate_organization_workflow_configuration_document(document: dict) -> Non
         )
     # Any depth, registered or not: the document accepts unknown keys, so a
     # secret under an unknown section would be stored and read back in clear.
-    secrets = find_secret_named_paths(document, extra_names=_REJECTED_SECRET_NAMES)
+    secrets = find_secret_named_paths(document, extra_names=REJECTED_SECRET_NAMES)
     if secrets:
         raise OrganizationWorkflowConfigurationRejected(
             "secrets are not allowed at organization level: "
             + ", ".join(".".join(path) for path in secrets)
+            + ". Drop these keys from the request; a value read back from the "
+            "GET is masked, and sending a masked value back is refused the "
+            "same way."
         )
     size = len(json.dumps(document).encode("utf-8"))
     if size > MAX_DOCUMENT_BYTES:
