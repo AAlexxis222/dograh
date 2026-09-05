@@ -55,7 +55,12 @@ catalog. To extend it instead, set the sibling flag:
 ```json
 {
   "call_dispositions_extend_org": true,
-  "call_dispositions": [{ "code": "callback_scheduled", "label": "Callback scheduled" }]
+  "call_dispositions": [
+    {
+      "code": "callback_scheduled",
+      "description": "The caller asked to be called back at a specific time."
+    }
+  ]
 }
 ```
 

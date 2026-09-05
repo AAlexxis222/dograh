@@ -96,6 +96,18 @@ async def run_backfill(
             break
         for definition_id, workflow_id, organization_id, stored in rows:
             after_id = definition_id
+            if not isinstance(stored, dict):
+                # A definition whose configurations are not an object at all:
+                # report it and move on, exactly like a document that no longer
+                # validates. The sweep must never stop on one bad row.
+                report.setdefault(organization_id, []).append(
+                    {
+                        "workflow_id": workflow_id,
+                        "definition_id": definition_id,
+                        "skipped": "not an object",
+                    }
+                )
+                continue
             try:
                 sparse, removed = strip_schema_default_leaves(stored)
             except ValidationError as exc:

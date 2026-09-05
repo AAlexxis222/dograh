@@ -1,5 +1,8 @@
+from unittest.mock import AsyncMock
+
 import pytest
 
+import scripts.backfill_workflow_configuration_defaults as backfill
 from api.db.models import OrganizationModel, UserModel
 from scripts.backfill_workflow_configuration_defaults import (
     run_backfill,
@@ -39,6 +42,35 @@ def test_strip_keeps_partial_sections_and_out_of_schema_keys():
         "ambient_noise_configuration": {"enabled": True},
         "knowledge_base": {"top_k": 3},
     }
+
+
+async def test_backfill_reports_and_skips_a_non_object_document(monkeypatch):
+    """A definition whose configurations are a list (or anything but an object)
+    must not stop the sweep: it is reported and the next row still runs."""
+    batches = [
+        [
+            (11, 1, 5, ["not", "an", "object"]),
+            (12, 2, 5, {"max_call_duration": 300, "dictionary": "mine"}),
+        ],
+        [],
+    ]
+    monkeypatch.setattr(
+        backfill.db_client,
+        "list_draft_definitions_for_backfill",
+        AsyncMock(side_effect=batches),
+    )
+    writes = AsyncMock()
+    monkeypatch.setattr(backfill.db_client, "update_definition_configurations", writes)
+
+    report = await run_backfill(apply=True)
+
+    assert report[5][0] == {
+        "workflow_id": 1,
+        "definition_id": 11,
+        "skipped": "not an object",
+    }
+    assert report[5][1]["removed"] == ["max_call_duration"]
+    writes.assert_awaited_once_with(12, {"dictionary": "mine"})
 
 
 @pytest.fixture

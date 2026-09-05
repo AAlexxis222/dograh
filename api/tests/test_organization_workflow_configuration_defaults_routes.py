@@ -2,6 +2,14 @@ import pytest
 
 from api.db.models import OrganizationModel, UserModel
 from api.enums import OrganizationConfigurationKey
+from api.services.configuration.cascade import (
+    load_effective_workflow_configurations,
+)
+
+GRAPH = {
+    "nodes": [{"id": "1", "type": "startCall", "data": {"name": "S", "prompt": "p"}}],
+    "edges": [],
+}
 
 
 @pytest.fixture
@@ -41,13 +49,33 @@ async def test_put_stores_only_own_keys(test_client_factory, db_session, org_use
 async def test_org_base_change_propagates_to_existing_workflow(
     test_client_factory, db_session, org_user
 ):
-    _, user = org_user
+    """The point of the base: a workflow published before the change, whose own
+    document never mentions the key, resolves to the new value."""
+    org, user = org_user
+    workflow = await db_session.create_workflow(
+        name="W", workflow_definition=GRAPH, user_id=user.id, organization_id=org.id
+    )
+    await db_session.save_workflow_draft(
+        workflow.id, workflow_configurations={"dictionary": "mine"}
+    )
+    await db_session.publish_workflow_draft(workflow.id)
+    workflow = await db_session.get_workflow(workflow.id, organization_id=org.id)
+
+    async def _workflow_effective():
+        resolved = await load_effective_workflow_configurations(
+            db_session,
+            organization_id=org.id,
+            definition_id=workflow.released_definition_id,
+        )
+        return resolved.effective
+
     async with test_client_factory(user) as client:
         before = await client.get(
             "/api/v1/organizations/workflow-configuration-effective-defaults"
         )
         assert before.json()["workflow_configurations"]["max_call_duration"] == 300
         assert before.json()["warnings"] == []
+        assert (await _workflow_effective())["max_call_duration"] == 300
         await client.put(
             "/api/v1/organizations/workflow-configuration-defaults",
             json={"max_call_duration": 600},
@@ -56,6 +84,9 @@ async def test_org_base_change_propagates_to_existing_workflow(
             "/api/v1/organizations/workflow-configuration-effective-defaults"
         )
     assert after.json()["workflow_configurations"]["max_call_duration"] == 600
+    workflow_effective = await _workflow_effective()
+    assert workflow_effective["max_call_duration"] == 600
+    assert workflow_effective["dictionary"] == "mine"  # its own key survives
     assert set(after.json()) >= {
         "llm",
         "tts",
