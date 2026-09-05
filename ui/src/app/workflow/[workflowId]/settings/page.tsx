@@ -47,18 +47,25 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 import logger from "@/lib/logger";
 import { fetchModelConfigurationPricing } from "@/lib/modelConfigurationPricing";
 import {
+    buildConfigurationPatch,
+    type ConfigurationPatch,
+    getAtPath,
+    isPatchEmpty,
+    leafKey,
+    type LeafPath,
+} from "@/lib/workflowConfigurationLeaves";
+import {
     type AmbientNoiseConfiguration,
     type CallDispositionOption,
     DEFAULT_PROVISIONAL_VAD_PAUSE_SECS,
     DEFAULT_TURN_START_MIN_WORDS,
     DEFAULT_VOICEMAIL_DETECTION_CONFIGURATION,
     type ExternalPBXFieldMapping,
-    resolveWorkflowConfigurations,
     TURN_START_STRATEGY_OPTIONS,
     type TurnStartStrategy,
     type TurnStopStrategy,
     type VoicemailDetectionConfiguration,
-    type WorkflowConfigurations,
+    type WorkflowConfigurationState,
 } from "@/types/workflow-configurations";
 
 import { EmbedDialog } from "../components/EmbedDialog";
@@ -275,54 +282,85 @@ function ReportSection({ workflowId }: { workflowId: number }) {
 
 const MAX_AMBIENT_NOISE_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
+// Every configuration leaf this section owns. A save carries only the ones the
+// user edited (plus the ones explicitly returned to the base), never the whole
+// materialised document.
+const GENERAL_LEAVES = {
+    ambientEnabled: ["ambient_noise_configuration", "enabled"],
+    ambientVolume: ["ambient_noise_configuration", "volume"],
+    ambientStorageKey: ["ambient_noise_configuration", "storage_key"],
+    ambientStorageBackend: ["ambient_noise_configuration", "storage_backend"],
+    ambientOriginalFilename: ["ambient_noise_configuration", "original_filename"],
+    maxCallDuration: ["max_call_duration"],
+    maxUserIdleTimeout: ["max_user_idle_timeout"],
+    userTurnStopTimeout: ["user_turn_stop_timeout"],
+    smartTurnStopSecs: ["smart_turn_stop_secs"],
+    turnStartStrategy: ["turn_start_strategy"],
+    turnStartMinWords: ["turn_start_min_words"],
+    provisionalVadPauseSecs: ["provisional_vad_pause_secs"],
+    turnStopStrategy: ["turn_stop_strategy"],
+    contextCompactionEnabled: ["context_compaction_enabled"],
+    callDispositions: ["call_dispositions"],
+    transcriptEndTimestamps: ["transcript_configuration", "include_end_timestamps"],
+    externalPbxFieldMappings: ["external_pbx_field_mappings"],
+    externalPbxLeadHeaders: ["external_pbx_lead_headers"],
+} as const satisfies Record<string, LeafPath>;
+
 function GeneralSection({
-    workflowConfigurations,
+    configuration,
     defaultCallDispositions,
     workflowName,
     workflowId,
     onSave,
 }: {
-    workflowConfigurations: WorkflowConfigurations;
+    configuration: WorkflowConfigurationState;
     defaultCallDispositions: CallDispositionOption[];
     workflowName: string;
     workflowId: number;
-    onSave: (configurations: WorkflowConfigurations, workflowName: string) => Promise<void>;
+    onSave: (patch: ConfigurationPatch, workflowName?: string) => Promise<void>;
 }) {
     const { externalPbxIntegrationsEnabled } = useOrgConfig();
+    const { effective, base } = configuration;
     const [name, setName] = useState(workflowName);
     const [ambientNoiseConfig, setAmbientNoiseConfig] = useState<AmbientNoiseConfiguration>(
-        workflowConfigurations.ambient_noise_configuration,
+        effective.ambient_noise_configuration,
     );
-    const [maxCallDuration, setMaxCallDuration] = useState(workflowConfigurations.max_call_duration);
-    const [maxUserIdleTimeout, setMaxUserIdleTimeout] = useState(workflowConfigurations.max_user_idle_timeout);
-    const [smartTurnStopSecs, setSmartTurnStopSecs] = useState(workflowConfigurations.smart_turn_stop_secs);
+    const [maxCallDuration, setMaxCallDuration] = useState(effective.max_call_duration);
+    const [maxUserIdleTimeout, setMaxUserIdleTimeout] = useState(effective.max_user_idle_timeout);
+    const [userTurnStopTimeout, setUserTurnStopTimeout] = useState<number | undefined>(
+        effective.user_turn_stop_timeout as number | undefined,
+    );
+    const [smartTurnStopSecs, setSmartTurnStopSecs] = useState(effective.smart_turn_stop_secs);
     const [turnStartStrategy, setTurnStartStrategy] = useState<TurnStartStrategy>(
-        workflowConfigurations.turn_start_strategy,
+        effective.turn_start_strategy,
     );
     const [turnStartMinWords, setTurnStartMinWords] = useState(
-        workflowConfigurations.turn_start_min_words,
+        effective.turn_start_min_words,
     );
     const [provisionalVadPauseSecs, setProvisionalVadPauseSecs] = useState(
-        workflowConfigurations.provisional_vad_pause_secs,
+        effective.provisional_vad_pause_secs,
     );
     const [turnStopStrategy, setTurnStopStrategy] = useState<TurnStopStrategy>(
-        workflowConfigurations.turn_stop_strategy,
+        effective.turn_stop_strategy,
     );
     const [contextCompactionEnabled, setContextCompactionEnabled] = useState(
-        workflowConfigurations.context_compaction_enabled,
+        effective.context_compaction_enabled,
     );
     const [callDispositionRows, setCallDispositionRows] = useState<CallDispositionRow[]>(
-        () => createCallDispositionRows(workflowConfigurations.call_dispositions),
+        () => createCallDispositionRows(effective.call_dispositions),
     );
     const [includeTranscriptEndTimestamps, setIncludeTranscriptEndTimestamps] = useState(
-        workflowConfigurations.transcript_configuration?.include_end_timestamps ?? false,
+        effective.transcript_configuration?.include_end_timestamps ?? false,
     );
     const [externalPbxFieldMappings, setExternalPbxFieldMappings] = useState<ExternalPBXFieldMapping[]>(
-        workflowConfigurations.external_pbx_field_mappings,
+        effective.external_pbx_field_mappings,
     );
     const [externalPbxLeadHeaders, setExternalPbxLeadHeaders] = useState<string[]>(
-        workflowConfigurations.external_pbx_lead_headers,
+        effective.external_pbx_lead_headers,
     );
+    // Leaves the user asked to return to the base: they travel as `unset`, so
+    // the workflow stops storing them and follows the organization again.
+    const [reverted, setReverted] = useState<Set<string>>(() => new Set());
     const [isSaving, setIsSaving] = useState(false);
     const [isUploadingAudio, setIsUploadingAudio] = useState(false);
     const [audioUploadError, setAudioUploadError] = useState<string | null>(null);
@@ -350,29 +388,116 @@ function GeneralSection({
         [callDispositionRows],
     );
 
-    const isDirty = useMemo(() => {
-        const initAmbient = workflowConfigurations.ambient_noise_configuration;
-        return (
-            name !== workflowName ||
-            JSON.stringify(ambientNoiseConfig) !== JSON.stringify(initAmbient) ||
-            maxCallDuration !== workflowConfigurations.max_call_duration ||
-            maxUserIdleTimeout !== workflowConfigurations.max_user_idle_timeout ||
-            smartTurnStopSecs !== workflowConfigurations.smart_turn_stop_secs ||
-            turnStartStrategy !== workflowConfigurations.turn_start_strategy ||
-            turnStartMinWords !== workflowConfigurations.turn_start_min_words ||
-            provisionalVadPauseSecs !== workflowConfigurations.provisional_vad_pause_secs ||
-            turnStopStrategy !== workflowConfigurations.turn_stop_strategy ||
-            contextCompactionEnabled !== workflowConfigurations.context_compaction_enabled ||
-            JSON.stringify(normalizedCallDispositions) !==
-                JSON.stringify(workflowConfigurations.call_dispositions) ||
-            includeTranscriptEndTimestamps !==
-            (workflowConfigurations.transcript_configuration?.include_end_timestamps ?? false) ||
-            JSON.stringify(externalPbxFieldMappings) !==
-            JSON.stringify(workflowConfigurations.external_pbx_field_mappings) ||
-            JSON.stringify(externalPbxLeadHeaders) !==
-            JSON.stringify(workflowConfigurations.external_pbx_lead_headers)
-        );
-    }, [name, workflowName, ambientNoiseConfig, maxCallDuration, maxUserIdleTimeout, smartTurnStopSecs, turnStartStrategy, turnStartMinWords, provisionalVadPauseSecs, turnStopStrategy, contextCompactionEnabled, normalizedCallDispositions, includeTranscriptEndTimestamps, externalPbxFieldMappings, externalPbxLeadHeaders, workflowConfigurations]);
+    // Put one leaf back on the base value and mark it for `unset` on save. It
+    // lives here because it owns the section's setters; the controls that call
+    // it (the per-leaf "inherited" badges) land in the next change.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars, unused-imports/no-unused-vars
+    const revertLeaf = (path: LeafPath) => {
+        const key = leafKey(path);
+        const value = getAtPath(base, path);
+        switch (key) {
+            case leafKey(GENERAL_LEAVES.maxCallDuration): setMaxCallDuration(value as number); break;
+            case leafKey(GENERAL_LEAVES.maxUserIdleTimeout): setMaxUserIdleTimeout(value as number); break;
+            case leafKey(GENERAL_LEAVES.userTurnStopTimeout): setUserTurnStopTimeout(value as number | undefined); break;
+            case leafKey(GENERAL_LEAVES.smartTurnStopSecs): setSmartTurnStopSecs(value as number); break;
+            case leafKey(GENERAL_LEAVES.turnStartStrategy): setTurnStartStrategy(value as TurnStartStrategy); break;
+            case leafKey(GENERAL_LEAVES.turnStartMinWords): setTurnStartMinWords(value as number); break;
+            case leafKey(GENERAL_LEAVES.provisionalVadPauseSecs): setProvisionalVadPauseSecs(value as number); break;
+            case leafKey(GENERAL_LEAVES.turnStopStrategy): setTurnStopStrategy(value as TurnStopStrategy); break;
+            case leafKey(GENERAL_LEAVES.contextCompactionEnabled): setContextCompactionEnabled(Boolean(value)); break;
+            case leafKey(GENERAL_LEAVES.transcriptEndTimestamps): setIncludeTranscriptEndTimestamps(Boolean(value)); break;
+            case leafKey(GENERAL_LEAVES.callDispositions): setCallDispositionRows(createCallDispositionRows((value as CallDispositionOption[]) ?? [])); break;
+            case leafKey(GENERAL_LEAVES.ambientEnabled): setAmbientNoiseConfig((prev) => ({ ...prev, enabled: Boolean(value) })); break;
+            case leafKey(GENERAL_LEAVES.ambientVolume): setAmbientNoiseConfig((prev) => ({ ...prev, volume: value as number })); break;
+            case leafKey(GENERAL_LEAVES.ambientStorageKey): {
+                const baseAmbient = base.ambient_noise_configuration;
+                setAmbientNoiseConfig((prev) => ({
+                    ...prev,
+                    storage_key: baseAmbient.storage_key,
+                    storage_backend: baseAmbient.storage_backend,
+                    original_filename: baseAmbient.original_filename,
+                }));
+                break;
+            }
+        }
+        setReverted((prev) => {
+            const next = new Set(prev);
+            next.add(key);
+            // The three custom-audio leaves travel together.
+            if (key === leafKey(GENERAL_LEAVES.ambientStorageKey)) {
+                next.add(leafKey(GENERAL_LEAVES.ambientStorageBackend));
+                next.add(leafKey(GENERAL_LEAVES.ambientOriginalFilename));
+            }
+            return next;
+        });
+    };
+
+    // Editing a leaf cancels a pending revert on it.
+    const unrevert = (...paths: LeafPath[]) => setReverted((prev) => {
+        if (!paths.some((path) => prev.has(leafKey(path)))) return prev;
+        const next = new Set(prev);
+        paths.forEach((path) => next.delete(leafKey(path)));
+        return next;
+    });
+
+    const unrevertAmbientAudio = () => unrevert(
+        GENERAL_LEAVES.ambientStorageKey,
+        GENERAL_LEAVES.ambientStorageBackend,
+        GENERAL_LEAVES.ambientOriginalFilename,
+    );
+
+    const leaves = useMemo(() => {
+        const list: Array<{ path: LeafPath; value: unknown }> = [
+            { path: GENERAL_LEAVES.ambientEnabled, value: ambientNoiseConfig.enabled },
+            { path: GENERAL_LEAVES.ambientVolume, value: ambientNoiseConfig.volume },
+            { path: GENERAL_LEAVES.ambientStorageKey, value: ambientNoiseConfig.storage_key },
+            { path: GENERAL_LEAVES.ambientStorageBackend, value: ambientNoiseConfig.storage_backend },
+            { path: GENERAL_LEAVES.ambientOriginalFilename, value: ambientNoiseConfig.original_filename },
+            { path: GENERAL_LEAVES.maxCallDuration, value: maxCallDuration },
+            { path: GENERAL_LEAVES.maxUserIdleTimeout, value: maxUserIdleTimeout },
+            { path: GENERAL_LEAVES.userTurnStopTimeout, value: userTurnStopTimeout },
+            { path: GENERAL_LEAVES.smartTurnStopSecs, value: smartTurnStopSecs },
+            { path: GENERAL_LEAVES.turnStartStrategy, value: turnStartStrategy },
+            { path: GENERAL_LEAVES.turnStartMinWords, value: turnStartMinWords },
+            { path: GENERAL_LEAVES.provisionalVadPauseSecs, value: provisionalVadPauseSecs },
+            { path: GENERAL_LEAVES.turnStopStrategy, value: turnStopStrategy },
+            { path: GENERAL_LEAVES.contextCompactionEnabled, value: contextCompactionEnabled },
+            { path: GENERAL_LEAVES.callDispositions, value: normalizedCallDispositions },
+            { path: GENERAL_LEAVES.transcriptEndTimestamps, value: includeTranscriptEndTimestamps },
+        ];
+        // Not inheritable and hidden while the integration is off: absent in the
+        // request means "unchanged" server-side (spec §18), so they only travel
+        // when edited here.
+        if (externalPbxIntegrationsEnabled) {
+            list.push(
+                { path: GENERAL_LEAVES.externalPbxFieldMappings, value: externalPbxFieldMappings },
+                { path: GENERAL_LEAVES.externalPbxLeadHeaders, value: externalPbxLeadHeaders.map((field) => field.trim()) },
+            );
+        }
+        return list;
+    }, [
+        ambientNoiseConfig,
+        maxCallDuration,
+        maxUserIdleTimeout,
+        userTurnStopTimeout,
+        smartTurnStopSecs,
+        turnStartStrategy,
+        turnStartMinWords,
+        provisionalVadPauseSecs,
+        turnStopStrategy,
+        contextCompactionEnabled,
+        normalizedCallDispositions,
+        includeTranscriptEndTimestamps,
+        externalPbxFieldMappings,
+        externalPbxLeadHeaders,
+        externalPbxIntegrationsEnabled,
+    ]);
+
+    const patch = useMemo(
+        () => buildConfigurationPatch(effective, leaves, reverted),
+        [effective, leaves, reverted],
+    );
+    const isDirty = name !== workflowName || !isPatchEmpty(patch);
 
     useUnsavedChanges("general", isDirty);
 
@@ -413,6 +538,7 @@ function GeneralSection({
             }
 
             // 3. Update config with storage reference
+            unrevertAmbientAudio();
             setAmbientNoiseConfig((prev) => ({
                 ...prev,
                 storage_key: data.storage_key,
@@ -428,6 +554,7 @@ function GeneralSection({
     };
 
     const handleRemoveCustomAudio = () => {
+        unrevertAmbientAudio();
         setAmbientNoiseConfig((prev) => ({
             enabled: prev.enabled,
             volume: prev.volume,
@@ -438,28 +565,8 @@ function GeneralSection({
         setIsSaving(true);
         const callDispositionRowsAtSave = callDispositionRows;
         try {
-            await onSave(
-                {
-                    ...workflowConfigurations,
-                    ambient_noise_configuration: ambientNoiseConfig,
-                    max_call_duration: maxCallDuration,
-                    max_user_idle_timeout: maxUserIdleTimeout,
-                    smart_turn_stop_secs: smartTurnStopSecs,
-                    turn_start_strategy: turnStartStrategy,
-                    turn_start_min_words: turnStartMinWords,
-                    provisional_vad_pause_secs: provisionalVadPauseSecs,
-                    turn_stop_strategy: turnStopStrategy,
-                    context_compaction_enabled: contextCompactionEnabled,
-                    call_dispositions: normalizedCallDispositions,
-                    transcript_configuration: {
-                        ...(workflowConfigurations.transcript_configuration ?? {}),
-                        include_end_timestamps: includeTranscriptEndTimestamps,
-                    },
-                    external_pbx_field_mappings: externalPbxFieldMappings,
-                    external_pbx_lead_headers: externalPbxLeadHeaders.map((field) => field.trim()),
-                },
-                name,
-            );
+            await onSave(patch, name);
+            setReverted(new Set());
             setCallDispositionRows((current) => (
                 current === callDispositionRowsAtSave
                     ? current.map((row, index) => ({
@@ -514,9 +621,10 @@ function GeneralSection({
                         <Switch
                             id="ambient-noise-enabled"
                             checked={ambientNoiseConfig.enabled}
-                            onCheckedChange={(checked) =>
-                                setAmbientNoiseConfig((prev) => ({ ...prev, enabled: checked }))
-                            }
+                            onCheckedChange={(checked) => {
+                                unrevert(GENERAL_LEAVES.ambientEnabled);
+                                setAmbientNoiseConfig((prev) => ({ ...prev, enabled: checked }));
+                            }}
                         />
                     </div>
                     {ambientNoiseConfig.enabled && (
@@ -532,7 +640,9 @@ function GeneralSection({
                                     value={ambientNoiseConfig.volume}
                                     onChange={(e) => {
                                         const value = parseFloat(e.target.value);
-                                        if (!isNaN(value)) setAmbientNoiseConfig((prev) => ({ ...prev, volume: value }));
+                                        if (isNaN(value)) return;
+                                        unrevert(GENERAL_LEAVES.ambientVolume);
+                                        setAmbientNoiseConfig((prev) => ({ ...prev, volume: value }));
                                     }}
                                 />
                             </div>
@@ -640,7 +750,10 @@ function GeneralSection({
                         <Label htmlFor="turn_stop_strategy" className="text-xs">Detection Strategy</Label>
                         <Select
                             value={turnStopStrategy}
-                            onValueChange={(value: TurnStopStrategy) => setTurnStopStrategy(value)}
+                            onValueChange={(value: TurnStopStrategy) => {
+                                unrevert(GENERAL_LEAVES.turnStopStrategy);
+                                setTurnStopStrategy(value);
+                            }}
                         >
                             <SelectTrigger id="turn_stop_strategy">
                                 <SelectValue placeholder="Select strategy" />
@@ -670,7 +783,9 @@ function GeneralSection({
                                 value={smartTurnStopSecs}
                                 onChange={(e) => {
                                     const value = parseFloat(e.target.value);
-                                    if (!isNaN(value) && value >= 0.5) setSmartTurnStopSecs(value);
+                                    if (isNaN(value) || value < 0.5) return;
+                                    unrevert(GENERAL_LEAVES.smartTurnStopSecs);
+                                    setSmartTurnStopSecs(value);
                                 }}
                             />
                             <p className="text-xs text-muted-foreground">
@@ -694,7 +809,10 @@ function GeneralSection({
                         <Label htmlFor="turn_start_strategy" className="text-xs">Interruption Strategy</Label>
                         <Select
                             value={turnStartStrategy}
-                            onValueChange={(value: TurnStartStrategy) => setTurnStartStrategy(value)}
+                            onValueChange={(value: TurnStartStrategy) => {
+                                unrevert(GENERAL_LEAVES.turnStartStrategy);
+                                setTurnStartStrategy(value);
+                            }}
                         >
                             <SelectTrigger id="turn_start_strategy">
                                 <SelectValue placeholder="Select strategy" />
@@ -730,7 +848,9 @@ function GeneralSection({
                                 value={turnStartMinWords}
                                 onChange={(e) => {
                                     const value = parseInt(e.target.value);
-                                    if (!isNaN(value) && value >= 1) setTurnStartMinWords(value);
+                                    if (isNaN(value) || value < 1) return;
+                                    unrevert(GENERAL_LEAVES.turnStartMinWords);
+                                    setTurnStartMinWords(value);
                                 }}
                             />
                             <p className="text-xs text-muted-foreground">
@@ -752,7 +872,9 @@ function GeneralSection({
                                 value={provisionalVadPauseSecs}
                                 onChange={(e) => {
                                     const value = parseFloat(e.target.value);
-                                    if (!isNaN(value) && value >= 0.1) setProvisionalVadPauseSecs(value);
+                                    if (isNaN(value) || value < 0.1) return;
+                                    unrevert(GENERAL_LEAVES.provisionalVadPauseSecs);
+                                    setProvisionalVadPauseSecs(value);
                                 }}
                             />
                             <p className="text-xs text-muted-foreground">
@@ -779,7 +901,10 @@ function GeneralSection({
                         <Switch
                             id="transcript-end-timestamps-enabled"
                             checked={includeTranscriptEndTimestamps}
-                            onCheckedChange={setIncludeTranscriptEndTimestamps}
+                            onCheckedChange={(checked) => {
+                                unrevert(GENERAL_LEAVES.transcriptEndTimestamps);
+                                setIncludeTranscriptEndTimestamps(checked);
+                            }}
                         />
                     </div>
                     <div className="rounded-md border bg-muted/20 p-3">
@@ -807,7 +932,10 @@ function GeneralSection({
                         <Switch
                             id="context-compaction-enabled"
                             checked={contextCompactionEnabled}
-                            onCheckedChange={setContextCompactionEnabled}
+                            onCheckedChange={(checked) => {
+                                unrevert(GENERAL_LEAVES.contextCompactionEnabled);
+                                setContextCompactionEnabled(checked);
+                            }}
                         />
                     </div>
                 </div>
@@ -816,7 +944,10 @@ function GeneralSection({
 
                 <CallDispositionEditor
                     rows={callDispositionRows}
-                    onChange={setCallDispositionRows}
+                    onChange={(rows) => {
+                        unrevert(GENERAL_LEAVES.callDispositions);
+                        setCallDispositionRows(rows);
+                    }}
                     defaultDispositions={defaultCallDispositions}
                 />
 
@@ -840,7 +971,9 @@ function GeneralSection({
                                 value={maxCallDuration}
                                 onChange={(e) => {
                                     const value = parseInt(e.target.value);
-                                    if (!isNaN(value) && value > 0) setMaxCallDuration(value);
+                                    if (isNaN(value) || value <= 0) return;
+                                    unrevert(GENERAL_LEAVES.maxCallDuration);
+                                    setMaxCallDuration(value);
                                 }}
                             />
                             <p className="text-xs text-muted-foreground">Default: 600 (10 minutes)</p>
@@ -856,7 +989,9 @@ function GeneralSection({
                                 value={maxUserIdleTimeout}
                                 onChange={(e) => {
                                     const value = parseInt(e.target.value);
-                                    if (!isNaN(value) && value > 0) setMaxUserIdleTimeout(value);
+                                    if (isNaN(value) || value <= 0) return;
+                                    unrevert(GENERAL_LEAVES.maxUserIdleTimeout);
+                                    setMaxUserIdleTimeout(value);
                                 }}
                             />
                             <p className="text-xs text-muted-foreground">Default: 10 seconds</p>
@@ -1152,23 +1287,29 @@ function TemplateVariablesSection({
 // ---------------------------------------------------------------------------
 
 function DictionarySection({
-    dictionary,
+    configuration,
     onSave,
 }: {
-    dictionary: string;
-    onSave: (dictionary: string) => Promise<void>;
+    configuration: WorkflowConfigurationState;
+    onSave: (patch: ConfigurationPatch, workflowName?: string) => Promise<void>;
 }) {
-    const [dictionaryValue, setDictionaryValue] = useState(dictionary);
+    const stored = configuration.effective.dictionary ?? "";
+    const [dictionaryValue, setDictionaryValue] = useState(stored);
+    const [pendingRevert, setPendingRevert] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
 
-    const isDirty = dictionaryValue !== dictionary;
+    const isDirty = pendingRevert || dictionaryValue !== stored;
 
     useUnsavedChanges("dictionary", isDirty);
 
     const handleSave = async () => {
         setIsSaving(true);
         try {
-            await onSave(dictionaryValue);
+            await onSave(
+                pendingRevert
+                    ? { set: [], unset: [["dictionary"]] }
+                    : { set: [{ path: ["dictionary"], value: dictionaryValue }], unset: [] },
+            );
             toast.success(`Dictionary saved. ${PUBLISH_WORKFLOW_REMINDER}`);
         } catch (error) {
             console.error("Failed to save dictionary:", error);
@@ -1193,7 +1334,10 @@ function DictionarySection({
                 <Textarea
                     placeholder="Enter words separated by comma (e.g. billing department, tretinoin)"
                     value={dictionaryValue}
-                    onChange={(e) => setDictionaryValue(e.target.value)}
+                    onChange={(e) => {
+                        setPendingRevert(false);
+                        setDictionaryValue(e.target.value);
+                    }}
                     rows={4}
                     className="resize-none"
                 />
@@ -1213,17 +1357,16 @@ function DictionarySection({
 // ---------------------------------------------------------------------------
 
 function VoicemailSection({
-    workflowConfigurations,
-    workflowName,
+    configuration,
     onSave,
 }: {
-    workflowConfigurations: WorkflowConfigurations;
-    workflowName: string;
-    onSave: (configurations: WorkflowConfigurations, workflowName: string) => Promise<void>;
+    configuration: WorkflowConfigurationState;
+    onSave: (patch: ConfigurationPatch, workflowName?: string) => Promise<void>;
 }) {
+    const voicemailDetection = configuration.effective.voicemail_detection;
     const getConfig = (): VoicemailDetectionConfiguration => ({
         ...DEFAULT_VOICEMAIL_DETECTION_CONFIGURATION,
-        ...workflowConfigurations.voicemail_detection,
+        ...voicemailDetection,
     });
 
     const [enabled, setEnabled] = useState(getConfig().enabled);
@@ -1233,14 +1376,17 @@ function VoicemailSection({
     const [apiKey, setApiKey] = useState(getConfig().api_key || "");
     const [systemPrompt, setSystemPrompt] = useState(getConfig().system_prompt || DEFAULT_VOICEMAIL_SYSTEM_PROMPT);
     const [longSpeechTimeout, setLongSpeechTimeout] = useState(getConfig().long_speech_timeout);
+    // Set ⇒ the save drops the workflow's own voicemail block and inherits again.
+    const [pendingRevert, setPendingRevert] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
 
     const isDirty = useMemo(() => {
         const init = {
             ...DEFAULT_VOICEMAIL_DETECTION_CONFIGURATION,
-            ...workflowConfigurations.voicemail_detection,
+            ...voicemailDetection,
         };
         return (
+            pendingRevert ||
             enabled !== init.enabled ||
             useWorkflowLlm !== init.use_workflow_llm ||
             provider !== (init.provider || "openai") ||
@@ -1249,9 +1395,15 @@ function VoicemailSection({
             systemPrompt !== (init.system_prompt || DEFAULT_VOICEMAIL_SYSTEM_PROMPT) ||
             longSpeechTimeout !== init.long_speech_timeout
         );
-    }, [enabled, useWorkflowLlm, provider, model, apiKey, systemPrompt, longSpeechTimeout, workflowConfigurations]);
+    }, [pendingRevert, enabled, useWorkflowLlm, provider, model, apiKey, systemPrompt, longSpeechTimeout, voicemailDetection]);
 
     useUnsavedChanges("voicemail", isDirty);
+
+    // The whole block is one leaf, so any edit cancels a pending revert.
+    const edit = <T,>(setter: (value: T) => void) => (value: T) => {
+        setPendingRevert(false);
+        setter(value);
+    };
 
     const handleSave = async () => {
         setIsSaving(true);
@@ -1267,8 +1419,9 @@ function VoicemailSection({
                 long_speech_timeout: longSpeechTimeout,
             };
             await onSave(
-                { ...workflowConfigurations, voicemail_detection: voicemailConfig },
-                workflowName,
+                pendingRevert
+                    ? { set: [], unset: [["voicemail_detection"]] }
+                    : { set: [{ path: ["voicemail_detection"], value: voicemailConfig }], unset: [] },
             );
             toast.success(`Voicemail settings saved. ${PUBLISH_WORKFLOW_REMINDER}`);
         } catch (error) {
@@ -1291,7 +1444,7 @@ function VoicemailSection({
             </CardHeader>
             <CardContent className="space-y-4">
                 <div className="flex items-center space-x-2 rounded-md border bg-muted/20 p-2">
-                    <Switch id="voicemail-enabled" checked={enabled} onCheckedChange={setEnabled} />
+                    <Switch id="voicemail-enabled" checked={enabled} onCheckedChange={edit(setEnabled)} />
                     <Label htmlFor="voicemail-enabled">Enable Voicemail Detection</Label>
                 </div>
 
@@ -1303,7 +1456,7 @@ function VoicemailSection({
                                 <Switch
                                     id="voicemail-use-workflow-llm"
                                     checked={useWorkflowLlm}
-                                    onCheckedChange={setUseWorkflowLlm}
+                                    onCheckedChange={edit(setUseWorkflowLlm)}
                                 />
                                 <Label htmlFor="voicemail-use-workflow-llm">Use Workflow LLM</Label>
                                 <Label className="ml-2 text-xs text-muted-foreground">
@@ -1314,11 +1467,11 @@ function VoicemailSection({
                             {!useWorkflowLlm && (
                                 <LLMConfigSelector
                                     provider={provider}
-                                    onProviderChange={setProvider}
+                                    onProviderChange={edit(setProvider)}
                                     model={model}
-                                    onModelChange={setModel}
+                                    onModelChange={edit(setModel)}
                                     apiKey={apiKey}
-                                    onApiKeyChange={setApiKey}
+                                    onApiKeyChange={edit(setApiKey)}
                                 />
                             )}
                         </div>
@@ -1331,7 +1484,7 @@ function VoicemailSection({
                             </p>
                             <Textarea
                                 value={systemPrompt}
-                                onChange={(e) => setSystemPrompt(e.target.value)}
+                                onChange={(e) => edit(setSystemPrompt)(e.target.value)}
                                 className="min-h-[200px] font-mono text-xs"
                             />
                         </div>
@@ -1350,7 +1503,7 @@ function VoicemailSection({
                                     min="1"
                                     max="30"
                                     value={longSpeechTimeout}
-                                    onChange={(e) => setLongSpeechTimeout(parseFloat(e.target.value) || 8.0)}
+                                    onChange={(e) => edit(setLongSpeechTimeout)(parseFloat(e.target.value) || 8.0)}
                                 />
                             </div>
                         </div>
@@ -1418,16 +1571,8 @@ function AgentUuidSection({ workflowUuid }: { workflowUuid: string }) {
 // Section: Model Overrides
 // ---------------------------------------------------------------------------
 
-function withoutModelConfigurationOverrides(configurations: WorkflowConfigurations): WorkflowConfigurations {
-    const next = { ...configurations };
-    delete next.model_overrides;
-    delete next.model_configuration_v2_override;
-    return next;
-}
-
 function WorkflowModelOverridesSection({
-    workflowConfigurations,
-    workflowName,
+    configuration,
     onSave,
     modelConfigurationDefaults,
     organizationModelConfiguration,
@@ -1435,37 +1580,43 @@ function WorkflowModelOverridesSection({
     modelConfigurationLoading,
     modelConfigurationError,
 }: {
-    workflowConfigurations: WorkflowConfigurations;
-    workflowName: string;
-    onSave: (configurations: WorkflowConfigurations, workflowName: string) => Promise<void>;
+    configuration: WorkflowConfigurationState;
+    onSave: (patch: ConfigurationPatch, workflowName?: string) => Promise<void>;
     modelConfigurationDefaults: ModelConfigurationDefaultsV2 | null;
     organizationModelConfiguration: OrganizationAiModelConfigurationResponse | null;
     modelConfigurationPricing: ModelConfigurationPricingResponse | null;
     modelConfigurationLoading: boolean;
     modelConfigurationError: string | null;
 }) {
-    const savedV2Override = workflowConfigurations.model_configuration_v2_override;
-    const hasSavedModelOverride = Boolean(savedV2Override || workflowConfigurations.model_overrides);
+    // Read from `own`: model overrides never cascade from the organization, so
+    // `own` is the honest answer to "does this workflow override the models?".
+    const savedV2Override = configuration.own.model_configuration_v2_override as
+        OrganizationAiModelConfigurationV2 | undefined;
+    const hasSavedModelOverride = Boolean(savedV2Override || configuration.own.model_overrides);
     const [overrideEnabled, setOverrideEnabled] = useState(Boolean(savedV2Override));
     const [isRemovingOverride, setIsRemovingOverride] = useState(false);
 
     useEffect(() => {
-        setOverrideEnabled(Boolean(workflowConfigurations.model_configuration_v2_override));
-    }, [workflowConfigurations.model_configuration_v2_override]);
+        setOverrideEnabled(Boolean(configuration.own.model_configuration_v2_override));
+    }, [configuration.own.model_configuration_v2_override]);
 
     const hasOrgConfiguration = organizationModelConfiguration?.source === "organization_v2";
 
-    const saveV2Override = async (configuration: OrganizationAiModelConfigurationV2) => {
-        const nextConfigurations = withoutModelConfigurationOverrides(workflowConfigurations);
-        nextConfigurations.model_configuration_v2_override = configuration;
-        await onSave(nextConfigurations, workflowName);
+    const saveV2Override = async (modelConfiguration: OrganizationAiModelConfigurationV2) => {
+        await onSave({
+            set: [{ path: ["model_configuration_v2_override"], value: modelConfiguration }],
+            unset: [["model_overrides"]],
+        });
         toast.success(`Model override saved. ${PUBLISH_WORKFLOW_REMINDER}`);
     };
 
     const removeV2Override = async () => {
         setIsRemovingOverride(true);
         try {
-            await onSave(withoutModelConfigurationOverrides(workflowConfigurations), workflowName);
+            await onSave({
+                set: [],
+                unset: [["model_configuration_v2_override"], ["model_overrides"]],
+            });
             setOverrideEnabled(false);
             toast.success(`Organization model configuration saved. ${PUBLISH_WORKFLOW_REMINDER}`);
         } finally {
@@ -1680,37 +1831,35 @@ function WorkflowSettingsInner({
         [workflow],
     );
 
-    const initialWorkflowConfigurations = useMemo(
-        () => (
-            workflow.workflow_configurations
-                ? (workflow.workflow_configurations as WorkflowConfigurations)
-                : undefined
-        ),
-        [workflow],
-    );
-
     const {
         workflowName,
-        workflowConfigurations,
+        configurationState,
+        configurationLoadError,
+        reloadConfiguration,
         defaultCallDispositions,
         textChatInactivityTimeoutConstraints,
         widgetTextDefaults,
         templateContextVariables,
-        dictionary,
         saveWorkflowConfigurations,
         saveTemplateContextVariables,
-        saveDictionary,
     } = useWorkflowState({
         initialWorkflowName: workflow.name,
         workflowId,
         initialFlow,
         initialTemplateContextVariables,
-        initialWorkflowConfigurations,
         user,
     });
-    const resolvedWorkflowConfigurationsForRender = workflowConfigurations
-        ? resolveWorkflowConfigurations(workflowConfigurations)
-        : null;
+
+    // Each successful load hands down a fresh `configurationState` object. The
+    // sections seed their local state from it once, so bump a key to remount
+    // them on every load instead of leaving stale values on screen.
+    const [configurationVersion, setConfigurationVersion] = useState(0);
+    const lastConfigurationState = useRef(configurationState);
+    useEffect(() => {
+        if (lastConfigurationState.current === configurationState) return;
+        lastConfigurationState.current = configurationState;
+        setConfigurationVersion((version) => version + 1);
+    }, [configurationState]);
 
     useEffect(() => {
         if (hasFetchedModelConfiguration.current) return;
@@ -1787,11 +1936,29 @@ function WorkflowSettingsInner({
             <div className="mx-auto flex max-w-5xl gap-8 px-6 py-8">
                 {/* Sections */}
                 <div className="min-w-0 flex-1 space-y-8">
-                    {resolvedWorkflowConfigurationsForRender && (
+                    {configurationLoadError && (
+                        <Card id="configuration-error">
+                            <CardHeader>
+                                <CardTitle className="text-base">Settings unavailable</CardTitle>
+                                <CardDescription>{configurationLoadError}</CardDescription>
+                            </CardHeader>
+                            <CardFooter>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={() => { void reloadConfiguration(); }}
+                                >
+                                    Retry
+                                </Button>
+                            </CardFooter>
+                        </Card>
+                    )}
+                    {configurationState && (
                         <>
                             {/* General */}
                             <GeneralSection
-                                workflowConfigurations={resolvedWorkflowConfigurationsForRender}
+                                key={configurationVersion}
+                                configuration={configurationState}
                                 defaultCallDispositions={defaultCallDispositions}
                                 workflowName={workflowName || workflow.name}
                                 workflowId={workflowId}
@@ -1799,8 +1966,8 @@ function WorkflowSettingsInner({
                             />
 
                             <WorkflowModelOverridesSection
-                                workflowConfigurations={resolvedWorkflowConfigurationsForRender}
-                                workflowName={workflowName}
+                                key={`models-${configurationVersion}`}
+                                configuration={configurationState}
                                 onSave={saveWorkflowConfigurations}
                                 modelConfigurationDefaults={modelConfigurationDefaults}
                                 organizationModelConfiguration={organizationModelConfiguration}
@@ -1816,12 +1983,16 @@ function WorkflowSettingsInner({
                             />
 
                             {/* Dictionary */}
-                            <DictionarySection dictionary={dictionary} onSave={saveDictionary} />
+                            <DictionarySection
+                                key={`dictionary-${configurationVersion}`}
+                                configuration={configurationState}
+                                onSave={saveWorkflowConfigurations}
+                            />
 
                             {/* Voicemail Detection */}
                             <VoicemailSection
-                                workflowConfigurations={resolvedWorkflowConfigurationsForRender}
-                                workflowName={workflowName}
+                                key={`voicemail-${configurationVersion}`}
+                                configuration={configurationState}
                                 onSave={saveWorkflowConfigurations}
                             />
 
@@ -1905,13 +2076,13 @@ function WorkflowSettingsInner({
             </div>
 
             {/* Dialogs for complex sections */}
-            {resolvedWorkflowConfigurationsForRender && (
+            {configurationState && (
                 <EmbedDialog
                     open={isEmbedDialogOpen}
                     onOpenChange={setIsEmbedDialogOpen}
                     workflowId={workflowId}
                     workflowName={workflowName || workflow.name}
-                    workflowConfigurations={resolvedWorkflowConfigurationsForRender}
+                    configuration={configurationState}
                     textChatInactivityTimeoutConstraints={textChatInactivityTimeoutConstraints}
                     widgetTextDefaults={widgetTextDefaults}
                     onSaveWorkflowConfigurations={saveWorkflowConfigurations}

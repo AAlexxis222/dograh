@@ -36,19 +36,20 @@ import { WIDGET_CONTEXT_DOC_URL, WIDGET_MODE_DOCUMENTATION_URLS } from "@/consta
 import { HEADLESS_CHAT_EXAMPLE } from "@/constants/embedExamples";
 import { detailFromError } from "@/lib/apiError";
 import { copyTextToClipboard } from "@/lib/clipboard";
-import type { WorkflowConfigurations } from "@/types/workflow-configurations";
+import type { ConfigurationPatch } from "@/lib/workflowConfigurationLeaves";
+import type { WorkflowConfigurationState } from "@/types/workflow-configurations";
 
 interface EmbedDialogProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     workflowId: number;
     workflowName: string;
-    workflowConfigurations: WorkflowConfigurations;
+    configuration: WorkflowConfigurationState;
     textChatInactivityTimeoutConstraints: TextChatInactivityTimeoutConstraints | null;
     widgetTextDefaults: WidgetTexts | null;
     onSaveWorkflowConfigurations: (
-        configurations: WorkflowConfigurations,
-        workflowName: string,
+        patch: ConfigurationPatch,
+        workflowName?: string,
     ) => Promise<void>;
 }
 
@@ -209,7 +210,7 @@ export function EmbedDialog({
     onOpenChange,
     workflowId,
     workflowName,
-    workflowConfigurations,
+    configuration,
     textChatInactivityTimeoutConstraints,
     widgetTextDefaults,
     onSaveWorkflowConfigurations,
@@ -233,7 +234,7 @@ export function EmbedDialog({
     // saves as) the backend default.
     const [widgetTexts, setWidgetTexts] = useState<Partial<Record<WidgetTextKey, string>>>({});
     const configuredTextChatInactivitySeconds =
-        workflowConfigurations.text_chat_inactivity_timeout_seconds
+        configuration.effective.text_chat_inactivity_timeout_seconds
         ?? textChatInactivityTimeoutConstraints?.default_seconds;
     const [textChatInactivityMinutes, setTextChatInactivityMinutes] = useState(() =>
         configuredTextChatInactivitySeconds === undefined
@@ -343,14 +344,19 @@ export function EmbedDialog({
 
         setSaving(true);
         try {
-            if (isEnabled && widgetType === "chat") {
-                await onSaveWorkflowConfigurations(
-                    {
-                        ...workflowConfigurations,
-                        text_chat_inactivity_timeout_seconds: parsedTextChatInactivitySeconds,
-                    },
-                    workflowName,
-                );
+            // Only when the timeout actually changed: an unrelated widget save
+            // must not bake the inherited value into the workflow.
+            if (
+                isEnabled && widgetType === "chat"
+                && parsedTextChatInactivitySeconds !== configuredTextChatInactivitySeconds
+            ) {
+                await onSaveWorkflowConfigurations({
+                    set: [{
+                        path: ["text_chat_inactivity_timeout_seconds"],
+                        value: parsedTextChatInactivitySeconds,
+                    }],
+                    unset: [],
+                });
             }
 
             if (!isEnabled && embedToken) {
