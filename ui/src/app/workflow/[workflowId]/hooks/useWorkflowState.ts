@@ -189,32 +189,41 @@ export const useWorkflowState = ({
             setConfigurationState(null);
             setConfigurationLoadError(null);
         }
-        const [layers, envelope] = await Promise.all([
-            getWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGet({
-                path: { workflow_id: workflowId },
-            }),
-            getWorkflowConfigurationEffectiveDefaultsApiV1OrganizationsWorkflowConfigurationEffectiveDefaultsGet(),
-        ]);
-        if (seq !== loadSeq.current) return true;
-        if (layers.error || !layers.data) {
+        // Total: a throw resolves to `false` through the same seq guard as an
+        // `{error}` result, so callers never have to catch this.
+        try {
+            const [layers, envelope] = await Promise.all([
+                getWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGet({
+                    path: { workflow_id: workflowId },
+                }),
+                getWorkflowConfigurationEffectiveDefaultsApiV1OrganizationsWorkflowConfigurationEffectiveDefaultsGet(),
+            ]);
+            if (seq !== loadSeq.current) return true;
+            if (layers.error || !layers.data) {
+                setConfigurationState(null);
+                setConfigurationLoadError(detailFromError(layers.error, "Failed to load workflow configuration"));
+                return false;
+            }
+            if (envelope.error || !envelope.data) {
+                setConfigurationState(null);
+                setConfigurationLoadError(detailFromError(envelope.error, "Failed to load organization defaults"));
+                return false;
+            }
+            setConfigurationState(resolveWorkflowConfigurations(layers.data));
+            setDefaultCallDispositions(envelope.data.default_call_dispositions ?? []);
+            setTextChatInactivityTimeoutConstraints(envelope.data.text_chat_inactivity_timeout_constraints);
+            setWidgetTextDefaults(envelope.data.widget_text_defaults);
+            // Counts only, never the document.
+            if (layers.data.warnings?.length) {
+                logger.warn(`Workflow configuration warnings: ${layers.data.warnings.length}`);
+            }
+            return true;
+        } catch (error) {
+            if (seq !== loadSeq.current) return true;
             setConfigurationState(null);
-            setConfigurationLoadError(detailFromError(layers.error, "Failed to load workflow configuration"));
+            setConfigurationLoadError(String(error));
             return false;
         }
-        if (envelope.error || !envelope.data) {
-            setConfigurationState(null);
-            setConfigurationLoadError(detailFromError(envelope.error, "Failed to load organization defaults"));
-            return false;
-        }
-        setConfigurationState(resolveWorkflowConfigurations(layers.data));
-        setDefaultCallDispositions(envelope.data.default_call_dispositions ?? []);
-        setTextChatInactivityTimeoutConstraints(envelope.data.text_chat_inactivity_timeout_constraints);
-        setWidgetTextDefaults(envelope.data.widget_text_defaults);
-        // Counts only, never the document.
-        if (layers.data.warnings?.length) {
-            logger.warn(`Workflow configuration warnings: ${layers.data.warnings.length}`);
-        }
-        return true;
     }, [workflowId, setConfigurationState]);
 
     // Retry from the blocked editor: nothing is on screen to preserve.
@@ -224,14 +233,8 @@ export const useWorkflowState = ({
     );
 
     useEffect(() => {
-        let cancelled = false;
-        loadConfiguration({ reset: true }).catch((error) => {
-            if (cancelled) return;
-            setConfigurationState(null);
-            setConfigurationLoadError(String(error));
-        });
-        return () => { cancelled = true; };
-    }, [loadConfiguration, setConfigurationState]);
+        void loadConfiguration({ reset: true });
+    }, [loadConfiguration]);
 
     // Initialize the canvas on mount. Waits for the spec catalog so defaults
     // (allow_interrupt, prompt placeholders, etc.) come from one source; it

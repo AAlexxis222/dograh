@@ -86,6 +86,12 @@ import { InheritedBadge } from "./components/InheritedBadge";
 
 const PUBLISH_WORKFLOW_REMINDER = "Publish the agent to apply the changes.";
 
+// A section save rejects with an Error the hook built (a backend detail, or one
+// of the "not loaded" / "saved but reload failed" states); anything else is a
+// raw API error shape.
+const saveErrorMessage = (error: unknown, fallback: string): string =>
+    error instanceof Error && error.message ? error.message : detailFromError(error, fallback);
+
 // Remount key for one section: it changes only when the server values that
 // section reads change (its effective values and whether each leaf is its own),
 // so a save in one section never re-seeds another section's unsaved edits.
@@ -515,8 +521,8 @@ function GeneralSection({
     ]);
 
     const patch = useMemo(
-        () => buildConfigurationPatch(effective, leaves, reverted),
-        [effective, leaves, reverted],
+        () => buildConfigurationPatch(effective, configuration.own, leaves, reverted),
+        [effective, configuration.own, leaves, reverted],
     );
     const isDirty = name !== workflowName || !isPatchEmpty(patch);
 
@@ -574,11 +580,20 @@ function GeneralSection({
         }
     };
 
+    // Removing an audio the workflow does not store cannot unset anything: the
+    // organization's audio keeps playing, so the control shows it again instead
+    // of an empty state that contradicts what the agent does.
     const handleRemoveCustomAudio = () => {
         unrevertAmbientAudio();
+        const baseAmbient = hasPath(configuration.own, GENERAL_LEAVES.ambientStorageKey)
+            ? undefined
+            : base.ambient_noise_configuration;
         setAmbientNoiseConfig((prev) => ({
             enabled: prev.enabled,
             volume: prev.volume,
+            storage_key: baseAmbient?.storage_key,
+            storage_backend: baseAmbient?.storage_backend,
+            original_filename: baseAmbient?.original_filename,
         }));
     };
 
@@ -599,6 +614,7 @@ function GeneralSection({
             toast.success(`General settings saved. ${PUBLISH_WORKFLOW_REMINDER}`);
         } catch (error) {
             console.error("Failed to save general settings:", error);
+            toast.error(saveErrorMessage(error, "Failed to save general settings"));
         } finally {
             setIsSaving(false);
         }
@@ -1068,13 +1084,22 @@ function GeneralSection({
                             <Input
                                 id="user_turn_stop_timeout"
                                 type="number"
-                                min={0.1}
                                 step={0.1}
                                 placeholder="Platform default"
                                 value={userTurnStopTimeout ?? ""}
                                 onChange={(e) => {
                                     unrevert(GENERAL_LEAVES.userTurnStopTimeout);
-                                    setUserTurnStopTimeout(e.target.value === "" ? undefined : Number(e.target.value));
+                                    if (e.target.value !== "") {
+                                        setUserTurnStopTimeout(Number(e.target.value));
+                                        return;
+                                    }
+                                    // Emptying a leaf the workflow does not store cannot
+                                    // unset anything; show the inherited value instead.
+                                    setUserTurnStopTimeout(
+                                        hasPath(configuration.own, GENERAL_LEAVES.userTurnStopTimeout)
+                                            ? undefined
+                                            : getAtPath(base, GENERAL_LEAVES.userTurnStopTimeout) as number | undefined,
+                                    );
                                 }}
                             />
                             <p className="text-xs text-muted-foreground">
@@ -1411,6 +1436,7 @@ function DictionarySection({
             toast.success(`Dictionary saved. ${PUBLISH_WORKFLOW_REMINDER}`);
         } catch (error) {
             console.error("Failed to save dictionary:", error);
+            toast.error(saveErrorMessage(error, "Failed to save dictionary"));
         } finally {
             setIsSaving(false);
         }
@@ -1558,6 +1584,7 @@ function VoicemailSection({
             toast.success(`Voicemail settings saved. ${PUBLISH_WORKFLOW_REMINDER}`);
         } catch (error) {
             console.error("Failed to save voicemail settings:", error);
+            toast.error(saveErrorMessage(error, "Failed to save voicemail settings"));
         } finally {
             setIsSaving(false);
         }
