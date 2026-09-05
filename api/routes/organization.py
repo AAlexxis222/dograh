@@ -695,9 +695,19 @@ async def get_workflow_configuration_effective_defaults(
     resolved = await get_effective_organization_workflow_configuration_defaults(
         user.selected_organization_id
     )
-    payload = build_default_configurations_response(
-        WorkflowConfigurationDefaults.model_validate(resolved.effective)
-    )
+    try:
+        validated = WorkflowConfigurationDefaults.model_validate(resolved.effective)
+    except ValidationError as exc:
+        # A document stored before a schema change, or written around the PUT.
+        # The organization can still repair it, so this is the caller's error.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "stored organization defaults no longer validate against the "
+                "current schema; fix them via PUT"
+            ),
+        ) from exc
+    payload = build_default_configurations_response(validated)
     return {**payload, "warnings": resolved.warnings}
 
 

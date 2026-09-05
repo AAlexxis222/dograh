@@ -429,6 +429,8 @@ def test_init_without_runnable_definition_is_400(monkeypatch, _patch_db):
     )
 
     assert resp.status_code == 400
+    # Unauthenticated caller: the body must not name the definition.
+    assert resp.json()["detail"] == "Workflow has no runnable definition"
     assert _patch_db.created_runs == []
 
 
@@ -448,6 +450,11 @@ def test_init_with_foreign_definition_is_403(monkeypatch, _patch_db):
     )
 
     assert resp.status_code == 403
+    # The body must not confirm which organization owns the definition.
+    assert (
+        resp.json()["detail"]
+        == "Workflow definition is not available to this organization"
+    )
     assert _patch_db.created_runs == []
 
 

@@ -7,6 +7,7 @@ overrode it. Secrets, external-PBX keys and the AI-model sections are
 rejected on write — they have their own gates and their own cascade.
 """
 
+import json
 from dataclasses import replace
 
 from loguru import logger
@@ -26,6 +27,20 @@ from api.services.configuration.secrets_registry import (
 )
 
 _KEY = OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value
+
+# Key names this layer refuses on top of the registered secret leaves. The
+# organization document accepts unknown keys, so a credential can arrive under
+# any name; these are the names a credential is usually given.
+_REJECTED_SECRET_NAMES: tuple[str, ...] = (
+    "token",
+    "secret",
+    "password",
+    "api_keys",
+)
+
+# The document is one row of configuration, not a payload store. The cap keeps
+# a single organization from parking megabytes behind every configuration read.
+MAX_DOCUMENT_BYTES = 65536
 
 
 class OrganizationWorkflowConfigurationRejected(ValueError):
@@ -48,11 +63,16 @@ def validate_organization_workflow_configuration_document(document: dict) -> Non
         )
     # Any depth, registered or not: the document accepts unknown keys, so a
     # secret under an unknown section would be stored and read back in clear.
-    secrets = find_secret_named_paths(document)
+    secrets = find_secret_named_paths(document, extra_names=_REJECTED_SECRET_NAMES)
     if secrets:
         raise OrganizationWorkflowConfigurationRejected(
             "secrets are not allowed at organization level: "
             + ", ".join(".".join(path) for path in secrets)
+        )
+    size = len(json.dumps(document).encode("utf-8"))
+    if size > MAX_DOCUMENT_BYTES:
+        raise OrganizationWorkflowConfigurationRejected(
+            f"document is {size} bytes, over the {MAX_DOCUMENT_BYTES} byte limit"
         )
 
 
