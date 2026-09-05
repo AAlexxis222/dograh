@@ -1743,8 +1743,6 @@ function WorkflowModelOverridesSection({
     );
 }
 
-const EMBED_LEAVES: readonly LeafPath[] = [["text_chat_inactivity_timeout_seconds"]];
-
 // ---------------------------------------------------------------------------
 // Main Page
 // ---------------------------------------------------------------------------
@@ -2088,10 +2086,11 @@ function WorkflowSettingsInner({
                 </nav>
             </div>
 
-            {/* Dialogs for complex sections */}
+            {/* Dialogs for complex sections. No remount key on the dialog: it
+                must survive its own save, and its `open` effect re-seeds the
+                timeout from the new layers. */}
             {configurationState && (
                 <EmbedDialog
-                    key={sectionKey(configurationState, EMBED_LEAVES)}
                     open={isEmbedDialogOpen}
                     onOpenChange={setIsEmbedDialogOpen}
                     workflowId={workflowId}
