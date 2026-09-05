@@ -122,9 +122,16 @@ async def handle_workflow_definition_missing(
     _request: Request,
     exc: WorkflowDefinitionMissingError,
 ) -> JSONResponse:
-    """A run cannot start without a definition to bind its configuration to."""
+    """A run cannot start without a definition to bind its configuration to.
 
-    return JSONResponse(status_code=400, content={"detail": str(exc)})
+    Some of these callers are unauthenticated (the public embed), so the body
+    says what happened and the identifiers stay in the log.
+    """
+
+    logger.warning("workflow definition missing: {}", exc)
+    return JSONResponse(
+        status_code=400, content={"detail": "Workflow has no runnable definition"}
+    )
 
 
 @app.exception_handler(WorkflowDefinitionNotVisibleError)
@@ -132,9 +139,14 @@ async def handle_workflow_definition_not_visible(
     _request: Request,
     exc: WorkflowDefinitionNotVisibleError,
 ) -> JSONResponse:
-    """The definition belongs to another tenant."""
+    """The definition belongs to another tenant; the body must not confirm
+    which organization owns it."""
 
-    return JSONResponse(status_code=403, content={"detail": str(exc)})
+    logger.warning("workflow definition not visible: {}", exc)
+    return JSONResponse(
+        status_code=403,
+        content={"detail": "Workflow definition is not available to this organization"},
+    )
 
 
 # Configure CORS.

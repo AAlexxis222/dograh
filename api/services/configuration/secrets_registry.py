@@ -95,15 +95,52 @@ def find_secret_paths(document: dict[str, Any] | None) -> list[tuple[str, ...]]:
     return _find_non_empty(document, SECRET_PATHS)
 
 
-def find_secret_named_paths(document: dict[str, Any] | None) -> list[tuple[str, ...]]:
+def normalize_secret_name(name: str) -> str:
+    """Comparison form of a key name: case, whitespace and word separators
+    dropped, so ``apiKey``, ``API_KEY``, ``Api-Key`` and ``api_key `` are one
+    name. Callers that reject secret-named keys must compare in this form —
+    a JSON document can spell a key however its writer likes."""
+    return "".join(name.split()).casefold().replace("_", "").replace("-", "")
+
+
+def _iter_named_leaves(
+    node: Any, names: frozenset[str], path: tuple[str, ...]
+) -> Iterator[tuple[tuple[str, ...], Any]]:
+    """Yield ``(path, value)`` for every key under ``node`` whose normalised
+    name is in ``names``, at any depth, broadcasting over lists."""
+    if isinstance(node, list):
+        for item in node:
+            yield from _iter_named_leaves(item, names, path)
+        return
+    if not isinstance(node, dict):
+        return
+    for key, child in node.items():
+        if isinstance(key, str) and normalize_secret_name(key) in names:
+            yield (path + (key,), child)
+        yield from _iter_named_leaves(child, names, path + (key,))
+
+
+def find_secret_named_paths(
+    document: dict[str, Any] | None, *, extra_names: tuple[str, ...] = ()
+) -> list[tuple[str, ...]]:
     """Paths of non-empty values held by a secret-named key at any depth,
     registered or not. A document that accepts unknown keys can hide a secret
     under a section this registry has never heard of, and masking would then
     return it in clear; the writer that rejects secrets must use this walk
-    rather than the registered paths. Every registered path ends in one of
+    rather than the registered paths. Names are compared normalised, and
+    ``extra_names`` adds names a specific writer refuses on top of
+    ``SECRET_LEAF_NAMES``. Every registered path ends in one of
     ``SECRET_LEAF_NAMES``, so this result is a superset of
     ``find_secret_paths``."""
-    return _find_non_empty(document, tuple(("**", leaf) for leaf in SECRET_LEAF_NAMES))
+    names = frozenset(
+        normalize_secret_name(name) for name in SECRET_LEAF_NAMES + extra_names
+    )
+    found = [
+        path
+        for path, value in _iter_named_leaves(document, names, ())
+        if value not in (None, "", [], {})
+    ]
+    return sorted(set(found))
 
 
 def mask_secrets(document: dict[str, Any] | None) -> dict[str, Any] | None:

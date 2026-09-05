@@ -81,6 +81,16 @@ async def test_org_base_change_propagates_to_existing_workflow(
         {"external_pbx_lead_headers": ["first_name"]},
         {"model_configuration_v2_override": {}},
         {"max_call_duration": 99999},
+        # A credential is rejected however its key is spelled, and under any of
+        # the names one is usually given.
+        {"my_integration": {"apiKey": "sk-secret"}},
+        {"my_integration": {"API_KEY": "sk-secret"}},
+        {"my_integration": {"Api-Key": "sk-secret"}},
+        {"my_integration": {"api_key ": "sk-secret"}},
+        {"my_integration": {"password": "hunter2"}},
+        {"my_integration": {"token": "t-secret"}},
+        {"my_integration": {"secret": "s-secret"}},
+        {"my_integration": {"apiKeys": ["sk-secret"]}},
     ],
 )
 async def test_org_defaults_reject_secrets_pbx_and_model_keys(
@@ -155,3 +165,33 @@ async def test_disposition_codes_include_org_base_catalog(
     async with test_client_factory(user) as client:
         response = await client.get("/api/v1/organizations/disposition-codes")
     assert "house_code" in response.json()["codes"]
+
+
+async def test_org_defaults_reject_an_oversized_document(test_client_factory, org_user):
+    """The base is one configuration row, not a payload store."""
+    _, user = org_user
+    async with test_client_factory(user) as client:
+        response = await client.put(
+            "/api/v1/organizations/workflow-configuration-defaults",
+            json={"dictionary": "x" * 70000},
+        )
+    assert response.status_code == 422, response.text
+
+
+async def test_effective_defaults_report_422_when_the_stored_document_is_invalid(
+    test_client_factory, db_session, org_user
+):
+    """A document written around the PUT (or by an older schema) must not turn
+    every read of the effective base into a 500."""
+    org, user = org_user
+    await db_session.upsert_configuration(
+        org.id,
+        OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value,
+        {"max_call_duration": "not-a-number"},
+    )
+    async with test_client_factory(user) as client:
+        response = await client.get(
+            "/api/v1/organizations/workflow-configuration-effective-defaults"
+        )
+    assert response.status_code == 422, response.text
+    assert "no longer validate" in response.json()["detail"]
