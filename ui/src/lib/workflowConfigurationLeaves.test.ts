@@ -87,8 +87,10 @@ describe("buildConfigurationPatch", () => {
         call_dispositions: [{ code: "a", description: "A" }],
     };
 
+    const own = { ambient_noise_configuration: { storage_key: "k" } };
+
     it("emits set only for leaves whose local value differs from the effective one", () => {
-        const patch = buildConfigurationPatch(effective, [
+        const patch = buildConfigurationPatch(effective, own, [
             { path: ["max_call_duration"], value: 300 },
             { path: ["dictionary"], value: "cats" },
             { path: ["call_dispositions"], value: [{ code: "a", description: "A" }] },
@@ -97,23 +99,32 @@ describe("buildConfigurationPatch", () => {
     });
 
     it("emits unset for reverted leaves even when the local value equals the effective one (D-7: revert is explicit)", () => {
-        const patch = buildConfigurationPatch(effective, [
+        const patch = buildConfigurationPatch(effective, own, [
             { path: ["max_call_duration"], value: 300 },
         ], new Set([leafKey(["max_call_duration"])]));
         expect(patch).toEqual({ set: [], unset: [["max_call_duration"]] });
     });
 
-    it("treats an undefined local value as unset only when the effective document has the leaf", () => {
-        const patch = buildConfigurationPatch(effective, [
+    it("treats an undefined local value as unset only when the own document has the leaf", () => {
+        const patch = buildConfigurationPatch(effective, own, [
             { path: ["ambient_noise_configuration", "storage_key"], value: undefined },
             { path: ["user_turn_stop_timeout"], value: undefined },
         ], new Set());
         expect(patch).toEqual({ set: [], unset: [["ambient_noise_configuration", "storage_key"]] });
     });
 
+    it("emits nothing for an undefined local value on a leaf the workflow inherits", () => {
+        // The leaf lives in `effective` (the organization sets it) but not in
+        // `own`: an `unset` would be a server-side no-op and keep the section dirty.
+        const patch = buildConfigurationPatch(effective, {}, [
+            { path: ["ambient_noise_configuration", "storage_key"], value: undefined },
+        ], new Set());
+        expect(patch).toEqual({ set: [], unset: [] });
+    });
+
     it("keeps a value equal to the base as an explicit set when the user changed it back (D-7)", () => {
         // effective shows 600 (own), user types 300 (= base): that is a deliberate own value, not a revert.
-        const patch = buildConfigurationPatch({ ...effective, max_call_duration: 600 }, [
+        const patch = buildConfigurationPatch({ ...effective, max_call_duration: 600 }, { max_call_duration: 600 }, [
             { path: ["max_call_duration"], value: 300 },
         ], new Set());
         expect(patch).toEqual({ set: [{ path: ["max_call_duration"], value: 300 }], unset: [] });

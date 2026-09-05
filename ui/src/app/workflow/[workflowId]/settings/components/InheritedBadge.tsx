@@ -17,8 +17,15 @@ export interface InheritedBadgeProps {
     formatBase?: (value: unknown) => string;
 }
 
-const defaultFormatBase = (value: unknown): string =>
-    typeof value === "object" && value !== null ? JSON.stringify(value) : String(value);
+// A long inherited value (an organization dictionary, say) would push the revert
+// link off the row, so the label carries a readable head of it.
+const MAX_BASE_LABEL_LENGTH = 40;
+
+const defaultFormatBase = (value: unknown): string => {
+    if (typeof value === "object" && value !== null) return JSON.stringify(value);
+    const text = String(value);
+    return text.length > MAX_BASE_LABEL_LENGTH ? `${text.slice(0, MAX_BASE_LABEL_LENGTH)}…` : text;
+};
 
 /**
  * Says whether a setting comes from the organization or from this workflow, and

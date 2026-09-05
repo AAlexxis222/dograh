@@ -212,6 +212,35 @@ describe("useWorkflowState configuration provenance", () => {
         expect(result.current.configurationLoadError).not.toBeNull();
     });
 
+    it("leaves own untouched when the PUT fails and does not block the next save", async () => {
+        const { result } = renderState();
+        await waitFor(() => expect(result.current.configurationState).not.toBeNull());
+        mocks.updateWorkflow.mockResolvedValueOnce({ error: { detail: "nope" } });
+        await expect(result.current.saveWorkflowConfigurations(
+            { set: [{ path: ["max_call_duration"], value: 900 }], unset: [] },
+        )).rejects.toThrow(/nope/);
+        expect(result.current.configurationState?.own).toEqual({ dictionary: "mine" });
+        // The chain is not poisoned: the next save runs and builds on the same own.
+        mocks.getEffective.mockResolvedValueOnce({
+            data: { ...effectiveResponse, own: { dictionary: "second" } },
+        });
+        await act(() => result.current.saveWorkflowConfigurations(
+            { set: [{ path: ["dictionary"], value: "second" }], unset: [] },
+        ));
+        expect(mocks.updateWorkflow.mock.calls[1][0].body.workflow_configurations)
+            .toEqual({ dictionary: "second" });
+        expect(result.current.configurationState?.own).toEqual({ dictionary: "second" });
+    });
+
+    it("sends a name-only body when the patch is empty and only the name changed", async () => {
+        const { result } = renderState();
+        await waitFor(() => expect(result.current.configurationState).not.toBeNull());
+        await act(() => result.current.saveWorkflowConfigurations({ set: [], unset: [] }, "Renamed"));
+        expect(mocks.updateWorkflow.mock.calls[0][0].body)
+            .toEqual({ name: "Renamed", workflow_definition: null });
+        expect(useWorkflowStore.getState().workflowName).toBe("Renamed");
+    });
+
     it("refuses to save before the layers are loaded", async () => {
         mocks.getEffective.mockResolvedValueOnce({ error: { detail: "boom" } });
         const { result } = renderState();

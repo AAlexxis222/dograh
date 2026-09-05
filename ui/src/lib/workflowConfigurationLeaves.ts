@@ -94,9 +94,14 @@ export const applyConfigurationPatch = (own: SparseDocument, patch: Configuratio
  * leaves explicitly returned to the base (`unset`). Untouched leaves stay
  * whatever they were in `own`, so an own value equal to the base remains own
  * (D-7) and an inherited one stays inherited.
+ *
+ * An emptied control only produces an `unset` when the workflow actually stores
+ * that leaf: unsetting an inherited leaf is a no-op on the server, so emitting
+ * it would leave the section permanently dirty and re-PUT an unchanged document.
  */
 export const buildConfigurationPatch = (
     effective: unknown,
+    own: unknown,
     leaves: Array<{ path: LeafPath; value: unknown }>,
     reverted: ReadonlySet<string>,
 ): ConfigurationPatch => {
@@ -105,7 +110,7 @@ export const buildConfigurationPatch = (
         if (reverted.has(leafKey(path))) {
             patch.unset.push(path);
         } else if (value === undefined) {
-            if (hasPath(effective, path)) patch.unset.push(path);
+            if (hasPath(own, path)) patch.unset.push(path);
         } else if (!isDeepEqual(value, getAtPath(effective, path))) {
             patch.set.push({ path, value });
         }
