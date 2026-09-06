@@ -1,10 +1,12 @@
+from collections.abc import Callable
 from dataclasses import replace
 from functools import wraps
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode, urlparse, urlunparse
 
 import aiohttp
 from fastapi import HTTPException
+from google.genai.types import ProactivityConfig, ThinkingConfig
 from loguru import logger
 
 from api.constants import MPS_API_URL
@@ -23,6 +25,21 @@ from api.services.pipecat.gemini_json_schema_adapter import (
     DograhGeminiJSONSchemaAdapter,
 )
 from api.services.pipecat.minimax_tts import MiniMaxOwnedSessionTTSService
+
+# Module level, unlike the rest of the realtime module's contents, so the
+# branches below name the service class the way every other branch in this
+# file does — and so a test can patch one.
+from api.services.pipecat.realtime.azure_realtime import DograhAzureRealtimeLLMService
+from api.services.pipecat.realtime.gemini_live import DograhGeminiLiveLLMService
+from api.services.pipecat.realtime.gemini_live_vertex import (
+    DograhGeminiLiveVertexLLMService,
+)
+from api.services.pipecat.realtime.grok_realtime import DograhGrokRealtimeLLMService
+from api.services.pipecat.realtime.openai_realtime import DograhOpenAIRealtimeLLMService
+from api.services.pipecat.realtime.ultravox_realtime import (
+    DograhUltravoxOneShotInputParams,
+    DograhUltravoxRealtimeLLMService,
+)
 from api.services.pipecat.service_tuning import (
     ALL,
     LLMRole,
@@ -36,6 +53,7 @@ from api.utils.url_security import validate_user_configured_service_url
 from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAISTTSettings
 from pipecat.services.aws.llm import AWSBedrockLLMService, AWSBedrockLLMSettings
 from pipecat.services.azure.llm import AzureLLMService, AzureLLMSettings
+from pipecat.services.azure.realtime.llm import AzureRealtimeLLMSettings
 from pipecat.services.azure.stt import AzureSTTService, AzureSTTSettings
 from pipecat.services.azure.tts import AzureTTSService, AzureTTSSettings
 from pipecat.services.cartesia.stt import CartesiaSTTService, CartesiaSTTSettings
@@ -65,6 +83,11 @@ from pipecat.services.elevenlabs.stt import (
 )
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService, ElevenLabsTTSSettings
 from pipecat.services.gladia.stt import GladiaSTTService, GladiaSTTSettings
+from pipecat.services.google.gemini_live.llm import (
+    ContextWindowCompressionParams,
+    GeminiLiveLLMSettings,
+)
+from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMSettings
 from pipecat.services.google.llm import GoogleLLMService, GoogleLLMSettings
 from pipecat.services.google.stt import GoogleSTTService, GoogleSTTSettings
 from pipecat.services.google.tts import GoogleTTSService, GoogleTTSSettings
@@ -88,7 +111,11 @@ from pipecat.services.minimax.tts import MiniMaxTTSSettings
 from pipecat.services.openai._constants import OPENAI_SAMPLE_RATE
 from pipecat.services.openai.base_llm import OpenAILLMSettings
 from pipecat.services.openai.llm import OpenAILLMService
+from pipecat.services.openai.realtime.events import InputAudioNoiseReduction, Reasoning
+from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMSettings
 from pipecat.services.openai.stt import (
+    OpenAIRealtimeSTTService,
+    OpenAIRealtimeSTTSettings,
     OpenAISTTService,
     OpenAISTTSettings,
 )
@@ -107,6 +134,8 @@ from pipecat.services.speechmatics.stt import (
     SpeechmaticsSTTService,
     SpeechmaticsSTTSettings,
 )
+from pipecat.services.ultravox.llm import UltravoxRealtimeLLMSettings
+from pipecat.services.xai.realtime.llm import GrokRealtimeLLMSettings
 from pipecat.services.xai.tts import XAITTSService, XAIWebsocketTTSSettings
 from pipecat.transcriptions.language import Language
 from pipecat.utils.text.xml_function_tag_filter import XMLFunctionTagFilter
@@ -380,6 +409,22 @@ def create_stt_service(
         if base_url:
             _validate_runtime_service_url(base_url, "base_url")
             kwargs["base_url"] = base_url
+        if plan.options.get("api") == "realtime":
+            # A different service and wire protocol behind the same provider:
+            # the Realtime API in transcription-only mode, over a websocket.
+            # ``turn_detection=False`` is passed explicitly rather than left to
+            # the constructor default: server-side turns would make the service
+            # broadcast its own user-turn frames while the pipeline still runs
+            # local VAD, and who owns the turn is the turn PR's subject.
+            return OpenAIRealtimeSTTService(
+                api_key=user_config.stt.api_key,
+                settings=build_settings(
+                    OpenAIRealtimeSTTSettings, {"model": user_config.stt.model}, plan
+                ),
+                turn_detection=False,
+                should_interrupt=False,
+                **kwargs,
+            )
         return OpenAISTTService(
             api_key=user_config.stt.api_key,
             settings=build_settings(
@@ -1343,6 +1388,96 @@ def create_llm_service_from_provider(
         raise HTTPException(status_code=400, detail=f"Invalid LLM provider {provider}")
 
 
+REALTIME_FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
+    # Where each ``realtime`` knob lands. The realtime branches are the one
+    # part of the plan with no pipecat ``Settings`` mapping for the session:
+    # they build provider pydantic objects, so a knob is written to an
+    # explicit destination instead of merged through ``from_mapping``. Paths
+    # are rooted at the object the branch hands ``_apply_realtime_fields``:
+    # the provider ``SessionProperties`` (OpenAI/Azure/Grok), or the kwargs
+    # dict the branch is about to construct (Gemini settings, Ultravox
+    # params). Kept in step with the allow-lists by
+    # test_realtime.py::test_every_realtime_knob_has_a_destination.
+    #
+    # No turn-detection knob appears here: who owns the user turn is the turn
+    # PR's subject, and none of them is in an allow-list.
+    "openai_realtime": {
+        "noise_reduction": ("audio", "input", "noise_reduction"),
+        "speed": ("audio", "output", "speed"),
+        # The destination is the whole ``Reasoning`` model, not its ``effort``
+        # field: the session leaves ``reasoning`` unset, so there is no object
+        # to write into until a run asks for one (_REALTIME_WRAPPERS).
+        "reasoning_effort": ("reasoning",),
+        "max_output_tokens": ("max_output_tokens",),
+        "tool_choice": ("tool_choice",),
+    },
+    "grok_realtime": {
+        "language_hint": ("audio", "input", "transcription", "language_hint"),
+    },
+    "google_realtime": {
+        "thinking": ("thinking",),
+        "enable_affective_dialog": ("enable_affective_dialog",),
+        "proactivity": ("proactivity",),
+        "context_window_compression": ("context_window_compression",),
+        "temperature": ("temperature",),
+    },
+    "ultravox_realtime": {
+        "temperature": ("temperature",),
+        "max_duration": ("max_duration",),
+        "extra": ("extra",),
+    },
+}
+# Azure Realtime is the OpenAI wire protocol against an Azure deployment and
+# reuses its events module, so the two sessions take the same knobs; Vertex is
+# Gemini Live against Vertex AI.
+REALTIME_FIELDS["azure_realtime"] = REALTIME_FIELDS["openai_realtime"]
+REALTIME_FIELDS["google_vertex_realtime"] = REALTIME_FIELDS["google_realtime"]
+
+_OPENAI_REALTIME_WRAPPERS: dict[str, Callable[[Any], Any]] = {
+    # The session models these two as objects; the knob is the one field
+    # inside each that a run configures.
+    "noise_reduction": lambda value: InputAudioNoiseReduction(type=value),
+    "reasoning_effort": lambda value: Reasoning(effort=value),
+}
+_GEMINI_REALTIME_COERCIONS: dict[str, Callable[[Any], Any]] = {
+    # These arrive from the tuning document as JSON objects. Gemini Live reads
+    # ``thinking`` and ``proactivity`` straight off the settings into its
+    # connect config (google/gemini_live/llm.py:1222,1230), so a bare dict
+    # would reach the SDK; ``model_validate`` also accepts an already-built
+    # model, as ``coerce_settings`` requires.
+    "thinking": ThinkingConfig.model_validate,
+    "proactivity": ProactivityConfig.model_validate,
+    "context_window_compression": ContextWindowCompressionParams.model_validate,
+}
+
+
+def _apply_realtime_fields(
+    root,
+    provider: str,
+    plan,
+    wrappers: dict[str, Callable[[Any], Any]] | None = None,
+) -> None:
+    """Write each tuned knob to the destination ``REALTIME_FIELDS`` declares.
+
+    Only the knobs the plan actually carries are touched, so an untuned run
+    gets exactly the objects the branch just built. Every node on the way to a
+    leaf exists by then — a knob whose destination is a nested model the
+    session leaves unset is wrapped instead of walked into.
+    """
+    fields = REALTIME_FIELDS[provider]
+    for name, value in plan.settings.items():
+        wrap = (wrappers or {}).get(name)
+        *parents, leaf = fields[name]
+        target = root
+        for step in parents:
+            target = target[step] if isinstance(target, dict) else getattr(target, step)
+        value = wrap(value) if wrap else value
+        if isinstance(target, dict):
+            target[leaf] = value
+        else:
+            setattr(target, leaf, value)
+
+
 @_report_service_factory_failures(ErrorSource.LLM, config_section="realtime")
 def create_realtime_llm_service(
     user_config, audio_config: "AudioConfig", *, tuning: dict | None = None
@@ -1366,11 +1501,9 @@ def create_realtime_llm_service(
     logger.info(
         f"Creating realtime LLM service: provider={provider}, model={model}, voice={voice}, language={language}"
     )
+    plan = tuning_for(tuning, "realtime", provider)
 
     if provider == ServiceProviders.OPENAI_REALTIME.value:
-        from api.services.pipecat.realtime.openai_realtime import (
-            DograhOpenAIRealtimeLLMService,
-        )
         from pipecat.services.openai.realtime.events import (
             AudioConfiguration,
             AudioInput,
@@ -1386,28 +1519,27 @@ def create_realtime_llm_service(
         if language:
             transcription_kwargs["language"] = language
 
-        return DograhOpenAIRealtimeLLMService(
-            api_key=api_key,
-            settings=DograhOpenAIRealtimeLLMService.Settings(
-                model=model,
-                session_properties=SessionProperties(
-                    audio=AudioConfiguration(
-                        input=AudioInput(
-                            transcription=InputAudioTranscription(
-                                **transcription_kwargs
-                            ),
-                        ),
-                        output=AudioOutput(
-                            voice=voice or "alloy",
-                        ),
-                    ),
+        session_properties = SessionProperties(
+            audio=AudioConfiguration(
+                input=AudioInput(
+                    transcription=InputAudioTranscription(**transcription_kwargs),
+                ),
+                output=AudioOutput(
+                    voice=voice or "alloy",
                 ),
             ),
         )
-    elif provider == ServiceProviders.GROK_REALTIME.value:
-        from api.services.pipecat.realtime.grok_realtime import (
-            DograhGrokRealtimeLLMService,
+        _apply_realtime_fields(
+            session_properties, provider, plan, _OPENAI_REALTIME_WRAPPERS
         )
+        return DograhOpenAIRealtimeLLMService(
+            api_key=api_key,
+            settings=OpenAIRealtimeLLMSettings(
+                model=model,
+                session_properties=session_properties,
+            ),
+        )
+    elif provider == ServiceProviders.GROK_REALTIME.value:
         from pipecat.services.xai.realtime.events import (
             AudioConfiguration,
             AudioInput,
@@ -1419,43 +1551,41 @@ def create_realtime_llm_service(
         if grok_voice.lower() in {"ara", "rex", "sal", "eve", "leo"}:
             grok_voice = grok_voice.lower()
 
-        return DograhGrokRealtimeLLMService(
-            api_key=api_key,
-            settings=DograhGrokRealtimeLLMService.Settings(
-                model=model,
-                session_properties=SessionProperties(
-                    voice=grok_voice,
-                    audio=AudioConfiguration(
-                        input=AudioInput(
-                            transcription=InputAudioTranscription(),
-                        ),
-                    ),
+        session_properties = SessionProperties(
+            voice=grok_voice,
+            audio=AudioConfiguration(
+                input=AudioInput(
+                    transcription=InputAudioTranscription(),
                 ),
             ),
         )
-    elif provider == ServiceProviders.ULTRAVOX_REALTIME.value:
-        from api.services.pipecat.realtime.ultravox_realtime import (
-            DograhUltravoxOneShotInputParams,
-            DograhUltravoxRealtimeLLMService,
-        )
-
-        return DograhUltravoxRealtimeLLMService(
-            params=DograhUltravoxOneShotInputParams(
-                api_key=api_key,
+        _apply_realtime_fields(session_properties, provider, plan)
+        return DograhGrokRealtimeLLMService(
+            api_key=api_key,
+            settings=GrokRealtimeLLMSettings(
                 model=model,
-                voice=voice,
-                output_medium="voice",
+                session_properties=session_properties,
             ),
-            settings=DograhUltravoxRealtimeLLMService.Settings(
+        )
+    elif provider == ServiceProviders.ULTRAVOX_REALTIME.value:
+        # Ultravox is the one branch whose knobs are call-creation parameters
+        # rather than session settings: the service posts them when it opens
+        # the call (ultravox/llm.py:341-358).
+        params_kwargs = {
+            "api_key": api_key,
+            "model": model,
+            "voice": voice,
+            "output_medium": "voice",
+        }
+        _apply_realtime_fields(params_kwargs, provider, plan)
+        return DograhUltravoxRealtimeLLMService(
+            params=DograhUltravoxOneShotInputParams(**params_kwargs),
+            settings=UltravoxRealtimeLLMSettings(
                 model=model,
                 output_medium="voice",
             ),
         )
     elif provider == ServiceProviders.GOOGLE_REALTIME.value:
-        from api.services.pipecat.realtime.gemini_live import (
-            DograhGeminiLiveLLMService,
-        )
-
         # Gemini Live enables input/output audio transcription by default
         # in its _connect() method — no need to configure it explicitly.
         settings_kwargs = {
@@ -1467,15 +1597,16 @@ def create_realtime_llm_service(
         temperature = getattr(realtime_config, "temperature", None)
         if temperature is not None:
             settings_kwargs["temperature"] = temperature
+        _apply_realtime_fields(
+            settings_kwargs,
+            provider,
+            coerce_settings(plan, _GEMINI_REALTIME_COERCIONS),
+        )
         return DograhGeminiLiveLLMService(
             api_key=api_key,
-            settings=DograhGeminiLiveLLMService.Settings(**settings_kwargs),
+            settings=GeminiLiveLLMSettings(**settings_kwargs),
         )
     elif provider == ServiceProviders.GOOGLE_VERTEX_REALTIME.value:
-        from api.services.pipecat.realtime.gemini_live_vertex import (
-            DograhGeminiLiveVertexLLMService,
-        )
-
         project_id = getattr(realtime_config, "project_id", None)
         location = getattr(realtime_config, "location", None) or "us-east4"
         credentials = getattr(realtime_config, "credentials", None)
@@ -1489,16 +1620,18 @@ def create_realtime_llm_service(
         temperature = getattr(realtime_config, "temperature", None)
         if temperature is not None:
             settings_kwargs["temperature"] = temperature
+        _apply_realtime_fields(
+            settings_kwargs,
+            provider,
+            coerce_settings(plan, _GEMINI_REALTIME_COERCIONS),
+        )
         return DograhGeminiLiveVertexLLMService(
             credentials=credentials,
             project_id=project_id,
             location=location,
-            settings=DograhGeminiLiveVertexLLMService.Settings(**settings_kwargs),
+            settings=GeminiLiveVertexLLMSettings(**settings_kwargs),
         )
     elif provider == ServiceProviders.AZURE_REALTIME.value:
-        from api.services.pipecat.realtime.azure_realtime import (
-            DograhAzureRealtimeLLMService,
-        )
         from pipecat.services.openai.realtime.events import (
             AudioConfiguration,
             AudioInput,
@@ -1536,21 +1669,25 @@ def create_realtime_llm_service(
                 "",
             )
         )
+        session_properties = SessionProperties(
+            audio=AudioConfiguration(
+                input=AudioInput(
+                    transcription=InputAudioTranscription(),
+                ),
+                output=AudioOutput(
+                    voice=voice or "alloy",
+                ),
+            ),
+        )
+        _apply_realtime_fields(
+            session_properties, provider, plan, _OPENAI_REALTIME_WRAPPERS
+        )
         return DograhAzureRealtimeLLMService(
             api_key=api_key,
             base_url=wss_url,
-            settings=DograhAzureRealtimeLLMService.Settings(
+            settings=AzureRealtimeLLMSettings(
                 model=model,
-                session_properties=SessionProperties(
-                    audio=AudioConfiguration(
-                        input=AudioInput(
-                            transcription=InputAudioTranscription(),
-                        ),
-                        output=AudioOutput(
-                            voice=voice or "alloy",
-                        ),
-                    ),
-                ),
+                session_properties=session_properties,
             ),
         )
     else:

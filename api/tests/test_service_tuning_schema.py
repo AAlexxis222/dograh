@@ -190,18 +190,84 @@ def test_language_aliases_stay_registry_owned():
             _validate({"stt": {provider: {"settings": {key: ["en"]}}}})
 
 
-def test_openai_stt_realtime_api_is_a_named_422_not_a_silent_noop():
+def test_openai_stt_api_option_selects_the_service_and_its_settings():
     _validate({"stt": {"openai": {"options": {"api": "segments"}}}})
-    with pytest.raises(
-        ValidationError,
-        match="stt.openai.options.api: realtime is not wired in this build",
-    ):
-        _validate({"stt": {"openai": {"options": {"api": "realtime"}}}})
+    _validate(
+        {
+            "stt": {
+                "openai": {
+                    "options": {"api": "realtime"},
+                    "settings": {"noise_reduction": "near_field"},
+                }
+            }
+        }
+    )
     for value in ("grpc", ["realtime"], None):
         with pytest.raises(
             ValidationError, match="stt.openai.options.api: must be one of"
         ):
             _validate({"stt": {"openai": {"options": {"api": value}}}})
+
+
+def test_openai_stt_settings_must_match_the_selected_api():
+    # from_mapping sends a field the selected service doesn't declare to
+    # ``extra``, which neither service reads: a silent no-op either way.
+    with pytest.raises(
+        ValidationError,
+        match="stt.openai.settings.noise_reduction: only available with options.api=realtime",
+    ):
+        _validate({"stt": {"openai": {"settings": {"noise_reduction": "near_field"}}}})
+    with pytest.raises(
+        ValidationError,
+        match="stt.openai.settings.temperature: only available with options.api=segments",
+    ):
+        _validate(
+            {
+                "stt": {
+                    "openai": {
+                        "options": {"api": "realtime"},
+                        "settings": {"temperature": 0.2},
+                    }
+                }
+            }
+        )
+    # ``prompt`` is declared by both services, so it needs no pairing.
+    _validate({"stt": {"openai": {"settings": {"prompt": "Marbella"}}}})
+
+
+def test_realtime_rows_check_types_and_closed_sets_without_a_settings_class():
+    _validate(
+        {
+            "realtime": {
+                "openai_realtime": {
+                    "settings": {"noise_reduction": "far_field", "speed": 1}
+                }
+            }
+        }
+    )
+    for settings, message in (
+        ({"noise_reduction": "loud"}, "noise_reduction: must be one of"),
+        # Unhashable values must not raise TypeError out of the closed-set
+        # check — pydantic surfaces that as a 500, not a 422.
+        ({"noise_reduction": ["far_field"]}, "noise_reduction: must be one of"),
+        ({"reasoning_effort": "extreme"}, "reasoning_effort: must be one of"),
+        ({"tool_choice": "maybe"}, "tool_choice: must be one of"),
+        ({"speed": "fast"}, "speed: wrong type"),
+        ({"max_output_tokens": True}, "max_output_tokens: wrong type"),
+        # Every realtime destination already defaults to "unset", so null
+        # would be a no-op; omitting the key is how a default is written.
+        ({"speed": None}, "speed: null not allowed"),
+        ({"turn_detection": False}, "turn_detection: unknown setting"),
+    ):
+        with pytest.raises(
+            ValidationError, match=f"realtime.openai_realtime.settings.{message}"
+        ):
+            _validate({"realtime": {"openai_realtime": {"settings": settings}}})
+
+
+def test_realtime_provider_must_be_known():
+    with pytest.raises(ValidationError, match="realtime.openai: unknown provider"):
+        _validate({"realtime": {"openai": {"settings": {}}}})
 
 
 def test_options_only_where_declared():

@@ -58,7 +58,12 @@ from pipecat.services.minimax.llm import MiniMaxLLMSettings
 from pipecat.services.minimax.tts import MiniMaxTTSSettings
 from pipecat.services.openai.base_llm import OpenAILLMSettings
 from pipecat.services.openai.llm import OpenAILLMService
-from pipecat.services.openai.stt import OpenAISTTSettings
+from pipecat.services.openai.stt import (
+    OpenAIRealtimeSTTService,
+    OpenAIRealtimeSTTSettings,
+    OpenAISTTService,
+    OpenAISTTSettings,
+)
 from pipecat.services.openai.tts import OpenAITTSService, OpenAITTSSettings
 from pipecat.services.openrouter.llm import OpenRouterLLMSettings
 from pipecat.services.rime.tts import RimeTTSSettings
@@ -109,6 +114,30 @@ class TuningSpec:
     for ``false``. ``None`` is not a member of any entry: in a sparse document
     "leave it at the constructor default" is written by omitting the key.
     Guarded by test_scalar_ctor_kwargs_declare_their_type.
+    """
+    settings_types: dict[str, type | tuple[type, ...]] = dataclasses.field(
+        default_factory=dict
+    )
+    """Accepted value type per setting, for rows with no Settings dataclass.
+
+    ``_type_ok`` checks a setting against the field that declares it; the
+    ``realtime`` rows have no such field (the branch maps the knob onto a
+    provider pydantic object instead of a pipecat ``Settings``), so without
+    this any JSON value would reach the session. Same rule as ``ctor_types``,
+    checked with the same helper. A knob whose set is closed also carries a
+    ``settings_choices`` entry, which is checked first; the type here is what
+    remains true if that set ever goes away. Completeness for the realtime
+    rows is guarded by test_realtime.py.
+    """
+    settings_choices: dict[str, frozenset[str]] = dataclasses.field(
+        default_factory=dict
+    )
+    """Closed value sets for the settings that take an enum, keyed by name.
+
+    The realtime counterpart of ``ctor_choices``: the branch feeds these to a
+    provider model whose ``Literal`` pipecat widens with ``| str`` for forward
+    compatibility (openai/realtime/events.py:182), so a typo would be a
+    provider-side 400 mid-call rather than a 422 at the PUT.
     """
     options_allowed: frozenset[str] = frozenset()
     nullable_extra: frozenset[str] = frozenset()
@@ -234,15 +263,21 @@ SPECS[("stt", "cartesia")] = TuningSpec(
 SPECS[("stt", "smallest")] = TuningSpec(
     "stt", "smallest", SmallestSTTSettings, _fields(SmallestSTTSettings)
 )
-# The Responses-style realtime transcription session is a different service
-# class this factory does not build; ``options.api`` is declared so the knob
-# has one name from the start (validated in _validate_openai_stt_options).
+# OpenAI is one provider with two transcription services: the segmented Audio
+# API one and the realtime transcription session, selected by ``options.api``.
+# Like Deepgram above, the allow-list is the union and ``settings_cls=None``
+# lets each field be type-checked against whichever Settings class declares
+# it; _validate_openai_stt then pairs a field with the api that has it, so a
+# knob the selected service never reads is a 422 and not a silent ``extra``.
 SPECS[("stt", "openai")] = TuningSpec(
     "stt",
     "openai",
-    OpenAISTTSettings,
-    _fields(OpenAISTTSettings),
+    None,
+    _fields(OpenAISTTSettings) | _fields(OpenAIRealtimeSTTSettings),
+    service_classes=(OpenAISTTService, OpenAIRealtimeSTTService),
     options_allowed=frozenset({"api"}),
+    nullable_extra=nullable_fields(OpenAISTTSettings)
+    | nullable_fields(OpenAIRealtimeSTTSettings),
 )
 SPECS[("stt", "speaches")] = TuningSpec(
     "stt", "speaches", SpeachesSTTSettings, _fields(SpeachesSTTSettings)
@@ -443,6 +478,103 @@ SPECS[("llm", "sarvam")] = _llm_row("sarvam", SarvamLLMSettings)
 SPECS[("llm", "dograh")] = _llm_row("dograh", OpenAILLMSettings)
 SPECS[("llm", "aws_bedrock")] = _llm_row("aws_bedrock", AWSBedrockLLMSettings)
 
+# ---------------------------------------------------------------------------
+# realtime (speech-to-speech)
+#
+# These rows are the one part of the table with no pipecat ``Settings``
+# dataclass behind them: a realtime branch builds the session as provider
+# pydantic objects (``SessionProperties``, ``AudioInput``, ``Reasoning``,
+# Ultravox ``OneShotInputParams``), so the allow-list is written out and the
+# value shape is declared in ``settings_types``/``settings_choices`` instead of
+# being read off a field. ``service_factory.REALTIME_FIELDS`` says where each
+# knob lands, and test_realtime.py keeps the two in step so no knob is orphaned.
+#
+# No realtime row is nullable: every destination already defaults to "unset",
+# so an explicit null would be a knob that does nothing — a default is written
+# by omitting the key (same rule as ``ctor_types``).
+#
+# Turn detection is absent on purpose. ``turn_detection``, server VAD and
+# ``semantic_vad`` decide who owns the user turn, which is the turn PR's
+# subject (spec §6); leaving them out of the allow-list makes them "unknown
+# setting" until it lands.
+_NOISE_REDUCTIONS = frozenset({"near_field", "far_field"})
+# openai/realtime/events.py:182 (Reasoning.effort). Narrower than the chat
+# completions set above: the realtime enum has no "none".
+_REALTIME_REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high", "xhigh"})
+_TOOL_CHOICES = frozenset({"auto", "none", "required"})
+# Azure Realtime speaks the OpenAI wire protocol and reuses its events module
+# (azure/realtime/llm.py), so both rows expose the same session knobs.
+_OPENAI_REALTIME_TYPES: dict[str, type | tuple[type, ...]] = {
+    "noise_reduction": str,
+    "speed": (int, float),
+    "reasoning_effort": str,
+    "max_output_tokens": int,
+    "tool_choice": str,
+}
+_OPENAI_REALTIME_CHOICES = {
+    "noise_reduction": _NOISE_REDUCTIONS,
+    "reasoning_effort": _REALTIME_REASONING_EFFORTS,
+    "tool_choice": _TOOL_CHOICES,
+}
+# ``thinking``/``proactivity``/``context_window_compression`` arrive as JSON
+# objects and the branch converts them to their provider models; ``temperature``
+# is the one knob the realtime configuration already carried.
+_GEMINI_REALTIME_TYPES: dict[str, type | tuple[type, ...]] = {
+    "thinking": dict,
+    "enable_affective_dialog": bool,
+    "proactivity": dict,
+    "context_window_compression": dict,
+    "temperature": (int, float),
+}
+# ``extra`` is the one declared exception to "nothing goes through extra": it
+# is ``OneShotInputParams.extra``, a field Ultravox merges into the
+# call-creation request (ultravox/llm.py:352), not the ``Settings.extra``
+# overflow that no service reads. ``max_duration`` is a pydantic timedelta, so
+# it takes seconds or an ISO-8601 duration string.
+_ULTRAVOX_REALTIME_TYPES: dict[str, type | tuple[type, ...]] = {
+    "temperature": (int, float),
+    "max_duration": (int, float, str),
+    "extra": dict,
+}
+
+
+def _realtime_row(
+    provider: str,
+    types: dict[str, type | tuple[type, ...]],
+    choices: dict[str, frozenset[str]] | None = None,
+) -> TuningSpec:
+    return TuningSpec(
+        "realtime",
+        provider,
+        None,
+        frozenset(types),
+        settings_types=types,
+        settings_choices=choices or {},
+    )
+
+
+SPECS[("realtime", "openai_realtime")] = _realtime_row(
+    "openai_realtime", _OPENAI_REALTIME_TYPES, _OPENAI_REALTIME_CHOICES
+)
+SPECS[("realtime", "azure_realtime")] = _realtime_row(
+    "azure_realtime", _OPENAI_REALTIME_TYPES, _OPENAI_REALTIME_CHOICES
+)
+# Grok's session carries neither speed, reasoning nor an output token cap
+# (xai/realtime/events.py:218-243); the transcription language hint is the
+# only knob it has that the registry doesn't already own.
+SPECS[("realtime", "grok_realtime")] = _realtime_row(
+    "grok_realtime", {"language_hint": str}
+)
+SPECS[("realtime", "google_realtime")] = _realtime_row(
+    "google_realtime", _GEMINI_REALTIME_TYPES
+)
+SPECS[("realtime", "google_vertex_realtime")] = _realtime_row(
+    "google_vertex_realtime", _GEMINI_REALTIME_TYPES
+)
+SPECS[("realtime", "ultravox_realtime")] = _realtime_row(
+    "ultravox_realtime", _ULTRAVOX_REALTIME_TYPES
+)
+
 
 def spec_for(kind: str, provider: str) -> TuningSpec | None:
     return SPECS.get((kind, provider))
@@ -614,16 +746,20 @@ def _provider_turn_error(
     )
 
 
-OPENAI_REALTIME_STT_AVAILABLE = False
+OPENAI_REALTIME_STT_AVAILABLE = True
 """Whether this build can serve OpenAI's realtime transcription session.
 
-``create_stt_service`` builds the segmented ``OpenAISTTService`` for every
-OpenAI model; the realtime session is a different service class that is not
-wired yet, so asking for it is a named 422 rather than a silent downgrade to
-segments.
+Wired: ``create_stt_service`` builds ``OpenAIRealtimeSTTService`` when
+``options.api`` is ``"realtime"`` and the segmented ``OpenAISTTService``
+otherwise. The gate stays so the knob has one place to be turned off again.
 """
 
 _OPENAI_STT_APIS = frozenset({"segments", "realtime"})
+_DEFAULT_OPENAI_STT_API = "segments"
+_OPENAI_STT_API_FIELDS = {
+    "segments": _fields(OpenAISTTSettings),
+    "realtime": _fields(OpenAIRealtimeSTTSettings),
+}
 _OPENAI_APIS = frozenset({"chat_completions", "responses"})
 _REASONING_KEYS = {
     "effort": frozenset({"none", "minimal", "low", "medium", "high", "xhigh"}),
@@ -710,17 +846,56 @@ def _ctor_type_ok(expected: type | tuple[type, ...], value: Any) -> bool:
     return isinstance(value, expected)
 
 
-def _validate_openai_stt_options(options: dict[str, Any]) -> list[str]:
-    """Value check for ``stt.openai.options.api`` (reserved for the realtime
-    transcription session, which this build does not construct)."""
-    if "api" not in options:
-        return []
-    error = _one_of("stt.openai.options.api", options["api"], _OPENAI_STT_APIS)
-    if error:
-        return [error]
-    if options["api"] == "realtime" and not OPENAI_REALTIME_STT_AVAILABLE:
-        return ["stt.openai.options.api: realtime is not wired in this build"]
-    return []
+def _settings_value_error(
+    spec: TuningSpec,
+    nullable: frozenset[str],
+    path: str,
+    name: str,
+    value: Any,
+) -> str | None:
+    """Whether an allow-listed setting's *value* is acceptable.
+
+    Three checks in order of how definitive they are: null against the
+    nullable set, then the row's own declaration (a closed set first, since a
+    ``Literal`` widened with ``| str`` upstream is not checkable from the
+    field), then the declaring dataclass.
+    """
+    if value is None:
+        return None if name in nullable else f"{path}: null not allowed"
+    if name in spec.settings_choices:
+        return _one_of(path, value, spec.settings_choices[name])
+    if name in spec.settings_types and not _ctor_type_ok(
+        spec.settings_types[name], value
+    ):
+        return f"{path}: wrong type"
+    if not _type_ok(spec.settings_classes(), name, value):
+        return f"{path}: wrong type"
+    return None
+
+
+def _validate_openai_stt(tuning: dict[str, Any]) -> list[str]:
+    """Check ``stt.openai.options.api`` and pair each setting with it.
+
+    The two OpenAI transcription services declare different fields, and
+    ``from_mapping`` sends a field the selected one doesn't declare to
+    ``extra``, which neither reads — so a knob written for the other api is a
+    silent no-op. Name it instead (§1.2).
+    """
+    options = tuning.get("options") or {}
+    api = options.get("api", _DEFAULT_OPENAI_STT_API)
+    if "api" in options:
+        error = _one_of("stt.openai.options.api", options["api"], _OPENAI_STT_APIS)
+        if error:
+            return [error]
+        if api == "realtime" and not OPENAI_REALTIME_STT_AVAILABLE:
+            return ["stt.openai.options.api: realtime is not wired in this build"]
+    other = "realtime" if api == "segments" else "segments"
+    return [
+        f"stt.openai.settings.{name}: only available with options.api={other}"
+        for name in tuning.get("settings") or {}
+        if name in _OPENAI_STT_API_FIELDS[other]
+        and name not in _OPENAI_STT_API_FIELDS[api]
+    ]
 
 
 def validate_service_tuning(document: dict[str, Any]) -> list[str]:
@@ -740,16 +915,13 @@ def validate_service_tuning(document: dict[str, Any]) -> list[str]:
                 # REGISTRY_OWNED identity field elsewhere (e.g. tts.openai
                 # exposes "voice" as a tunable setting, B6).
                 if name in spec.settings_allowed:
-                    if value is None and name not in nullable:
-                        errors.append(f"{path}: null not allowed")
-                    elif not _type_ok(spec.settings_classes(), name, value):
-                        errors.append(f"{path}: wrong type")
-                    else:
+                    error = _settings_value_error(spec, nullable, path, name, value)
+                    if error is None:
                         error = _provider_turn_error(
                             kind, provider, "settings", name, value
                         )
-                        if error:
-                            errors.append(error)
+                    if error:
+                        errors.append(error)
                 elif name in REGISTRY_OWNED:
                     errors.append(f"{path}: owned by the model configuration")
                 else:
@@ -779,5 +951,5 @@ def validate_service_tuning(document: dict[str, Any]) -> list[str]:
             if kind == "llm" and provider == "openai":
                 errors.extend(_validate_openai_llm_options(options))
             if kind == "stt" and provider == "openai":
-                errors.extend(_validate_openai_stt_options(options))
+                errors.extend(_validate_openai_stt(tuning))
     return errors
