@@ -1,4 +1,5 @@
 import pytest
+from fastapi import HTTPException
 
 from api.services.configuration.registry import ServiceProviders
 from api.services.pipecat.service_factory import create_stt_service
@@ -89,6 +90,18 @@ async def test_flux_byok_url_ctor_changes_endpoint(monkeypatch):
     )
     url = (await capture_ws_connect(monkeypatch, service))["url"]
     assert url.startswith("wss://proxy.example/v2/listen?")
+
+
+def test_flux_byok_url_ctor_blocks_private_endpoint_in_saas(monkeypatch):
+    monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "saas")
+    with pytest.raises(HTTPException) as exc_info:
+        create_stt_service(
+            user_config_stt(**FLUX),
+            audio_config(),
+            tuning={"stt": {"deepgram": {"ctor": {"url": "wss://127.0.0.1/listen"}}}},
+        )
+    assert exc_info.value.status_code == 400
+    assert "public IP" in exc_info.value.detail
 
 
 @pytest.mark.asyncio

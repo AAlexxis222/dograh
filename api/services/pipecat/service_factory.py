@@ -314,6 +314,8 @@ def create_stt_service(
                 settings.language_hints = [
                     _as_language(h) for h in settings.language_hints
                 ]
+            if "url" in plan.ctor:
+                _validate_runtime_service_url(plan.ctor["url"], "stt.deepgram.ctor.url")
 
             return DeepgramFluxSTTService(
                 api_key=user_config.stt.api_key,
