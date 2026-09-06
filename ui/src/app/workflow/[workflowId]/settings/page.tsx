@@ -1051,7 +1051,6 @@ function GeneralSection({
                                     setMaxCallDuration(value);
                                 }}
                             />
-                            <p className="text-xs text-muted-foreground">Default: 600 (10 minutes)</p>
                         </div>
                         <div className="space-y-2">
                             <div className="flex items-center justify-between">
@@ -1072,7 +1071,6 @@ function GeneralSection({
                                     setMaxUserIdleTimeout(value);
                                 }}
                             />
-                            <p className="text-xs text-muted-foreground">Default: 10 seconds</p>
                         </div>
                         <div className="space-y-2">
                             <div className="flex items-center justify-between">
