@@ -14,6 +14,7 @@ from api.constants import (
     MIN_TEXT_CHAT_INACTIVITY_TIMEOUT_SECONDS,
     TEXT_CHAT_INACTIVITY_TIMEOUT_SECONDS,
 )
+from api.schemas.service_tuning import ServiceTuning
 
 DEFAULT_MAX_CALL_DURATION_SECONDS = 300
 # Hard ceiling on configurable call duration. Must stay <= the concurrency
@@ -200,6 +201,19 @@ class WorkflowConfigurationDefaults(BaseModel):
     )
     transcript_configuration: TranscriptConfiguration = Field(
         default_factory=TranscriptConfiguration
+    )
+    # Nullable on purpose, no default_factory: schema_defaults_document()
+    # dumps with exclude_none=True, and a materialised ServiceTuning() would
+    # inject {"stt":{},"tts":{},"llm":{},"realtime":{},"scope":{...}} into the
+    # effective document of every run, even ones that never touched tuning.
+    service_tuning: ServiceTuning | None = Field(
+        default=None,
+        description=(
+            "Provider knobs applied on top of the model configuration: "
+            "{stt|tts|llm|realtime: {provider|_all: {settings, ctor, options}}, scope}. "
+            "Keys are validated against the provider's real settings; explicit "
+            "null means 'provider default' and is only accepted on nullable fields."
+        ),
     )
     # Nullable on purpose: run_pipeline branches on key presence and applies a
     # transport-dependent default when absent, so this must never materialise.
