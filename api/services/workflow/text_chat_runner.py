@@ -32,6 +32,7 @@ from pipecat.utils.run_context import set_current_org_id
 from api.db import db_client
 from api.enums import WorkflowRunMode, WorkflowRunState
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
+from api.services.configuration.cascade import run_configurations_for
 from api.services.configuration.registry import ServiceProviders
 from api.services.pipecat.audio_config import create_audio_config
 from api.services.pipecat.pipeline_builder import create_pipeline_task
@@ -455,7 +456,7 @@ async def execute_text_chat_pending_turn(
     set_current_org_id(workflow.organization_id)
 
     run_definition = workflow_run.definition
-    run_configs = run_definition.workflow_configurations or {}
+    run_configs = run_configurations_for(workflow_run)
 
     from api.services.configuration.ai_model_configuration import (
         get_effective_ai_model_configuration_for_workflow,
@@ -601,9 +602,8 @@ async def execute_text_chat_pending_turn(
         embeddings_api_version = getattr(user_config.embeddings, "api_version", None)
 
     has_recordings = await db_client.has_active_recordings(workflow.organization_id)
-    context_compaction_enabled = (workflow.workflow_configurations or {}).get(
-        "context_compaction_enabled", False
-    )
+    # Pinned definition, not the workflow row (which mirrors the draft).
+    context_compaction_enabled = run_configs.get("context_compaction_enabled", False)
     engine = PipecatEngine(
         llm=llm,
         inference_llm=inference_llm,

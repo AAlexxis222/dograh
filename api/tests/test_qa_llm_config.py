@@ -46,6 +46,7 @@ def _workflow_run(
     *,
     workflow_configurations=None,
     definition_configurations=None,
+    effective_configurations=None,
     initial_context=None,
 ):
     definition = (
@@ -59,6 +60,7 @@ def _workflow_run(
             workflow_configurations=workflow_configurations or {},
         ),
         definition=definition,
+        effective_configurations=effective_configurations,
         initial_context=initial_context or {},
     )
 
@@ -125,6 +127,7 @@ async def test_workflow_llm_delegates_typed_config_to_central_factory():
     )
     run = _workflow_run(
         workflow_configurations={"source": "workflow"},
+        effective_configurations={"source": "frozen"},
         initial_context={"mps_correlation_id": "corr-123"},
     )
     service = object()
@@ -143,7 +146,7 @@ async def test_workflow_llm_delegates_typed_config_to_central_factory():
     assert result == (service, "grok-3-fast")
     config_resolver.assert_awaited_once_with(
         organization_id=1,
-        workflow_configurations={"source": "workflow"},
+        workflow_configurations={"source": "frozen"},
     )
     factory.assert_called_once_with(
         config,

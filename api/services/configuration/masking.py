@@ -9,18 +9,23 @@ The rules are simple:
    in storage.
 """
 
-import copy
 from typing import Any, Dict, Optional
 
 from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
 from api.services.configuration.registry import ServiceConfig
+from api.services.configuration.secrets_registry import (
+    MODEL_OVERRIDE_SECTIONS,
+    SECRET_LEAF_NAMES,
+    mask_secrets,
+)
 from api.services.integrations import get_node_secret_fields
 
 VISIBLE_CHARS = 4  # number of trailing characters to reveal
 MASK_CHAR = "*"
 MASK_MARKER = "***"  # substring that indicates a masked key
-SERVICE_SECRET_FIELDS = ("api_key", "credentials", "aws_access_key", "aws_secret_key")
-MODEL_OVERRIDE_FIELDS = ("llm", "tts", "stt", "realtime")
+SERVICE_SECRET_FIELDS = SECRET_LEAF_NAMES
+MODEL_OVERRIDE_FIELDS = MODEL_OVERRIDE_SECTIONS
+VOICEMAIL_DETECTION_KEY = "voicemail_detection"
 
 
 def contains_masked_key(value: str | list[str] | None) -> bool:
@@ -145,39 +150,9 @@ def mask_user_config(config: EffectiveAIModelConfiguration) -> Dict[str, Any]:
 
 
 def mask_workflow_configurations(config: Optional[Dict]) -> Optional[Dict]:
-    """Mask secret fields inside workflow-level model overrides for API responses."""
-    if not config:
-        return config
-
-    masked = copy.deepcopy(config)
-    model_overrides = masked.get("model_overrides")
-    if isinstance(model_overrides, dict):
-        for section in MODEL_OVERRIDE_FIELDS:
-            override = model_overrides.get(section)
-            if not isinstance(override, dict):
-                continue
-            for secret_field in SERVICE_SECRET_FIELDS:
-                raw = override.get(secret_field)
-                if raw:
-                    override[secret_field] = _mask_secret_value(raw)
-
-    v2_override = masked.get("model_configuration_v2_override")
-    if isinstance(v2_override, dict):
-        _mask_nested_service_secrets(v2_override)
-
-    return masked
-
-
-def _mask_nested_service_secrets(value):
-    if isinstance(value, dict):
-        for key, nested in list(value.items()):
-            if key in SERVICE_SECRET_FIELDS and nested:
-                value[key] = _mask_secret_value(nested)
-            else:
-                _mask_nested_service_secrets(nested)
-    elif isinstance(value, list):
-        for item in value:
-            _mask_nested_service_secrets(item)
+    """Mask every secret the registry declares (model overrides, v2 override,
+    voicemail detection) for API responses."""
+    return mask_secrets(config)
 
 
 # ---------------------------------------------------------------------------

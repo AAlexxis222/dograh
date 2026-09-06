@@ -1,0 +1,145 @@
+"""The transport entry points read ambient noise from the run's own configuration.
+
+``save_workflow_draft`` mirrors the draft into ``WorkflowModel.workflow_configurations``,
+so reading that column would let an unpublished draft change the ambient noise of
+a live call. Both entry points must hand the transport the document frozen on the
+run (``workflow_run.effective_configurations``), falling back to the pinned
+definition only for runs created before the freeze existed. The DB layer is mocked
+so this runs without Postgres; the end-to-end counterpart for the pipeline-level
+knobs lives in ``tests/integrations/test_run_pipeline.py``.
+"""
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from api.services.pipecat import run_pipeline as run_pipeline_module
+
+DRAFT_AMBIENT = {"enabled": True, "storage_key": "ambient-noise/1/1/draft.wav"}
+PINNED_AMBIENT = {"enabled": True, "storage_key": "ambient-noise/1/1/published.wav"}
+
+
+def _stub_db(monkeypatch):
+    """Wire the two DB reads and hand the caller the rows it wired."""
+    workflow = SimpleNamespace(
+        id=1,
+        organization_id=5,
+        user_id=7,
+        workflow_configurations={"ambient_noise_configuration": DRAFT_AMBIENT},
+    )
+    workflow_run = SimpleNamespace(
+        id=42,
+        workflow_id=1,
+        initial_context=None,
+        definition=SimpleNamespace(
+            workflow_configurations={"ambient_noise_configuration": PINNED_AMBIENT}
+        ),
+    )
+    monkeypatch.setattr(
+        run_pipeline_module.db_client, "get_workflow", AsyncMock(return_value=workflow)
+    )
+    monkeypatch.setattr(
+        run_pipeline_module.db_client,
+        "get_workflow_run",
+        AsyncMock(return_value=workflow_run),
+    )
+    return workflow, workflow_run
+
+
+def _patch_effective_config():
+    return patch(
+        "api.services.configuration.ai_model_configuration."
+        "get_effective_ai_model_configuration_for_workflow",
+        AsyncMock(return_value=SimpleNamespace(is_realtime=False, realtime=None)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_webrtc_transport_gets_pinned_ambient_noise(monkeypatch):
+    _stub_db(monkeypatch)
+    create_transport = AsyncMock(return_value=object())
+    monkeypatch.setattr(
+        run_pipeline_module, "create_webrtc_transport", create_transport
+    )
+    monkeypatch.setattr(run_pipeline_module, "_run_pipeline_impl", AsyncMock())
+
+    with _patch_effective_config():
+        await run_pipeline_module._run_pipeline_smallwebrtc_impl(
+            webrtc_connection=object(),
+            workflow_id=1,
+            workflow_run_id=42,
+            user_id=7,
+        )
+
+    create_transport.assert_awaited_once()
+    assert create_transport.await_args.args[3] == PINNED_AMBIENT
+
+
+@pytest.mark.asyncio
+async def test_telephony_transport_gets_pinned_ambient_noise(monkeypatch):
+    _stub_db(monkeypatch)
+    transport_factory = AsyncMock(return_value=object())
+    monkeypatch.setattr(
+        run_pipeline_module.telephony_registry,
+        "get",
+        lambda name: SimpleNamespace(transport_factory=transport_factory),
+    )
+    monkeypatch.setattr(
+        run_pipeline_module, "create_audio_config", lambda provider: object()
+    )
+    monkeypatch.setattr(run_pipeline_module, "_run_pipeline_impl", AsyncMock())
+
+    with _patch_effective_config():
+        await run_pipeline_module._run_pipeline_telephony_impl(
+            websocket=object(),
+            provider_name="twilio",
+            workflow_id=1,
+            workflow_run_id=42,
+            organization_id=5,
+            call_id="CA123",
+            transport_kwargs={},
+        )
+
+    transport_factory.assert_awaited_once()
+    assert transport_factory.await_args.kwargs["ambient_noise_config"] == PINNED_AMBIENT
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_reads_frozen_effective_configurations_over_pinned(
+    monkeypatch,
+):
+    """The run's frozen snapshot wins over the definition it was pinned to.
+
+    Once the cascade is resolved and frozen at run creation, the definition row
+    is only a fallback for legacy runs: a definition edited (or republished)
+    after the run was created must not change what the run executes.
+    """
+    _, workflow_run = _stub_db(monkeypatch)
+    workflow_run.definition.workflow_configurations = {
+        "ambient_noise_configuration": {"enabled": False}
+    }
+    workflow_run.effective_configurations = {
+        "ambient_noise_configuration": {"enabled": True, "volume": 0.9}
+    }
+
+    create_transport = AsyncMock(return_value=object())
+    monkeypatch.setattr(
+        run_pipeline_module, "create_webrtc_transport", create_transport
+    )
+    run_impl = AsyncMock()
+    monkeypatch.setattr(run_pipeline_module, "_run_pipeline_impl", run_impl)
+
+    with _patch_effective_config():
+        await run_pipeline_module._run_pipeline_smallwebrtc_impl(
+            webrtc_connection=object(),
+            workflow_id=1,
+            workflow_run_id=42,
+            user_id=7,
+        )
+
+    assert create_transport.await_args.args[3] == {"enabled": True, "volume": 0.9}
+    assert (
+        run_impl.await_args.kwargs["run_configurations"]
+        == workflow_run.effective_configurations
+    )

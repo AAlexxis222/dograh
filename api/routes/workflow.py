@@ -2,7 +2,7 @@ import json
 import re
 import uuid
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -45,6 +45,13 @@ from api.services.configuration.merge import merge_workflow_configuration_secret
 from api.services.configuration.resolve import (
     enrich_overrides_with_api_keys,
     resolve_effective_config,
+)
+from api.services.configuration.secrets_registry import (
+    REJECTED_SECRET_NAMES,
+    find_unregistered_secret_named_paths,
+)
+from api.services.configuration.workflow_effective import (
+    load_workflow_effective_configurations,
 )
 from api.services.mps_service_key_client import mps_service_key_client
 from api.services.posthog_client import capture_event
@@ -353,6 +360,20 @@ class WorkflowVersionResponse(BaseModel):
     workflow_json: dict
     workflow_configurations: dict | None = None
     template_context_variables: dict | None = None
+
+
+class WorkflowEffectiveConfigurationResponse(BaseModel):
+    """Everything the builder needs to edit a workflow's configuration without
+    merging layers itself. ``own`` is the sparse document of the definition being
+    edited (draft, else published); ``effective`` is schema <- organization <- own;
+    ``base`` is what any leaf absent from ``own`` inherits."""
+
+    effective: dict[str, Any]
+    own: dict[str, Any]
+    base: dict[str, Any]
+    warnings: list[str] = Field(default_factory=list)
+    definition_id: int | None = None
+    definition_status: str | None = None
 
 
 class UpdateWorkflowStatusRequest(BaseModel):
@@ -848,6 +869,43 @@ async def get_workflow_versions(
     ]
 
 
+@router.get(
+    "/{workflow_id}/configuration-effective",
+    response_model=WorkflowEffectiveConfigurationResponse,
+)
+async def get_workflow_effective_configuration(
+    workflow_id: int,
+    user: UserModel = Depends(get_user),
+):
+    """The draft's (else the published definition's) configuration in three
+    layers, secrets masked. The builder edits ``own`` and reads ``effective``."""
+    workflow = await db_client.get_workflow(
+        workflow_id, organization_id=user.selected_organization_id
+    )
+    if workflow is None:
+        raise HTTPException(
+            status_code=404, detail=f"Workflow with id {workflow_id} not found"
+        )
+    # Same choice as GET /fetch: the editor works on the draft when there is one.
+    definition = (
+        await db_client.get_draft_version(workflow_id) or workflow.released_definition
+    )
+    layers = await load_workflow_effective_configurations(
+        organization_id=user.selected_organization_id,
+        definition_configurations=(
+            definition.workflow_configurations if definition else None
+        ),
+    )
+    return WorkflowEffectiveConfigurationResponse(
+        effective=layers.effective,
+        own=layers.own,
+        base=layers.base,
+        warnings=layers.warnings,
+        definition_id=definition.id if definition else None,
+        definition_status=definition.status if definition else None,
+    )
+
+
 @router.post("/{workflow_id}/publish")
 async def publish_workflow(
     workflow_id: int,
@@ -1102,25 +1160,6 @@ async def update_workflow(
                 tool_name_errors,
                 status_code=409,
             )
-        if workflow_definition:
-            existing_workflow = await db_client.get_workflow(
-                workflow_id, organization_id=user.selected_organization_id
-            )
-            if existing_workflow:
-                # Merge against what the user was editing (draft or published)
-                existing_draft = await db_client.get_draft_version(workflow_id)
-                existing_def = (
-                    existing_draft.workflow_json
-                    if existing_draft
-                    else existing_workflow.released_definition.workflow_json
-                )
-                workflow_definition = merge_workflow_api_keys(
-                    workflow_definition,
-                    existing_def,
-                )
-
-        # Validate model overrides. v2 uses a complete workflow-level model
-        # configuration; legacy v1 uses partial service overlays.
         # exclude_unset keeps stored configs sparse: keys the request didn't
         # send stay absent so runtime defaults keep applying to them.
         workflow_configurations = (
@@ -1128,6 +1167,57 @@ async def update_workflow(
             if request.workflow_configurations is not None
             else None
         )
+        # A configuration document accepts unknown keys, and the masking walk
+        # only knows the registered secret paths. A credential parked anywhere
+        # else would be stored in clear, frozen onto every run and served in
+        # clear on every read, so it is refused before anything is loaded.
+        unregistered_secrets = find_unregistered_secret_named_paths(
+            workflow_configurations, extra_names=REJECTED_SECRET_NAMES
+        )
+        if unregistered_secrets:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "secrets may only be stored under the configuration paths "
+                    "that mask them on read: "
+                    + ", ".join(".".join(path) for path in unregistered_secrets)
+                ),
+            )
+
+        # What the user was editing (draft or published): loaded once and
+        # reused by every secret merge below.
+        existing_workflow = None
+        existing_draft = None
+        existing_configs = None
+        if workflow_definition or request.workflow_configurations is not None:
+            existing_workflow = await db_client.get_workflow(
+                workflow_id, organization_id=user.selected_organization_id
+            )
+            if existing_workflow:
+                existing_draft = await db_client.get_draft_version(workflow_id)
+                # A workflow between duplication and its first publish has
+                # neither a draft nor a released definition.
+                released = existing_workflow.released_definition
+                existing_configs = (
+                    existing_draft.workflow_configurations
+                    if existing_draft
+                    else (released.workflow_configurations if released else {})
+                )
+
+        if workflow_definition and existing_workflow:
+            released = existing_workflow.released_definition
+            existing_def = (
+                existing_draft.workflow_json
+                if existing_draft
+                else (released.workflow_json if released else None)
+            )
+            workflow_definition = merge_workflow_api_keys(
+                workflow_definition,
+                existing_def,
+            )
+
+        # Validate model overrides. v2 uses a complete workflow-level model
+        # configuration; legacy v1 uses partial service overlays.
         try:
             workflow_configurations = await apply_external_pbx_mapping_policy(
                 workflow_configurations,
@@ -1138,22 +1228,21 @@ async def update_workflow(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ExternalPBXConfigurationDisabledError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+        if workflow_configurations and existing_workflow:
+            # Responses mask secrets, and clients send the whole document back,
+            # so masked (or omitted) secrets must be restored from what is
+            # stored before anything below validates or persists them.
+            workflow_configurations = merge_workflow_configuration_secrets(
+                workflow_configurations,
+                existing_configs,
+            )
         if workflow_configurations and workflow_configurations.get(
             WORKFLOW_MODEL_CONFIGURATION_V2_OVERRIDE_KEY
         ):
-            existing_workflow = await db_client.get_workflow(
-                workflow_id, organization_id=user.selected_organization_id
-            )
             if existing_workflow is None:
                 raise HTTPException(
                     status_code=404, detail=f"Workflow with id {workflow_id} not found"
                 )
-            existing_draft = await db_client.get_draft_version(workflow_id)
-            existing_configs = (
-                existing_draft.workflow_configurations
-                if existing_draft
-                else existing_workflow.released_definition.workflow_configurations
-            )
             existing_v2_override = (existing_configs or {}).get(
                 WORKFLOW_MODEL_CONFIGURATION_V2_OVERRIDE_KEY
             )
@@ -1202,23 +1291,10 @@ async def update_workflow(
             }
             workflow_configurations.pop("model_overrides", None)
         elif workflow_configurations and workflow_configurations.get("model_overrides"):
-            existing_workflow = await db_client.get_workflow(
-                workflow_id, organization_id=user.selected_organization_id
-            )
             if existing_workflow is None:
                 raise HTTPException(
                     status_code=404, detail=f"Workflow with id {workflow_id} not found"
                 )
-            existing_draft = await db_client.get_draft_version(workflow_id)
-            existing_configs = (
-                existing_draft.workflow_configurations
-                if existing_draft
-                else existing_workflow.released_definition.workflow_configurations
-            )
-            workflow_configurations = merge_workflow_configuration_secrets(
-                workflow_configurations,
-                existing_configs,
-            )
             resolved_config = await get_resolved_ai_model_configuration(
                 organization_id=user.selected_organization_id,
             )
@@ -1430,6 +1506,7 @@ async def create_workflow_run(
         organization_id=user.selected_organization_id,
         definition_id=run_inputs.definition_id,
         initial_context=initial_context,
+        effective_configurations=run_inputs.effective_configurations,
     )
     return {
         "id": run.id,
@@ -1498,6 +1575,9 @@ async def get_workflow_run(
         "call_type": run.call_type,
         "logs": run.logs,
         "annotations": run.annotations,
+        "effective_configurations": mask_workflow_configurations(
+            run.effective_configurations
+        ),
     }
 
 

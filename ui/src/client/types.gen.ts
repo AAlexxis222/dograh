@@ -2339,6 +2339,74 @@ export type DuplicateTemplateRequest = {
 };
 
 /**
+ * EffectiveDefaultConfigurationsResponse
+ *
+ * The same envelope plus the cascade warnings raised while resolving the
+ * organization layer (clamped bounds, dropped list merges).
+ */
+export type EffectiveDefaultConfigurationsResponse = {
+    /**
+     * Llm
+     */
+    llm: {
+        [key: string]: {
+            [key: string]: unknown;
+        };
+    };
+    /**
+     * Tts
+     */
+    tts: {
+        [key: string]: {
+            [key: string]: unknown;
+        };
+    };
+    /**
+     * Stt
+     */
+    stt: {
+        [key: string]: {
+            [key: string]: unknown;
+        };
+    };
+    /**
+     * Embeddings
+     */
+    embeddings: {
+        [key: string]: {
+            [key: string]: unknown;
+        };
+    };
+    /**
+     * Realtime
+     */
+    realtime: {
+        [key: string]: {
+            [key: string]: unknown;
+        };
+    };
+    /**
+     * Default Providers
+     */
+    default_providers: {
+        [key: string]: string;
+    };
+    workflow_configurations: WorkflowConfigurationDefaults;
+    /**
+     * Default Call Dispositions
+     *
+     * Built-in suggestions for call-disposition extraction. They do not enable extraction until saved in workflow_configurations.call_dispositions.
+     */
+    default_call_dispositions: Array<CallDispositionOption>;
+    text_chat_inactivity_timeout_constraints: TextChatInactivityTimeoutConstraints;
+    widget_text_defaults: WidgetTexts;
+    /**
+     * Warnings
+     */
+    warnings?: Array<string>;
+};
+
+/**
  * ElevenLabs
  */
 export type ElevenlabsSttConfiguration = {
@@ -3144,7 +3212,7 @@ export type HttpApiConfig = {
     /**
      * Custommessage
      *
-     * Custom message to play after tool execution.
+     * Custom message to play before the tool executes, while the request is in flight.
      */
     customMessage?: string | null;
     /**
@@ -4425,6 +4493,20 @@ export type OrganizationPreferences = {
      */
     disposition_mapping?: {
         [key: string]: string;
+    };
+};
+
+/**
+ * OrganizationWorkflowConfigurationDefaultsResponse
+ */
+export type OrganizationWorkflowConfigurationDefaultsResponse = {
+    /**
+     * Workflow Configurations
+     *
+     * Sparse organization base: only the keys the organization set. Workflows inherit every key they do not set themselves. The PUT replaces the whole document, so a body that omits a key the organization had set deletes it.
+     */
+    workflow_configurations: {
+        [key: string]: unknown;
     };
 };
 
@@ -6490,6 +6572,17 @@ export type ToolTestResponse = {
 };
 
 /**
+ * TranscriptConfiguration
+ */
+export type TranscriptConfiguration = {
+    /**
+     * Include End Timestamps
+     */
+    include_end_timestamps?: boolean;
+    [key: string]: unknown;
+};
+
+/**
  * TransferCallConfig
  *
  * Configuration for Transfer Call tools.
@@ -7245,6 +7338,25 @@ export type VoiceInfo = {
 };
 
 /**
+ * VoicemailDetectionConfiguration
+ *
+ * Shadow section read by run_pipeline (``voicemail_detection.enabled``)
+ * and masked/merged by the secrets registry (``api_key``). Provider-specific
+ * keys (``provider``, ``model``, ``use_workflow_llm``…) pass through.
+ */
+export type VoicemailDetectionConfiguration = {
+    /**
+     * Enabled
+     */
+    enabled?: boolean;
+    /**
+     * Api Key
+     */
+    api_key?: string | null;
+    [key: string]: unknown;
+};
+
+/**
  * VoicesResponse
  */
 export type VoicesResponse = {
@@ -7318,6 +7430,18 @@ export type WidgetTexts = {
      * Endchattext
      */
     endChatText?: string;
+    /**
+     * Endchatconfirmtext
+     */
+    endChatConfirmText?: string;
+    /**
+     * Endchatcanceltext
+     */
+    endChatCancelText?: string;
+    /**
+     * Endingchattext
+     */
+    endingChatText?: string;
     /**
      * Conversationendedtext
      */
@@ -7455,6 +7579,28 @@ export type WorkflowConfigurationDefaults = {
      * External Pbx Lead Headers
      */
     external_pbx_lead_headers?: Array<string>;
+    voicemail_detection?: VoicemailDetectionConfiguration;
+    transcript_configuration?: TranscriptConfiguration;
+    /**
+     * User Turn Stop Timeout
+     */
+    user_turn_stop_timeout?: number | null;
+    /**
+     * Model Overrides
+     */
+    model_overrides?: {
+        [key: string]: unknown;
+    } | null;
+    /**
+     * Model Configuration V2 Override
+     */
+    model_configuration_v2_override?: {
+        [key: string]: unknown;
+    } | null;
+    /**
+     * Call Dispositions Extend Org
+     */
+    call_dispositions_extend_org?: boolean;
     [key: string]: unknown;
 };
 
@@ -7476,6 +7622,47 @@ export type WorkflowCountResponse = {
      * Archived
      */
     archived: number;
+};
+
+/**
+ * WorkflowEffectiveConfigurationResponse
+ *
+ * Everything the builder needs to edit a workflow's configuration without
+ * merging layers itself. ``own`` is the sparse document of the definition being
+ * edited (draft, else published); ``effective`` is schema <- organization <- own;
+ * ``base`` is what any leaf absent from ``own`` inherits.
+ */
+export type WorkflowEffectiveConfigurationResponse = {
+    /**
+     * Effective
+     */
+    effective: {
+        [key: string]: unknown;
+    };
+    /**
+     * Own
+     */
+    own: {
+        [key: string]: unknown;
+    };
+    /**
+     * Base
+     */
+    base: {
+        [key: string]: unknown;
+    };
+    /**
+     * Warnings
+     */
+    warnings?: Array<string>;
+    /**
+     * Definition Id
+     */
+    definition_id?: number | null;
+    /**
+     * Definition Status
+     */
+    definition_status?: string | null;
 };
 
 /**
@@ -7745,6 +7932,12 @@ export type WorkflowRunResponseSchema = {
      * Annotations
      */
     annotations?: {
+        [key: string]: unknown;
+    } | null;
+    /**
+     * Effective Configurations
+     */
+    effective_configurations?: {
         [key: string]: unknown;
     } | null;
 };
@@ -9032,6 +9225,50 @@ export type GetWorkflowVersionsApiV1WorkflowWorkflowIdVersionsGetResponses = {
 };
 
 export type GetWorkflowVersionsApiV1WorkflowWorkflowIdVersionsGetResponse = GetWorkflowVersionsApiV1WorkflowWorkflowIdVersionsGetResponses[keyof GetWorkflowVersionsApiV1WorkflowWorkflowIdVersionsGetResponses];
+
+export type GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Workflow Id
+         */
+        workflow_id: number;
+    };
+    query?: never;
+    url: '/api/v1/workflow/{workflow_id}/configuration-effective';
+};
+
+export type GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetError = GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetErrors[keyof GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetErrors];
+
+export type GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkflowEffectiveConfigurationResponse;
+};
+
+export type GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetResponse = GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetResponses[keyof GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetResponses];
 
 export type PublishWorkflowApiV1WorkflowWorkflowIdPublishPostData = {
     body?: never;
@@ -12013,6 +12250,123 @@ export type SavePreferencesApiV1OrganizationsPreferencesPutResponses = {
 };
 
 export type SavePreferencesApiV1OrganizationsPreferencesPutResponse = SavePreferencesApiV1OrganizationsPreferencesPutResponses[keyof SavePreferencesApiV1OrganizationsPreferencesPutResponses];
+
+export type GetWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/v1/organizations/workflow-configuration-defaults';
+};
+
+export type GetWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsGetError = GetWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsGetErrors[keyof GetWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsGetErrors];
+
+export type GetWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: OrganizationWorkflowConfigurationDefaultsResponse;
+};
+
+export type GetWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsGetResponse = GetWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsGetResponses[keyof GetWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsGetResponses];
+
+export type SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsPutData = {
+    body: WorkflowConfigurationDefaults;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/v1/organizations/workflow-configuration-defaults';
+};
+
+export type SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsPutErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsPutError = SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsPutErrors[keyof SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsPutErrors];
+
+export type SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsPutResponses = {
+    /**
+     * Successful Response
+     */
+    200: OrganizationWorkflowConfigurationDefaultsResponse;
+};
+
+export type SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsPutResponse = SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsPutResponses[keyof SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsPutResponses];
+
+export type GetWorkflowConfigurationEffectiveDefaultsApiV1OrganizationsWorkflowConfigurationEffectiveDefaultsGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/v1/organizations/workflow-configuration-effective-defaults';
+};
+
+export type GetWorkflowConfigurationEffectiveDefaultsApiV1OrganizationsWorkflowConfigurationEffectiveDefaultsGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetWorkflowConfigurationEffectiveDefaultsApiV1OrganizationsWorkflowConfigurationEffectiveDefaultsGetError = GetWorkflowConfigurationEffectiveDefaultsApiV1OrganizationsWorkflowConfigurationEffectiveDefaultsGetErrors[keyof GetWorkflowConfigurationEffectiveDefaultsApiV1OrganizationsWorkflowConfigurationEffectiveDefaultsGetErrors];
+
+export type GetWorkflowConfigurationEffectiveDefaultsApiV1OrganizationsWorkflowConfigurationEffectiveDefaultsGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: EffectiveDefaultConfigurationsResponse;
+};
+
+export type GetWorkflowConfigurationEffectiveDefaultsApiV1OrganizationsWorkflowConfigurationEffectiveDefaultsGetResponse = GetWorkflowConfigurationEffectiveDefaultsApiV1OrganizationsWorkflowConfigurationEffectiveDefaultsGetResponses[keyof GetWorkflowConfigurationEffectiveDefaultsApiV1OrganizationsWorkflowConfigurationEffectiveDefaultsGetResponses];
 
 export type ListTelephonyConfigurationsApiV1OrganizationsTelephonyConfigsGetData = {
     body?: never;

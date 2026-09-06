@@ -1,0 +1,162 @@
+---
+title: "Workflow Settings"
+description: "Organization defaults, inherited vs own values, and how a run freezes its configuration."
+---
+
+## Overview
+
+Every workflow runs with a configuration document: call duration, ambient noise, turn
+handling, disposition codes, text-chat timeouts and more. That document is resolved from
+three layers, in order:
+
+1. **Schema defaults** shipped with Dograh.
+2. **Organization defaults** — the base every workflow in the organization inherits.
+3. **The workflow definition** pinned by the run — the workflow's own values.
+
+Later layers win key by key. A workflow only stores the keys it actually sets, so a change
+to the organization base reaches every workflow that never overrode that key.
+
+## Organization defaults
+
+Three endpoints manage the organization base:
+
+| Method | Path | Returns |
+| --- | --- | --- |
+| `GET` | `/api/v1/organizations/workflow-configuration-defaults` | The stored sparse document (secrets masked) |
+| `PUT` | `/api/v1/organizations/workflow-configuration-defaults` | The document as stored |
+| `GET` | `/api/v1/organizations/workflow-configuration-effective-defaults` | Schema defaults merged with the organization base, plus `warnings` |
+
+The `PUT` stores only the keys present in the request body. A key sent as `null` at the root
+of the document means "unset": it is dropped, and workflows fall back to the schema default.
+
+Some keys are rejected with `422` at the organization level:
+
+- **Secrets** — API keys and other credentials live on the workflow, behind their own gate.
+- **External PBX** — `external_pbx_field_mappings` and `external_pbx_lead_headers` are
+  guarded by the workflow save policy, which an organization layer would bypass.
+- **AI model sections** — `model_overrides` and `model_configuration_v2_override` already
+  have their own organization level (model configurations), so a second one would be
+  ambiguous.
+
+Custom disposition codes set in the organization base are added to the catalog returned by
+`GET /api/v1/organizations/disposition-codes`, alongside the system codes and the codes
+registered for the organization.
+
+## Inherit or override
+
+A workflow inherits every key it does not set. The workflow save stores exactly the keys the
+request carries, so a sparse document keeps every other key following the organization base.
+The builder saves only the settings you change. Every setting shows an **Inherited** or
+**Custom** badge; *Use organization default* removes the workflow's own value so the setting
+follows the organization base again (the change is stored on save). A custom value equal to
+the organization default stays custom until you use that action.
+
+Lists replace by default: a workflow that sets `call_dispositions` replaces the organization
+catalog. To extend it instead, set the sibling flag:
+
+```json
+{
+  "call_dispositions_extend_org": true,
+  "call_dispositions": [
+    {
+      "code": "callback_scheduled",
+      "description": "The caller asked to be called back at a specific time."
+    }
+  ]
+}
+```
+
+With the flag on, the workflow's options are appended to the organization catalog and
+de-duplicated by `code`; an entry whose `code` already exists in the base replaces it.
+The turn section has the same shape with its own flag: `turn.ignore_terms.merge_defaults`
+appends the workflow's terms to the inherited list instead of replacing it.
+
+Nested `null` values are kept as written; only a `null` at the root of the document means
+"unset".
+
+## Reading a workflow's effective configuration
+
+One endpoint returns the three layers a client needs to show a setting without merging
+anything itself:
+
+```
+GET /api/v1/workflow/{workflow_id}/configuration-effective
+```
+
+| Field | Contains |
+| --- | --- |
+| `effective` | What the workflow would run with today: schema defaults, organization base and the workflow's own values merged |
+| `own` | Only the keys the workflow stores itself — a leaf missing here is inherited |
+| `base` | Schema defaults merged with the organization base, i.e. what an absent leaf falls back to |
+| `warnings` | The clamp messages produced while resolving this workflow's effective document, so they can include workflow-layer clamps the organization endpoint never reports |
+| `definition_id`, `definition_status` | The definition the answer was read from, or `null` while the workflow has neither a draft nor a published definition (a duplicate before its first publish) |
+
+It reads the **draft** definition when one exists, and the published definition otherwise —
+the same choice the builder makes when it opens a workflow. Secrets are masked in all three
+layers, so the response is not a way to read stored credentials back.
+
+A setting is *custom* when its path is present in `own`, and *inherited* otherwise. That is a
+question about presence, not about values: a workflow value that happens to equal the
+organization default is still custom, and returns to inherited only when the key is removed
+from the stored document.
+
+## What a run executes
+
+The cascade is resolved **once**, when the run is created, and frozen on the run as
+`effective_configurations`. Nothing re-resolves it while the call is in flight, so editing
+the organization base or the workflow mid-call cannot change a run already underway.
+
+The frozen document is visible in the run detail response:
+
+```
+GET /api/v1/workflow/{workflow_id}/runs/{run_id}
+```
+
+```json
+{
+  "id": 1234,
+  "effective_configurations": {
+    "max_call_duration": 600,
+    "voicemail_detection": { "enabled": true, "api_key": "**************cdef" }
+  }
+}
+```
+
+Secrets are masked in that response. Runs created before this feature existed have no
+frozen snapshot; they keep reading the workflow definition they pinned at creation, so their
+behaviour is unchanged.
+
+If a stored value is out of range, the resolver clamps it instead of failing the run. At run
+creation the clamp is written to the API logs and is not returned to the caller; the
+organization effective-defaults endpoint does return the same clamps in its `warnings` list.
+Writes through the API still get a `422`.
+
+## API clients
+
+The external-PBX keys behave differently from every other key. While the external-PBX
+integration is disabled for the organization, the workflow save no longer copies
+`external_pbx_field_mappings` and `external_pbx_lead_headers` back from the stored draft, and
+they cannot be set at the organization level either. A client that replaces the document
+without them therefore clears them. Send both keys with their current values to keep them.
+The builder does this already, so this only affects API, SDK and MCP clients.
+
+## Backfill
+
+Before organization defaults existed, the builder re-sent the whole materialised document on
+every save, so most drafts carry every schema default as if it had been set by hand. Those
+baked values would shadow the organization base forever. A one-off script strips them:
+
+```bash
+python -m scripts.backfill_workflow_configuration_defaults            # dry-run report
+python -m scripts.backfill_workflow_configuration_defaults --apply    # write changes
+```
+
+Run the backfill after deploying this builder update: a workflow saved from the previous
+builder re-bakes the defaults, so a backfill run before the update can be undone by the next
+save from an old client.
+
+It rewrites **draft** definitions only — published and archived definitions are run snapshots
+and are never touched, and a workflow with no draft is left as it is. It removes only leaves
+equal to the schema default; anything you set yourself, and any key the schema does not
+declare, is kept. Surviving values are written back normalised, exactly as the workflow save
+already stores them.

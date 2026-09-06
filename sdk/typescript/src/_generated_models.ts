@@ -692,7 +692,7 @@ export interface components {
             timeout_ms: number | null;
             /**
              * Custommessage
-             * @description Custom message to play after tool execution.
+             * @description Custom message to play before the tool executes, while the request is in flight.
              */
             customMessage?: string | null;
             /**
@@ -1177,6 +1177,16 @@ export interface components {
             updated_at: string | null;
             created_by?: components["schemas"]["CreatedByResponse"] | null;
         };
+        /** TranscriptConfiguration */
+        TranscriptConfiguration: {
+            /**
+             * Include End Timestamps
+             * @default false
+             */
+            include_end_timestamps: boolean;
+        } & {
+            [key: string]: unknown;
+        };
         /**
          * TransferCallConfig
          * @description Configuration for Transfer Call tools.
@@ -1279,6 +1289,23 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /**
+         * VoicemailDetectionConfiguration
+         * @description Shadow section read by run_pipeline (``voicemail_detection.enabled``)
+         *     and masked/merged by the secrets registry (``api_key``). Provider-specific
+         *     keys (``provider``, ``model``, ``use_workflow_llm``…) pass through.
+         */
+        VoicemailDetectionConfiguration: {
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /** Api Key */
+            api_key?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** WorkflowConfigurationDefaults */
         WorkflowConfigurationDefaults: {
             ambient_noise_configuration?: components["schemas"]["AmbientNoiseConfigurationDefaults"];
@@ -1343,6 +1370,23 @@ export interface components {
             external_pbx_field_mappings?: components["schemas"]["ExternalPBXFieldMapping"][];
             /** External Pbx Lead Headers */
             external_pbx_lead_headers?: string[];
+            voicemail_detection?: components["schemas"]["VoicemailDetectionConfiguration"];
+            transcript_configuration?: components["schemas"]["TranscriptConfiguration"];
+            /** User Turn Stop Timeout */
+            user_turn_stop_timeout?: number | null;
+            /** Model Overrides */
+            model_overrides?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model Configuration V2 Override */
+            model_configuration_v2_override?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Call Dispositions Extend Org
+             * @default false
+             */
+            call_dispositions_extend_org: boolean;
         } & {
             [key: string]: unknown;
         };
@@ -1453,10 +1497,12 @@ export type RecordingListResponseSchema = components['schemas']['RecordingListRe
 export type RecordingResponseSchema = components['schemas']['RecordingResponseSchema'];
 export type ToolParameter = components['schemas']['ToolParameter'];
 export type ToolResponse = components['schemas']['ToolResponse'];
+export type TranscriptConfiguration = components['schemas']['TranscriptConfiguration'];
 export type TransferCallConfig = components['schemas']['TransferCallConfig'];
 export type TransferCallToolDefinition = components['schemas']['TransferCallToolDefinition'];
 export type UpdateWorkflowRequest = components['schemas']['UpdateWorkflowRequest'];
 export type ValidationError = components['schemas']['ValidationError'];
+export type VoicemailDetectionConfiguration = components['schemas']['VoicemailDetectionConfiguration'];
 export type WorkflowConfigurationDefaults = components['schemas']['WorkflowConfigurationDefaults'];
 export type WorkflowListResponse = components['schemas']['WorkflowListResponse'];
 export type WorkflowResponse = components['schemas']['WorkflowResponse'];
