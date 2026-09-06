@@ -7,11 +7,11 @@ no-op. ``settings_allowed`` must be a subset of the real dataclass fields
 (guarded by test_service_tuning_schema.py); identity fields owned by the
 model registry (model/voice/language/api_key) are never tunable here.
 
-Three build gates below name a knob that this build cannot honour rather than
+Four build gates below name a knob that this build cannot honour rather than
 letting it through as a silent no-op or a broken run (§1.2):
-``RESPONSES_API_AVAILABLE``, ``OPENAI_REALTIME_STT_AVAILABLE`` and
-``PROVIDER_TURN_DETECTION_AVAILABLE``. Each is a constant the PR that wires
-the feature flips.
+``RESPONSES_API_AVAILABLE``, ``OPENAI_REALTIME_STT_AVAILABLE``,
+``PROVIDER_TURN_DETECTION_AVAILABLE`` and ``TTS_SILENCE_AFTER_STOP_AVAILABLE``.
+Each is a constant the PR that wires the feature flips.
 """
 
 from __future__ import annotations
@@ -767,6 +767,34 @@ def _provider_turn_error(
     )
 
 
+TTS_SILENCE_AFTER_STOP_AVAILABLE = False
+"""Whether this build pushes silence after a TTS turn ends.
+
+``silence_time_s`` sizes that silence, and it is read in exactly one place,
+under ``if self._push_silence_after_stop`` (tts_service.py:902-903). That flag
+is a constructor parameter defaulting to False (:159) that no branch of this
+factory and no pipecat subclass ever sets, so the knob cannot reach anything:
+a placebo, which is the one failure this table exists to prevent (§1.2). The
+factory plumbing stays wired, so enabling ``push_silence_after_stop`` and
+flipping this constant is the whole change.
+"""
+
+_SILENCE_AFTER_STOP_KNOB = ("tts", ALL, "ctor", "silence_time_s")
+
+
+def _silence_after_stop_error(
+    kind: str, provider: str, section: str, name: str
+) -> str | None:
+    if TTS_SILENCE_AFTER_STOP_AVAILABLE:
+        return None
+    if (kind, provider, section, name) != _SILENCE_AFTER_STOP_KNOB:
+        return None
+    return (
+        f"{kind}.{provider}.{section}.{name}: not wired in this build "
+        "(TTS services do not push silence after stop)"
+    )
+
+
 OPENAI_REALTIME_STT_AVAILABLE = True
 """Whether this build can serve OpenAI's realtime transcription session.
 
@@ -975,7 +1003,9 @@ def validate_service_tuning(document: dict[str, Any]) -> list[str]:
                 ):
                     errors.append(f"{path}: wrong type")
                     continue
-                error = _provider_turn_error(kind, provider, "ctor", name, value)
+                error = _provider_turn_error(
+                    kind, provider, "ctor", name, value
+                ) or _silence_after_stop_error(kind, provider, "ctor", name)
                 if error:
                     errors.append(error)
             options = tuning.get("options") or {}

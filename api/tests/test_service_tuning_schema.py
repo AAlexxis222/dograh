@@ -369,9 +369,18 @@ def test_llm_temperature_bounds_track_every_llm_row():
 
 def test_all_section_uses_common_fields_only():
     _validate({"llm": {"_all": {"settings": {"temperature": 0.3, "max_tokens": 200}}}})
-    _validate({"tts": {"_all": {"ctor": {"silence_time_s": 0.4}}}})
     with pytest.raises(ValidationError, match="llm._all.settings.reasoning_effort"):
         _validate({"llm": {"_all": {"settings": {"reasoning_effort": "low"}}}})
+
+
+def test_tts_all_silence_time_is_gated_while_no_service_pushes_silence():
+    # The only ``tts._all`` ctor kwarg, and inert: ``silence_time_s`` is read
+    # solely under ``push_silence_after_stop`` (tts_service.py:902), which
+    # nothing sets. Declared and rejected by name rather than stored as a
+    # placebo; the row itself stays, so the name survives the flip.
+    assert specs.SPECS[("tts", specs.ALL)].ctor_allowed == {"silence_time_s"}
+    with pytest.raises(ValidationError, match="not wired in this build"):
+        _validate({"tts": {"_all": {"ctor": {"silence_time_s": 0.4}}}})
 
 
 def test_scope_flags_and_forbid_extra():

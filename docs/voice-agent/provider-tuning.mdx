@@ -21,10 +21,10 @@ organization base and freezes on the run exactly like every other setting descri
       }
     },
     "tts": {
-      "elevenlabs": { "settings": { "stability": 0.5, "speed": 1.1 } },
-      "_all": { "ctor": { "silence_time_s": 0.4 } }
+      "elevenlabs": { "settings": { "stability": 0.5, "speed": 1.1 } }
     },
     "llm": {
+      "_all": { "settings": { "temperature": 0.3 } },
       "openai": { "settings": { "max_tokens": 400 }, "options": { "verbosity": "high" } }
     },
     "scope": { "extraction": true }
@@ -41,15 +41,27 @@ up to three dictionaries:
 | `ctor` | Allow-listed constructor arguments, which are not settings at all | `stt.deepgram.ctor.mip_opt_out` |
 | `options` | Switches that are neither, such as which OpenAI API to speak | `llm.openai.options.api` |
 
-`_all` is a provider key that applies to every provider of its kind. Two sections have one:
-`tts._all.ctor.silence_time_s`, the silence pushed after speech stops, and
-`llm._all.settings.temperature` / `max_tokens`, the two fields every LLM provider declares. A
-provider's own key wins over `_all` key by key. Camb is the one TTS provider built without
-`silence_time_s`, so it does not take that one.
+`_all` is a provider key that applies to every provider of its kind. `llm._all.settings.temperature`
+and `max_tokens` are the two fields every LLM provider declares, so they can be set once for all of
+them. A provider's own key wins over `_all` key by key. The TTS section has one `_all` key,
+`ctor.silence_time_s`, which this build cannot serve — see [Knobs this build does not
+serve](#knobs-this-build-does-not-serve).
 
-Every knob is validated at save time against the provider's real settings. A name the provider
-does not have, a value outside its type, or a key the selected model would ignore is a `422` that
-names the path, never a setting that is stored and silently does nothing.
+Every knob is validated at save time against the provider's real settings. A name the provider does
+not have, a value of the wrong type, a value outside a closed set, and a knob that belongs to the
+other of two APIs a provider offers are each a `422` that names the path.
+
+The save cannot see which model the run will use, though, so a handful of knobs are
+**model-dependent**: they are accepted and then applied only if the selected model is one that uses
+them. Otherwise they are dropped when the service is built:
+
+| Knob | Applied when |
+| --- | --- |
+| Deepgram Flux-only settings (`eot_threshold`, `eager_eot_threshold`, `eot_timeout_ms`, `min_confidence`, `language_hints`) | The model is a Flux model |
+| Deepgram Nova-only settings (`endpointing`, `utterance_end_ms`, `keywords`, `redact`, …) | The model is not a Flux model |
+| `stt.deepgram.ctor.url` | The model is a Flux model. Nova takes a different constructor argument |
+| `stt.deepgram.settings.language_hints` | The model is `flux-general-multi` |
+| `llm.openai.options.reasoning` and `verbosity` | The model is a `gpt-5` model. On any other model they are accepted and unused |
 
 ### Providers covered
 
@@ -60,10 +72,10 @@ names the path, never a setting that is stored and silently does nothing.
 | `llm` | `atlascloud`, `aws_bedrock`, `azure`, `dograh`, `google`, `google_vertex`, `groq`, `huggingface`, `minimax`, `openai`, `openrouter`, `sarvam`, `speaches`, `_all` |
 | `realtime` | `azure_realtime`, `google_realtime`, `google_vertex_realtime`, `grok_realtime`, `openai_realtime`, `ultravox_realtime` |
 
-Deepgram is one key with two wire protocols: the allow-list is the union of Flux and Nova, and the
-model on the run decides which half applies. A Nova-only knob under a Flux model, or the reverse,
-never reaches the service. OpenAI STT works the same way across its segmented and realtime
-transcription services, selected by `stt.openai.options.api`.
+Deepgram is one key with two wire protocols, Flux and Nova: the allow-list is the union of both,
+which is why its knobs are model-dependent in the table above. OpenAI STT also has two
+transcription services behind one key, but there the choice is explicit — `stt.openai.options.api`
+selects it — so a knob belonging to the other one is a `422` at save time rather than a drop.
 
 `tts.speaches` is not tunable yet: the provider works, but it has no row, so any knob under it is
 rejected as an unknown provider rather than accepted and dropped.
@@ -151,13 +163,14 @@ not reach it.
 
 | Option | Values |
 | --- | --- |
-| `api` | `chat_completions` (default), `responses` |
+| `api` | `chat_completions` (default), `responses` (not in this build) |
 | `reasoning.effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` |
-| `reasoning.summary` | `auto`, `concise`, `detailed` |
+| `reasoning.summary` | `auto`, `concise`, `detailed` (not in this build) |
 | `verbosity` | `low`, `medium`, `high` |
 
-`reasoning.effort` and `verbosity` are how the `gpt-5` extras above are overridden; both are
-chat-completions parameters, and on a non-`gpt-5` model neither is sent.
+`reasoning.effort` and `verbosity` are how the `gpt-5` extras above are overridden. They are
+model-dependent: only a `gpt-5` model sends them, and on any other model they are accepted and
+unused.
 
 `stt.openai.options.api` chooses between `segments`, the segmented Audio transcription service, and
 `realtime`, the realtime transcription session. Each has its own settings, and a knob belonging to
@@ -168,9 +181,9 @@ the other one is rejected rather than quietly ignored.
 `service_tuning.<kind>.<provider>.ctor.url` is registered as a secret: a self-hosted transcription
 endpoint usually carries its credentials in the URL. It is masked when the configuration is read
 back, restored from storage when a save arrives with the mask still in place, and rejected at the
-organization level, where secrets do not belong. Deepgram is the provider that has it today. In
-hosted deployments it also goes through the same egress check as every other runtime URL, so it
-cannot be pointed at an internal address.
+organization level, where secrets do not belong. Deepgram is the provider that has it today, and it
+takes effect only on a Flux model. In hosted deployments it also goes through the same egress check
+as every other runtime URL, so it cannot be pointed at an internal address.
 
 ## Knobs this build does not serve
 
@@ -181,6 +194,7 @@ Each is a single constant that the pull request wiring the feature flips.
 | --- | --- |
 | `llm.openai.options.api: "responses"` and `options.reasoning.summary` | The Responses service still needs the node-transition deferral ported to it. |
 | `stt.speechmatics.settings.turn_detection_mode` other than `external`, `stt.gladia.settings.enable_vad: true`, `stt.sarvam.settings.vad_signals: true`, `stt.assemblyai.ctor.vad_force_turn_endpoint: false` | These values hand turn detection to the provider. The pipeline always passes its own turn strategies today, so the provider would endpoint server-side while nothing acted on it. Turn handling is its own change. |
+| `tts._all.ctor.silence_time_s` | It sizes the silence pushed after a TTS turn ends, which only happens when a service is built with `push_silence_after_stop`. No TTS service here is, so the value would size a silence nobody pushes. |
 
 The fields stay declared either way, so the knobs keep one name across the change.
 
@@ -194,14 +208,15 @@ with the reason, so the setting is not stored as a placebo:
 - **Speechmatics `extra_params` and `operating_point`** — `operating_point` *is* the model for
   Speechmatics and is derived from the model configuration; `extra_params` is splatted onto the SDK
   config and would re-open it.
-- **Ultravox `extra` keys the service owns** — the prompt, model, voice, tools, transport medium and
-  `firstSpeakerSettings`, which the greeting decision rewrites on every call. Anything else Ultravox
-  accepts still passes.
+- **Ultravox `extra` keys the service or the registry owns.** `extra` is merged over the
+  call-creation body last, so a key the service already set would be overwritten by it. Ten are
+  rejected: `systemPrompt`, `model`, `voice`, `temperature`, `maxDuration`, `initialOutputMedium`,
+  `metadata`, `selectedTools`, `medium`, and `firstSpeakerSettings`, which the greeting decision
+  rewrites on every call.
 
-Three more are accepted but conditional on the model or on a sibling setting, so they can be a
-no-op without being wrong:
+Two more are accepted but conditional on a sibling setting or on the model, on top of the
+model-dependent knobs listed above:
 
-- **Deepgram Flux `language_hints`** are only sent on a multi-language model.
 - **ElevenLabs STT VAD settings** are dropped when `ctor.commit_strategy` is `manual`, since there
   is no VAD to configure.
 - **OpenAI realtime STT `prompt`** is dropped, with a warning, on `gpt-realtime-whisper`, which does
