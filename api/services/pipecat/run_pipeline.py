@@ -66,6 +66,10 @@ from api.services.pipecat.service_factory import (
     create_tts_service,
     stt_uses_external_turns,
 )
+from api.services.pipecat.service_tuning import (
+    llm_document_for_role,
+    llm_tuning_applies,
+)
 from api.services.pipecat.termination_funnel_processor import (
     TerminationFunnelProcessor,
 )
@@ -684,8 +688,11 @@ async def _run_pipeline_impl(
     is_realtime = user_config.is_realtime and user_config.realtime is not None
 
     # Create services based on user configuration
+    service_tuning = run_configs.get("service_tuning")
     if is_realtime:
-        llm = create_realtime_llm_service(user_config, audio_config)
+        llm = create_realtime_llm_service(
+            user_config, audio_config, tuning=service_tuning
+        )
         stt = None
         tts = None
         # Realtime services don't implement run_inference, so create a
@@ -694,6 +701,8 @@ async def _run_pipeline_impl(
         inference_llm = create_llm_service(
             user_config,
             correlation_id=mps_correlation_id,
+            tuning=service_tuning,
+            role="inference",
         )
     else:
         stt = create_stt_service(
@@ -701,28 +710,48 @@ async def _run_pipeline_impl(
             audio_config,
             keyterms=keyterms,
             correlation_id=mps_correlation_id,
+            tuning=service_tuning,
         )
         tts = create_tts_service(
             user_config,
             audio_config,
             correlation_id=mps_correlation_id,
+            tuning=service_tuning,
         )
-        llm = create_llm_service(user_config, correlation_id=mps_correlation_id)
+        llm = create_llm_service(
+            user_config, correlation_id=mps_correlation_id, tuning=service_tuning
+        )
         inference_llm = None
 
     # Variable and disposition extraction may share this out-of-band LLM. A
     # shared conversation LLM cannot carry an extraction usage_context without
     # also tagging normal conversation or context-summarization requests.
-    variable_extraction_llm = (
-        create_llm_service(
+    #
+    # A tuned conversation LLM must not leak its knobs into extraction unless
+    # scope.extraction says so; sharing the instance would do exactly that.
+    shares_conversation_llm = not llm_tuning_applies(
+        service_tuning, "conversation"
+    ) or llm_tuning_applies(service_tuning, "extraction")
+    if (
+        needs_extraction_llm
+        and user_config.llm.provider == ServiceProviders.DOGRAH.value
+    ):
+        variable_extraction_llm = create_llm_service(
             user_config,
             correlation_id=mps_correlation_id,
             usage_context="variable_extraction",
+            tuning=service_tuning,
+            role="extraction",
         )
-        if needs_extraction_llm
-        and user_config.llm.provider == ServiceProviders.DOGRAH.value
-        else inference_llm or llm
-    )
+    elif needs_extraction_llm and not shares_conversation_llm:
+        variable_extraction_llm = create_llm_service(
+            user_config,
+            correlation_id=mps_correlation_id,
+            tuning=service_tuning,
+            role="extraction",
+        )
+    else:
+        variable_extraction_llm = inference_llm or llm
 
     # Stamp the providers/models actually resolved for this run onto
     # initial_context so they're available for post-call analytics
@@ -1010,6 +1039,8 @@ async def _run_pipeline_impl(
                 user_config,
                 correlation_id=mps_correlation_id,
                 usage_context="voicemail_detection",
+                tuning=service_tuning,
+                role="voicemail",
             )
         else:
             voicemail_llm = create_llm_service_from_provider(
@@ -1017,6 +1048,7 @@ async def _run_pipeline_impl(
                 model=voicemail_config.get("model", "gpt-4.1"),
                 api_key=voicemail_config.get("api_key", ""),
                 usage_context="voicemail_detection",
+                tuning=llm_document_for_role(service_tuning, "voicemail"),
             )
 
         long_speech_timeout = voicemail_config.get("long_speech_timeout", 8.0)

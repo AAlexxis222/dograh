@@ -22,6 +22,7 @@ from api.services.pipecat.gemini_json_schema_adapter import (
     DograhGeminiJSONSchemaAdapter,
 )
 from api.services.pipecat.minimax_tts import MiniMaxOwnedSessionTTSService
+from api.services.pipecat.service_tuning import LLMRole, llm_document_for_role
 from api.utils.url_security import validate_user_configured_service_url
 from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAISTTSettings
 from pipecat.services.aws.llm import AWSBedrockLLMService, AWSBedrockLLMSettings
@@ -253,12 +254,17 @@ def create_stt_service(
     audio_config: "AudioConfig",
     keyterms: list[str] | None = None,
     correlation_id: str | None = None,
+    *,
+    tuning: dict | None = None,
 ):
     """Create and return appropriate STT service based on user configuration
 
     Args:
         user_config: User configuration containing STT settings
         keyterms: Optional list of keyterms for speech recognition boosting (Deepgram only)
+        tuning: The run's ``service_tuning`` document (validated at the PUT and
+            clamped by the cascade resolver). ``None`` means "build exactly the
+            defaults below".
     """
     logger.info(
         f"Creating STT service: provider={user_config.stt.provider}, model={user_config.stt.model}"
@@ -552,13 +558,19 @@ def create_stt_service(
 
 @_report_service_factory_failures(ErrorSource.TTS, config_section="tts")
 def create_tts_service(
-    user_config, audio_config: "AudioConfig", correlation_id: str | None = None
+    user_config,
+    audio_config: "AudioConfig",
+    correlation_id: str | None = None,
+    *,
+    tuning: dict | None = None,
 ):
     """Create and return appropriate TTS service based on user configuration
 
     Args:
         user_config: User configuration containing TTS settings
         transport_type: Type of transport (e.g., 'twilio', 'webrtc')
+        tuning: The run's ``service_tuning`` document; ``None`` builds the
+            defaults below unchanged.
     """
     logger.info(
         f"Creating TTS service: provider={user_config.tts.provider}, model={user_config.tts.model}"
@@ -950,6 +962,7 @@ def create_llm_service_from_provider(
     temperature: float | None = None,
     bill_to: str | None = None,
     usage_context: str | None = None,
+    tuning: dict | None = None,
 ):
     """Create an LLM service from explicit provider/model/api_key.
 
@@ -959,6 +972,9 @@ def create_llm_service_from_provider(
         usage_context: Optional tag describing what the LLM instance is used for
             (e.g. "voicemail_detection"). Sent as request metadata by the Dograh
             provider; ignored by other providers.
+        tuning: The run's ``service_tuning`` document, already narrowed by the
+            caller to the roles it applies to (``llm_document_for_role``);
+            ``None`` builds the defaults below unchanged.
     """
     logger.info(f"Creating LLM service: provider={provider}, model={model}")
     if provider in (
@@ -1075,11 +1091,17 @@ def create_llm_service_from_provider(
 
 
 @_report_service_factory_failures(ErrorSource.LLM, config_section="realtime")
-def create_realtime_llm_service(user_config, audio_config: "AudioConfig"):
+def create_realtime_llm_service(
+    user_config, audio_config: "AudioConfig", *, tuning: dict | None = None
+):
     """Create a realtime (speech-to-speech) LLM service that handles STT+LLM+TTS.
 
     These services bypass separate STT/TTS and handle audio directly via
     a bidirectional WebSocket connection. Reads from user_config.realtime.
+
+    Args:
+        tuning: The run's ``service_tuning`` document; ``None`` builds the
+            defaults below unchanged.
     """
     realtime_config = user_config.realtime
     provider = realtime_config.provider
@@ -1288,8 +1310,18 @@ def create_llm_service(
     user_config,
     correlation_id: str | None = None,
     usage_context: str | None = None,
+    *,
+    tuning: dict | None = None,
+    role: LLMRole = "conversation",
 ):
-    """Create and return appropriate LLM service based on user configuration."""
+    """Create and return appropriate LLM service based on user configuration.
+
+    Args:
+        tuning: The run's ``service_tuning`` document.
+        role: Which LLM instance this is. ``llm`` tuning reaches the
+            conversation LLM always and the secondary instances only when
+            ``service_tuning.scope`` opts them in.
+    """
     provider = user_config.llm.provider
     model = user_config.llm.model
     api_key = user_config.llm.api_key
@@ -1329,6 +1361,7 @@ def create_llm_service(
         api_key,
         correlation_id=correlation_id,
         usage_context=usage_context,
+        tuning=llm_document_for_role(tuning, role),
         **kwargs,
     )
 
