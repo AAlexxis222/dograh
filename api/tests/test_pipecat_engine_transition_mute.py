@@ -10,6 +10,7 @@ that runs inside the transition function.
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
+from pipecat.services.llm_service import FunctionCallParams
 from pipecat.tests.mock_transport import MockTransport
 from pipecat.transports.base_transport import TransportParams
 from pipecat.turns.user_mute import (
@@ -30,6 +32,7 @@ from pipecat.turns.user_mute import (
 )
 
 from api.services.workflow.pipecat_engine import PipecatEngine
+from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
 from api.services.workflow.pipecat_engine_variable_extractor import (
     VariableExtractionManager,
 )
@@ -249,3 +252,107 @@ class TestTransitionFunctionMutesUser:
             "set after the transition function's result was delivered, got "
             f"{function_call_mute_strategy._function_call_in_progress}"
         )
+
+
+def _function_call_params(engine: PipecatEngine, name: str) -> FunctionCallParams:
+    return FunctionCallParams(
+        function_name=name,
+        tool_call_id=f"call_{name}",
+        arguments={},
+        llm=engine.llm,
+        pipeline_worker=engine.task,
+        context=engine.context,
+        result_callback=AsyncMock(),
+    )
+
+
+class TestQueuedSpeechMuteResetWithoutAudio:
+    """The queued-speech mute must be released when no audio ever plays.
+
+    ``_queued_speech_mute_state`` is set to ``"waiting"`` before the recording
+    is fetched. If the fetch fails nothing is queued, so the
+    ``BotStoppedSpeakingFrame`` that normally returns the state to ``"idle"``
+    never arrives and the user would stay muted for the rest of the call.
+    """
+
+    @pytest.mark.asyncio
+    async def test_transition_audio_fetch_failure_resets_mute_state(
+        self, simple_workflow: WorkflowGraph
+    ):
+        llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
+        engine, _transport, _task, _strategy, _agg = await _build_engine_and_pipeline(
+            simple_workflow, llm
+        )
+        engine.set_fetch_recording_audio(AsyncMock(return_value=None))
+
+        transition = await engine._create_transition_func(
+            "end_call",
+            "end",
+            transition_speech_type="audio",
+            transition_speech_recording_id="42",
+        )
+        params = _function_call_params(engine, "end_call")
+
+        with (
+            patch.object(
+                engine, "_perform_variable_extraction_if_needed", new_callable=AsyncMock
+            ),
+            patch.object(engine, "set_node", new_callable=AsyncMock),
+        ):
+            await transition(params)
+
+        assert engine._queued_speech_mute_state == "idle"
+        params.result_callback.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_http_tool_audio_fetch_failure_resets_mute_state(
+        self, simple_workflow: WorkflowGraph
+    ):
+        llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
+        engine, _transport, _task, _strategy, _agg = await _build_engine_and_pipeline(
+            simple_workflow, llm
+        )
+        engine.set_fetch_recording_audio(AsyncMock(return_value=None))
+
+        manager = CustomToolManager(engine)
+        tool = SimpleNamespace(
+            definition={
+                "config": {
+                    "customMessageType": "audio",
+                    "customMessageRecordingId": "42",
+                }
+            }
+        )
+        handler = manager._create_http_tool_handler(tool, "lookup_order")
+        params = _function_call_params(engine, "lookup_order")
+
+        with (
+            patch(
+                "api.services.workflow.pipecat_engine_custom_tools.execute_http_tool",
+                new_callable=AsyncMock,
+                return_value={"status": "ok"},
+            ),
+            patch.object(
+                manager, "get_organization_id", new_callable=AsyncMock, return_value=1
+            ),
+        ):
+            await handler(params)
+
+        assert engine._queued_speech_mute_state == "idle"
+        params.result_callback.assert_awaited_once_with({"status": "ok"})
+
+    @pytest.mark.asyncio
+    async def test_wait_for_speech_playback_timeout_resets_mute_state(
+        self, simple_workflow: WorkflowGraph
+    ):
+        llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
+        engine, _transport, _task, _strategy, _agg = await _build_engine_and_pipeline(
+            simple_workflow, llm
+        )
+        engine.arm_speech_playback()
+        engine._queued_speech_mute_state = "waiting"
+
+        played = await engine.wait_for_speech_playback(start_timeout=0.01)
+
+        assert played is False
+        assert engine._queued_speech_mute_state == "idle"
