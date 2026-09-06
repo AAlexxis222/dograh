@@ -12,6 +12,26 @@ from typing import Any
 
 _FLUX_PROVIDERS = ("deepgram", "dograh")
 
+LLM_PROVIDERS = (
+    "_all",
+    "atlascloud",
+    "aws_bedrock",
+    "azure",
+    "dograh",
+    "google",
+    "google_vertex",
+    "groq",
+    "huggingface",
+    "minimax",
+    "openai",
+    "openrouter",
+    "sarvam",
+    "speaches",
+)
+"""Every ``llm`` key in ``service_tuning_specs.SPECS``, repeated here because
+this module must stay importable without pipecat. Kept in step by
+test_service_tuning_schema.py::test_llm_temperature_bounds_track_every_llm_row."""
+
 SERVICE_TUNING_NUMERIC_BOUNDS: tuple[tuple[tuple[str, ...], float, float], ...] = tuple(
     [
         (("service_tuning", "stt", p, "settings", "eot_threshold"), 0.5, 1.0)
@@ -34,7 +54,10 @@ SERVICE_TUNING_NUMERIC_BOUNDS: tuple[tuple[tuple[str, ...], float, float], ...] 
             1.0,
         ),
         (("service_tuning", "tts", "elevenlabs", "settings", "style"), 0.0, 1.0),
-        (("service_tuning", "llm", "_all", "settings", "temperature"), 0.0, 2.0),
+    ]
+    + [
+        (("service_tuning", "llm", p, "settings", "temperature"), 0.0, 2.0)
+        for p in LLM_PROVIDERS
     ]
 )
 

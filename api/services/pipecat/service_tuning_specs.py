@@ -16,6 +16,8 @@ import typing
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from pipecat.services.aws.llm import AWSBedrockLLMSettings
+from pipecat.services.azure.llm import AzureLLMSettings
 from pipecat.services.deepgram.flux.base import DeepgramFluxSTTSettings
 from pipecat.services.deepgram.flux.stt import DeepgramFluxSTTService
 from pipecat.services.deepgram.stt import DeepgramSTTService, DeepgramSTTSettings
@@ -25,10 +27,18 @@ from pipecat.services.elevenlabs.stt import (
     ElevenLabsRealtimeSTTSettings,
 )
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService, ElevenLabsTTSSettings
+from pipecat.services.google.llm import GoogleLLMSettings
+from pipecat.services.google.vertex.llm import GoogleVertexLLMSettings
+from pipecat.services.groq.llm import GroqLLMSettings
+from pipecat.services.huggingface.llm import HuggingFaceLLMSettings
+from pipecat.services.minimax.llm import MiniMaxLLMSettings
 from pipecat.services.openai.base_llm import OpenAILLMSettings
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.openai.tts import OpenAITTSService, OpenAITTSSettings
+from pipecat.services.openrouter.llm import OpenRouterLLMSettings
+from pipecat.services.sarvam.llm import SarvamLLMSettings
 from pipecat.services.settings import LLMSettings
+from pipecat.services.speaches.llm import SpeachesLLMSettings
 
 ALL = "_all"
 KINDS = ("stt", "tts", "llm", "realtime")
@@ -172,19 +182,57 @@ SPECS[("tts", ALL)] = TuningSpec(
 SPECS[("llm", ALL)] = TuningSpec(
     "llm", ALL, LLMSettings, frozenset({"temperature", "max_tokens"})
 )
-SPECS[("llm", "openai")] = TuningSpec(
-    "llm",
+# Deprecated on LLMSettings (1.7.0) and owned by the turn strategies, not by
+# the model configuration.
+_TURN_COMPLETION = ("filter_incomplete_user_turns", "user_turn_completion_config")
+# ``top_k`` on top of those: no LLM branch this factory builds sends it except
+# Google (google/llm.py:387). The OpenAI client library drops it
+# (openai/base_llm.py:349-361, inherited by every OpenAI-compatible provider
+# below) and AWS Bedrock only ever stores None (aws/llm.py:180), so exposing
+# it there would be a knob that silently does nothing — the one failure this
+# table exists to prevent.
+_LLM_EXCLUDED = _TURN_COMPLETION + ("top_k",)
+
+
+def _llm_row(provider: str, settings_cls: type, **kwargs: Any) -> TuningSpec:
+    return TuningSpec(
+        "llm", provider, settings_cls, _fields(settings_cls, *_LLM_EXCLUDED), **kwargs
+    )
+
+
+SPECS[("llm", "openai")] = _llm_row(
     "openai",
     OpenAILLMSettings,
-    _fields(
-        OpenAILLMSettings,
-        "filter_incomplete_user_turns",
-        "user_turn_completion_config",
-        "top_k",
-    ),
     service_classes=(OpenAILLMService,),
     options_allowed=frozenset({"api", "reasoning", "verbosity"}),
 )
+# AtlasCloud is served by the OpenAI branch of the factory (service_factory
+# .py:1079-1101) and so shares its Settings class; the gpt-5 extras are an
+# OpenAI-model rule, so it gets no ``options``.
+SPECS[("llm", "atlascloud")] = _llm_row("atlascloud", OpenAILLMSettings)
+SPECS[("llm", "google")] = TuningSpec(
+    "llm",
+    "google",
+    GoogleLLMSettings,
+    _fields(GoogleLLMSettings, *_TURN_COMPLETION),
+)
+SPECS[("llm", "google_vertex")] = TuningSpec(
+    "llm",
+    "google_vertex",
+    GoogleVertexLLMSettings,
+    _fields(GoogleVertexLLMSettings, *_TURN_COMPLETION),
+)
+SPECS[("llm", "groq")] = _llm_row("groq", GroqLLMSettings)
+SPECS[("llm", "openrouter")] = _llm_row("openrouter", OpenRouterLLMSettings)
+SPECS[("llm", "azure")] = _llm_row("azure", AzureLLMSettings)
+SPECS[("llm", "huggingface")] = _llm_row("huggingface", HuggingFaceLLMSettings)
+SPECS[("llm", "speaches")] = _llm_row("speaches", SpeachesLLMSettings)
+SPECS[("llm", "minimax")] = _llm_row("minimax", MiniMaxLLMSettings)
+SPECS[("llm", "sarvam")] = _llm_row("sarvam", SarvamLLMSettings)
+# DograhLLMService declares no Settings class of its own: it inherits
+# OpenAILLMService's (dograh/llm.py:47,62).
+SPECS[("llm", "dograh")] = _llm_row("dograh", OpenAILLMSettings)
+SPECS[("llm", "aws_bedrock")] = _llm_row("aws_bedrock", AWSBedrockLLMSettings)
 
 
 def spec_for(kind: str, provider: str) -> TuningSpec | None:
@@ -295,6 +343,53 @@ def _type_ok(settings_classes: tuple[type, ...], name: str, value: Any) -> bool:
     return not found_field
 
 
+RESPONSES_API_AVAILABLE = False
+"""Whether this build can serve ``llm.openai.options.api="responses"``.
+
+The Responses service needs the node-transition deferral ported to it before
+it can replace chat completions; until that lands the knob is a named 422
+rather than a silent downgrade to chat completions.
+"""
+
+_OPENAI_APIS = frozenset({"chat_completions", "responses"})
+_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+_REASONING_SUMMARIES = frozenset({"auto", "concise", "detailed"})
+_VERBOSITIES = frozenset({"low", "medium", "high"})
+
+
+def _validate_openai_llm_options(options: dict[str, Any]) -> list[str]:
+    """Value checks for ``llm.openai.options`` (spec §5.4).
+
+    The generic loop below only checks that an option *name* is declared;
+    these three carry closed value sets, and ``reasoning`` is a nested object,
+    so a bad value would otherwise reach the provider as a 400 at call time.
+    """
+    errors: list[str] = []
+    api = options.get("api")
+    if api is not None:
+        if api not in _OPENAI_APIS:
+            errors.append("llm.openai.options.api: invalid value")
+        elif api == "responses" and not RESPONSES_API_AVAILABLE:
+            errors.append(
+                "llm.openai.options.api: responses is not available in this build "
+                "(node-transition deferral not ported)"
+            )
+    if "reasoning" in options:
+        reasoning = options["reasoning"]
+        if not isinstance(reasoning, dict):
+            errors.append("llm.openai.options.reasoning: wrong type")
+        else:
+            allowed = {"effort": _REASONING_EFFORTS, "summary": _REASONING_SUMMARIES}
+            for name, value in reasoning.items():
+                if name not in allowed:
+                    errors.append(f"llm.openai.options.reasoning.{name}: unknown key")
+                elif value not in allowed[name]:
+                    errors.append(f"llm.openai.options.reasoning.{name}: invalid value")
+    if "verbosity" in options and options["verbosity"] not in _VERBOSITIES:
+        errors.append("llm.openai.options.verbosity: invalid value")
+    return errors
+
+
 def validate_service_tuning(document: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     for kind in KINDS:
@@ -323,7 +418,10 @@ def validate_service_tuning(document: dict[str, Any]) -> list[str]:
             for name in tuning.get("ctor") or {}:
                 if name not in spec.ctor_allowed:
                     errors.append(f"{kind}.{provider}.ctor.{name}: not allowed")
-            for name in tuning.get("options") or {}:
+            options = tuning.get("options") or {}
+            for name in options:
                 if name not in spec.options_allowed:
                     errors.append(f"{kind}.{provider}.options.{name}: not allowed")
+            if kind == "llm" and provider == "openai":
+                errors.extend(_validate_openai_llm_options(options))
     return errors

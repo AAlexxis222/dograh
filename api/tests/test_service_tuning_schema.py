@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
+from api.services.configuration import service_tuning_bounds as bounds
 from api.services.pipecat import service_tuning_specs as specs
 
 
@@ -59,6 +60,45 @@ def test_options_only_where_declared():
     _validate({"llm": {"openai": {"options": {"reasoning": {"effort": "low"}}}}})
     with pytest.raises(ValidationError, match="stt.deepgram.options.api: not allowed"):
         _validate({"stt": {"deepgram": {"options": {"api": "x"}}}})
+
+
+def test_openai_option_values_are_checked_not_just_their_names():
+    _validate(
+        {
+            "llm": {
+                "openai": {
+                    "options": {
+                        "api": "chat_completions",
+                        "reasoning": {"effort": "high", "summary": "concise"},
+                        "verbosity": "high",
+                    }
+                }
+            }
+        }
+    )
+    for options, message in (
+        ({"api": "grpc"}, "llm.openai.options.api: invalid value"),
+        ({"reasoning": "high"}, "llm.openai.options.reasoning: wrong type"),
+        (
+            {"reasoning": {"effort": "extreme"}},
+            "llm.openai.options.reasoning.effort: invalid value",
+        ),
+        (
+            {"reasoning": {"depth": "low"}},
+            "llm.openai.options.reasoning.depth: unknown key",
+        ),
+        ({"verbosity": "loud"}, "llm.openai.options.verbosity: invalid value"),
+    ):
+        with pytest.raises(ValidationError, match=message):
+            _validate({"llm": {"openai": {"options": options}}})
+
+
+def test_llm_temperature_bounds_track_every_llm_row():
+    # Ruling 2 (controller): the bounds module can't import pipecat, so it
+    # repeats the provider names; this is the guard against them drifting.
+    assert set(bounds.LLM_PROVIDERS) == {
+        provider for (kind, provider) in specs.SPECS if kind == "llm"
+    }
 
 
 def test_all_section_uses_common_fields_only():

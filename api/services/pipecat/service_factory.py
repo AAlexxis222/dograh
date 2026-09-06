@@ -1076,6 +1076,7 @@ def create_llm_service_from_provider(
             ``None`` builds the defaults below unchanged.
     """
     logger.info(f"Creating LLM service: provider={provider}, model={model}")
+    plan = tuning_for(tuning, "llm", provider)
     if provider in (
         ServiceProviders.OPENAI.value,
         ServiceProviders.ATLASCLOUD.value,
@@ -1085,23 +1086,30 @@ def create_llm_service_from_provider(
             _validate_runtime_service_url(base_url, "base_url")
             kwargs["base_url"] = base_url
         if "gpt-5" in model:
-            return OpenAILLMService(
-                api_key=api_key,
-                settings=OpenAILLMSettings(
-                    model=model,
-                    extra={"reasoning_effort": "minimal", "verbosity": "low"},
-                ),
-                **kwargs,
-            )
+            # Today's behaviour, declared: two extras and no temperature
+            # (spec §5.4). ``extra`` is REGISTRY_OWNED, so these two keys are
+            # only ever reachable through ``options`` — never through
+            # ``from_mapping``'s overflow.
+            reasoning = plan.options.get("reasoning") or {}
+            settings = build_settings(OpenAILLMSettings, {"model": model}, plan)
+            settings.extra = {
+                "reasoning_effort": reasoning.get("effort", "minimal"),
+                "verbosity": plan.options.get("verbosity", "low"),
+            }
+            return OpenAILLMService(api_key=api_key, settings=settings, **kwargs)
         return OpenAILLMService(
             api_key=api_key,
-            settings=OpenAILLMSettings(model=model, temperature=0.1),
+            settings=build_settings(
+                OpenAILLMSettings, {"model": model, "temperature": 0.1}, plan
+            ),
             **kwargs,
         )
     elif provider == ServiceProviders.GROQ.value:
         return GroqLLMService(
             api_key=api_key,
-            settings=GroqLLMSettings(model=model, temperature=0.1),
+            settings=build_settings(
+                GroqLLMSettings, {"model": model, "temperature": 0.1}, plan
+            ),
         )
     elif provider == ServiceProviders.OPENROUTER.value:
         kwargs = {}
@@ -1110,21 +1118,27 @@ def create_llm_service_from_provider(
             kwargs["base_url"] = base_url
         return OpenRouterLLMService(
             api_key=api_key,
-            settings=OpenRouterLLMSettings(model=model, temperature=0.1),
+            settings=build_settings(
+                OpenRouterLLMSettings, {"model": model, "temperature": 0.1}, plan
+            ),
             **kwargs,
         )
     elif provider == ServiceProviders.GOOGLE.value:
         model = _migrate_deprecated_google_model(model)
         return DograhGoogleLLMService(
             api_key=api_key,
-            settings=GoogleLLMSettings(model=model, temperature=0.1),
+            settings=build_settings(
+                GoogleLLMSettings, {"model": model, "temperature": 0.1}, plan
+            ),
         )
     elif provider == ServiceProviders.GOOGLE_VERTEX.value:
         return DograhGoogleVertexLLMService(
             credentials=credentials,
             project_id=project_id,
             location=location or "us-east4",
-            settings=GoogleVertexLLMSettings(model=model, temperature=0.1),
+            settings=build_settings(
+                GoogleVertexLLMSettings, {"model": model, "temperature": 0.1}, plan
+            ),
         )
     elif provider == ServiceProviders.AZURE.value:
         if endpoint:
@@ -1132,7 +1146,9 @@ def create_llm_service_from_provider(
         return AzureLLMService(
             api_key=api_key,
             endpoint=endpoint,
-            settings=AzureLLMSettings(model=model, temperature=0.1),
+            settings=build_settings(
+                AzureLLMSettings, {"model": model, "temperature": 0.1}, plan
+            ),
         )
     elif provider == ServiceProviders.DOGRAH.value:
         return DograhLLMService(
@@ -1140,14 +1156,14 @@ def create_llm_service_from_provider(
             api_key=api_key,
             correlation_id=correlation_id,
             usage_context=usage_context,
-            settings=OpenAILLMSettings(model=model),
+            settings=build_settings(OpenAILLMSettings, {"model": model}, plan),
         )
     elif provider == ServiceProviders.AWS_BEDROCK.value:
         return AWSBedrockLLMService(
             aws_access_key=aws_access_key,
             aws_secret_key=aws_secret_key,
             aws_region=aws_region,
-            settings=AWSBedrockLLMSettings(model=model),
+            settings=build_settings(AWSBedrockLLMSettings, {"model": model}, plan),
         )
     elif provider == ServiceProviders.SPEACHES.value:
         base_url = base_url or "http://localhost:11434/v1"
@@ -1155,7 +1171,7 @@ def create_llm_service_from_provider(
         return SpeachesLLMService(
             base_url=base_url,
             api_key=api_key or "none",
-            settings=SpeachesLLMSettings(model=model),
+            settings=build_settings(SpeachesLLMSettings, {"model": model}, plan),
         )
     elif provider == ServiceProviders.HUGGINGFACE.value:
         base_url = base_url or "https://router.huggingface.co/v1"
@@ -1164,7 +1180,9 @@ def create_llm_service_from_provider(
             api_key=api_key,
             base_url=base_url,
             bill_to=bill_to,
-            settings=HuggingFaceLLMSettings(model=model, temperature=0.1),
+            settings=build_settings(
+                HuggingFaceLLMSettings, {"model": model, "temperature": 0.1}, plan
+            ),
         )
     elif provider == ServiceProviders.MINIMAX.value:
         base_url = base_url or "https://api.minimax.io/v1"
@@ -1172,17 +1190,25 @@ def create_llm_service_from_provider(
         return MiniMaxLLMService(
             api_key=api_key,
             base_url=base_url,
-            settings=MiniMaxLLMService.Settings(
-                model=model,
-                temperature=temperature if temperature is not None else 1.0,
+            settings=build_settings(
+                MiniMaxLLMService.Settings,
+                {
+                    "model": model,
+                    "temperature": temperature if temperature is not None else 1.0,
+                },
+                plan,
             ),
         )
     elif provider == ServiceProviders.SARVAM.value:
         return SarvamLLMService(
             api_key=api_key,
-            settings=SarvamLLMSettings(
-                model=model,
-                temperature=temperature if temperature is not None else 0.5,
+            settings=build_settings(
+                SarvamLLMSettings,
+                {
+                    "model": model,
+                    "temperature": temperature if temperature is not None else 0.5,
+                },
+                plan,
             ),
         )
     else:
