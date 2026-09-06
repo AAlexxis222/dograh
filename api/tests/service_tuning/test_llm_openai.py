@@ -11,7 +11,11 @@ from openai import NOT_GIVEN
 from pydantic import ValidationError
 
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
-from api.services.pipecat.service_factory import create_llm_service_from_provider
+from api.services.pipecat.service_factory import (
+    _gpt5_chat_plan,
+    create_llm_service_from_provider,
+)
+from api.services.pipecat.service_tuning import tuning_for
 from api.tests.service_tuning._transport import chat_payload
 
 
@@ -77,11 +81,71 @@ def test_gpt5_reasoning_and_verbosity_options_replace_the_extras():
     assert p["reasoning_effort"] == "low" and p["verbosity"] == "medium"
 
 
-def test_gpt5_temperature_is_sent_only_when_set():
+def test_gpt5_drops_temperature_and_translates_the_completion_cap():
+    # gpt-5 over chat/completions rejects ``temperature`` and takes the cap
+    # only as ``max_completion_tokens``; both fields are sent verbatim
+    # (openai/base_llm.py:356-358), so the fleet-wide document below would
+    # otherwise 400 every turn on a gpt-5 workflow.
     p = chat_payload(
-        _llm("gpt-5.1", {"llm": {"openai": {"settings": {"temperature": 1.0}}}})
+        _llm(
+            "gpt-5.1",
+            {
+                "llm": {
+                    "_all": {"settings": {"temperature": 0.3}},
+                    "openai": {"settings": {"max_tokens": 400, "top_p": 0.8}},
+                }
+            },
+        )
     )
-    assert p["temperature"] == 1.0 and p["reasoning_effort"] == "minimal"
+    assert p["temperature"] is NOT_GIVEN and p["max_tokens"] is NOT_GIVEN
+    assert p["max_completion_tokens"] == 400
+    assert p["top_p"] == 0.8
+    assert p["reasoning_effort"] == "minimal" and p["verbosity"] == "low"
+
+
+def test_gpt5_keeps_an_explicit_max_completion_tokens():
+    p = chat_payload(
+        _llm(
+            "gpt-5.1",
+            {
+                "llm": {
+                    "openai": {
+                        "settings": {"max_tokens": 400, "max_completion_tokens": 900}
+                    }
+                }
+            },
+        )
+    )
+    assert p["max_completion_tokens"] == 900 and p["max_tokens"] is NOT_GIVEN
+
+
+def test_gpt41_still_sends_temperature_and_max_tokens_verbatim():
+    p = chat_payload(
+        _llm(
+            "gpt-4.1",
+            {
+                "llm": {
+                    "_all": {"settings": {"temperature": 0.3}},
+                    "openai": {"settings": {"max_tokens": 400}},
+                }
+            },
+        )
+    )
+    assert p["temperature"] == 0.3 and p["max_tokens"] == 400
+    assert p["max_completion_tokens"] is NOT_GIVEN
+
+
+def test_gpt5_translation_never_mutates_the_plan():
+    # EMPTY_PLAN is a shared singleton and every plan dict is read again by
+    # the next branch, so the translation has to return a copy.
+    plan = tuning_for(
+        {"llm": {"openai": {"settings": {"temperature": 0.3, "max_tokens": 400}}}},
+        "llm",
+        "openai",
+    )
+    translated = _gpt5_chat_plan(plan, "gpt-5.1")
+    assert plan.settings == {"temperature": 0.3, "max_tokens": 400}
+    assert translated.settings == {"max_completion_tokens": 400}
 
 
 def test_max_tokens_and_top_p_reach_the_payload():

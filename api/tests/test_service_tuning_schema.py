@@ -283,6 +283,12 @@ def test_ultravox_extra_cannot_reopen_what_the_call_body_owns():
         ("selectedTools", "the workflow tools"),
         ("systemPrompt", "the workflow node"),
         ("firstSpeakerSettings", "the greeting decision"),
+        # The wrapper strips and rewrites only ``firstSpeakerSettings``
+        # (realtime/ultravox_realtime.py:425-436), so Ultravox's older
+        # spelling would survive the merge and re-decide who opens the call.
+        ("firstSpeaker", "the greeting decision"),
+        # Ultravox's own endpointing: who ends the user turn (spec §6).
+        ("vadSettings", "turn handling"),
     ):
         with pytest.raises(
             ValidationError,
@@ -431,6 +437,76 @@ def test_wrong_type_is_rejected_not_silently_accepted():
                 }
             }
         )
+
+
+BOOL_ON_A_NON_BOOL_FIELD = [
+    ("stt", "dograh", "eot_threshold"),
+    ("stt", "deepgram", "eot_threshold"),
+    ("llm", "openai", "temperature"),
+    ("tts", "elevenlabs", "stability"),
+    # Nova declares this one as ``Any``, so the field says nothing about the
+    # value; the row declares ``int`` instead.
+    ("stt", "deepgram", "endpointing"),
+]
+
+
+@pytest.mark.parametrize("kind,provider,name", BOOL_ON_A_NON_BOOL_FIELD)
+def test_bool_is_rejected_on_a_numeric_setting(kind, provider, name):
+    # ``isinstance(True, int)`` is True, so without an explicit rejection a
+    # bool passes the type check, then skips the cascade clamp (cascade.py:196,
+    # which excludes bools) and reaches the wire as ``eot_threshold=True``.
+    with pytest.raises(
+        ValidationError, match=f"{kind}.{provider}.settings.{name}: wrong type"
+    ):
+        _validate({kind: {provider: {"settings": {name: True}}}})
+
+
+def test_bool_still_accepted_where_the_field_is_a_bool():
+    _validate({"stt": {"deepgram": {"settings": {"numerals": True}}}})
+    _validate({"stt": {"dograh": {"settings": {"numerals": False}}}})
+    _validate({"tts": {"elevenlabs": {"settings": {"use_speaker_boost": True}}}})
+    _validate({"stt": {"deepgram": {"settings": {"endpointing": 250}}}})
+
+
+def test_pydantic_typed_settings_take_a_json_object_only():
+    # Fields whose declared type is a provider model carry no member this
+    # module can check, so anything used to pass the PUT and then raise out of
+    # the branch's own ``model_validate``/``ThinkingConfig(**value)`` at run
+    # creation — a 500 on the call, not a 422 on the save.
+    _validate({"llm": {"google": {"settings": {"thinking": {"thinking_budget": 512}}}}})
+    for kind, provider, name in (
+        ("llm", "google", "thinking"),
+        ("llm", "google_vertex", "thinking"),
+        ("stt", "gladia", "pre_processing"),
+        ("stt", "gladia", "realtime_processing"),
+        ("stt", "gladia", "messages_config"),
+        ("tts", "cartesia", "generation_config"),
+    ):
+        for value in ("x", True):
+            with pytest.raises(
+                ValidationError, match=f"{kind}.{provider}.settings.{name}: wrong type"
+            ):
+                _validate({kind: {provider: {"settings": {name: value}}}})
+
+
+def test_openai_tts_voice_cannot_be_nulled():
+    # The field is ``str | None`` upstream, but None is not "unset" here: the
+    # service yields an ErrorFrame instead of audio on every turn
+    # (openai/tts.py:254-256).
+    _validate({"tts": {"openai": {"settings": {"voice": "nova"}}}})
+    with pytest.raises(
+        ValidationError, match="tts.openai.settings.voice: null not allowed"
+    ):
+        _validate({"tts": {"openai": {"settings": {"voice": None}}}})
+
+
+def test_rime_inline_speed_alpha_is_rejected_by_name():
+    # The websocket service reads it neither in _build_ws_params nor in
+    # _build_msg, so accepting it would store a placebo.
+    with pytest.raises(
+        ValidationError, match="tts.rime.settings.inlineSpeedAlpha: unknown setting"
+    ):
+        _validate({"tts": {"rime": {"settings": {"inlineSpeedAlpha": 1.2}}}})
 
 
 def test_wrong_type_check_does_not_false_reject_valid_values():

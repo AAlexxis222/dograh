@@ -54,8 +54,11 @@ TTS_CASES = [
         "azure_speech",
         "neural",
         {
+            # ``style_degree`` is declared ``str`` upstream (azure/tts.py:99),
+            # so a float would be a 422 at the PUT: this layer-2 test has to
+            # send what a stored document can actually hold.
             "style": "cheerful",
-            "style_degree": 1.5,
+            "style_degree": "1.5",
             "pitch": "+5%",
             "volume": "+10%",
         },

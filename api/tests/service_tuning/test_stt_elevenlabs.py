@@ -41,6 +41,8 @@ async def test_elevenlabs_stt_keyterms_vad_and_filter_reach_the_query(monkeypatc
     ]
     assert q["min_silence_duration_ms"] == ["400"]
     assert q["filter_background_audio"] == ["true"] and q["commit_strategy"] == ["vad"]
+    # The ctor kwarg reaches the query too, not just the settings splat.
+    assert q["include_timestamps"] == ["true"]
 
 
 @pytest.mark.asyncio

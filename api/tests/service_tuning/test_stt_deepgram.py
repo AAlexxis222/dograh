@@ -80,6 +80,33 @@ async def test_flux_language_hints_empty_list_means_autodetect(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_flux_scalar_keyterm_is_wrapped_not_spelled_out(monkeypatch):
+    # The merged Deepgram row lets a scalar keyterm through because Nova
+    # declares the field as ``Any`` ("str or list of str", deepgram/stt.py:215).
+    # Flux appends one query parameter per element (flux/base.py:306), so the
+    # string would be sent one character at a time.
+    service = create_stt_service(
+        user_config_stt(**FLUX),
+        audio_config(),
+        tuning={"stt": {"deepgram": {"settings": {"keyterm": "Marbella"}}}},
+    )
+    q = query_params((await capture_ws_connect(monkeypatch, service))["url"])
+    assert q["keyterm"] == ["Marbella"]
+
+
+@pytest.mark.asyncio
+async def test_nova_keeps_a_scalar_keyterm_as_the_provider_declares_it():
+    service = create_stt_service(
+        user_config_stt(
+            provider=ServiceProviders.DEEPGRAM.value, model="nova-3", language=None
+        ),
+        audio_config(),
+        tuning={"stt": {"deepgram": {"settings": {"keyterm": "Marbella"}}}},
+    )
+    assert (await capture_nova_connect(service))["keyterm"] == "Marbella"
+
+
+@pytest.mark.asyncio
 async def test_flux_byok_url_ctor_changes_endpoint(monkeypatch):
     service = create_stt_service(
         user_config_stt(**FLUX),

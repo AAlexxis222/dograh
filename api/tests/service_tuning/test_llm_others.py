@@ -59,6 +59,22 @@ def test_dograh_llm_gets_temperature_only_when_tuned():
     )
 
 
+def test_scope_extraction_opts_the_extraction_llm_in():
+    llm = create_llm_service(
+        SimpleNamespace(
+            llm=SimpleNamespace(
+                provider="openai", model="gpt-4.1", api_key="k", base_url=None
+            )
+        ),
+        tuning={
+            "llm": {"_all": {"settings": {"temperature": 0.9}}},
+            "scope": {"extraction": True},
+        },
+        role="extraction",
+    )
+    assert chat_payload(llm)["temperature"] == 0.9
+
+
 def test_llm_tuning_does_not_apply_to_extraction_role_by_default():
     llm = create_llm_service(
         SimpleNamespace(

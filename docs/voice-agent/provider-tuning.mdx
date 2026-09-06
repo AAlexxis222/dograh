@@ -43,13 +43,18 @@ up to three dictionaries:
 
 `_all` is a provider key that applies to every provider of its kind. `llm._all.settings.temperature`
 and `max_tokens` are the two fields every LLM provider declares, so they can be set once for all of
-them. A provider's own key wins over `_all` key by key. The TTS section has one `_all` key,
+them; on a `gpt-5` model they are translated rather than sent as written, see the model-dependent
+table below. A provider's own key wins over `_all` key by key. The TTS section has one `_all` key,
 `ctor.silence_time_s`, which this build cannot serve — see [Knobs this build does not
 serve](#knobs-this-build-does-not-serve).
 
 Every knob is validated at save time against the provider's real settings. A name the provider does
 not have, a value of the wrong type, a value outside a closed set, and a knob that belongs to the
-other of two APIs a provider offers are each a `422` that names the path.
+other of two APIs a provider offers are each a `422` that names the path. `true` is never a value
+for a numeric field: JSON booleans are rejected there rather than travelling as 1 and 0. Two fields
+are narrower here than in the provider's own settings class, because the wider value would break a
+call: `stt.deepgram.settings.endpointing` takes milliseconds only, and `tts.openai.settings.voice`
+cannot be `null`.
 
 The save cannot see which model the run will use, though, so a handful of knobs are
 **model-dependent**: they are accepted and then applied only if the selected model is one that uses
@@ -62,6 +67,8 @@ them. Otherwise they are dropped when the service is built:
 | `stt.deepgram.ctor.url` | The model is a Flux model. Nova takes a different constructor argument |
 | `stt.deepgram.settings.language_hints` | The model is `flux-general-multi` |
 | `llm.openai.options.reasoning` and `verbosity` | The model is a `gpt-5` model. On any other model they are accepted and unused |
+| `llm.<openai>.settings.temperature` | The model is not a `gpt-5` model. Chat completions rejects temperature on `gpt-5`, so it is dropped there with a warning in the run log |
+| `llm.<openai>.settings.max_tokens` | Always, but on a `gpt-5` model it is sent as `max_completion_tokens`, the only completion cap that API accepts |
 
 ### Providers covered
 
@@ -90,7 +97,9 @@ services it built before, with the same values on the wire:
 | Deepgram Flux | `eot_timeout_ms` / `eot_threshold` / `eager_eot_threshold` | 3000 / 0.7 / 0.5 |
 | Deepgram Nova | `endpointing` | 100 |
 | ElevenLabs TTS | `stability` / `similarity_boost` | 0.8 / 0.75 |
-| Every LLM | `temperature` | 0.1 |
+| OpenAI (not `gpt-5*`), AtlasCloud, Groq, OpenRouter, Google, Google Vertex, Azure, HuggingFace | `temperature` | 0.1 |
+| MiniMax / Sarvam | `temperature` | 1.0 / 0.5, unless the model configuration sets one |
+| Dograh, AWS Bedrock, Speaches | `temperature` | not sent at all |
 | OpenAI `gpt-5*` | `reasoning_effort` / `verbosity`, no temperature | `minimal` / `low` |
 
 Those values are asserted at the transport layer by their own control tests, so a future change to
@@ -209,10 +218,11 @@ with the reason, so the setting is not stored as a placebo:
   Speechmatics and is derived from the model configuration; `extra_params` is splatted onto the SDK
   config and would re-open it.
 - **Ultravox `extra` keys the service or the registry owns.** `extra` is merged over the
-  call-creation body last, so a key the service already set would be overwritten by it. Ten are
+  call-creation body last, so a key the service already set would be overwritten by it. Twelve are
   rejected: `systemPrompt`, `model`, `voice`, `temperature`, `maxDuration`, `initialOutputMedium`,
   `metadata`, `selectedTools`, `medium`, and `firstSpeakerSettings`, which the greeting decision
-  rewrites on every call.
+  rewrites on every call, plus `firstSpeaker`, its older spelling, which the rewrite does not
+  cover, and `vadSettings`, which decides who ends the user turn.
 
 Two more are accepted but conditional on a sibling setting or on the model, on top of the
 model-dependent knobs listed above:

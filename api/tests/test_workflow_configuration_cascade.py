@@ -421,6 +421,29 @@ def test_eager_null_is_kept_and_not_clamped():
     )
 
 
+def test_bool_thresholds_are_left_alone_by_the_cross_field_rule():
+    # ``isinstance(True, int)`` is True, so the invariant used to compare a
+    # bool as 1 and emit "True lowered to eot_threshold 0.7". The clamp
+    # already skips bools (cascade.py:196) and so does this now: the PUT
+    # rejects them, and a document stored before it did must not grow a
+    # nonsense warning.
+    resolved = resolve_effective_workflow_configurations(
+        organization_defaults={},
+        definition_configurations={
+            "service_tuning": {
+                "stt": {
+                    "dograh": {
+                        "settings": {"eager_eot_threshold": True, "eot_threshold": 0.7}
+                    }
+                }
+            }
+        },
+    )
+    s = resolved.effective["service_tuning"]["stt"]["dograh"]["settings"]
+    assert s["eager_eot_threshold"] is True
+    assert not [w for w in resolved.warnings if "eager_eot_threshold" in w]
+
+
 def test_elevenlabs_ws_speed_clamped_to_supported_range():
     resolved = resolve_effective_workflow_configurations(
         organization_defaults={},

@@ -299,6 +299,54 @@ def _validate_runtime_service_url(url: str, field_name: str) -> None:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+def _flux_settings(plan) -> dict:
+    """The Flux-only half of a Deepgram/Dograh plan, with ``keyterm`` normalised.
+
+    ``stt.deepgram`` is one row for two wire protocols, and Nova declares
+    ``keyterm`` as ``Any`` (deepgram/stt.py:215, "str or list of str"), so a
+    bare string passes the PUT. Flux builds one query parameter per element
+    (deepgram/flux/base.py:306), which would send a single keyterm one
+    character at a time. Both Flux branches go through here.
+    """
+    settings = {
+        name: value for name, value in plan.settings.items() if name in FLUX_SETTINGS
+    }
+    if isinstance(settings.get("keyterm"), str):
+        settings["keyterm"] = [settings["keyterm"]]
+    return settings
+
+
+def _gpt5_chat_plan(plan, model: str):
+    """Translate an LLM plan into what gpt-5 accepts over chat/completions.
+
+    ``build_chat_completion_params`` sends ``temperature`` and ``max_tokens``
+    verbatim (openai/base_llm.py:356-358), and gpt-5 rejects both over this
+    API: the completion cap has to arrive as ``max_completion_tokens``, and
+    temperature is not supported at all. ``llm._all.settings.temperature`` and
+    ``max_tokens`` are the two knobs the ``_all`` section exists for, so
+    without this a document written for a fleet of models would 400 every turn
+    on its gpt-5 workflows. The cap is translated; temperature is dropped with
+    a warning, which is also today's default for these models (no temperature
+    is sent). An explicitly tuned ``max_completion_tokens`` wins over a
+    translated ``max_tokens``. Returns a copy; the plan is never mutated.
+    """
+    if not ({"temperature", "max_tokens"} & set(plan.settings)):
+        return plan
+    settings = {
+        name: value
+        for name, value in plan.settings.items()
+        if name not in ("temperature", "max_tokens")
+    }
+    if "temperature" in plan.settings:
+        logger.warning(
+            f"service_tuning: llm.openai.settings.temperature ignored for {model} "
+            "(chat/completions rejects it on this model)"
+        )
+    if "max_tokens" in plan.settings:
+        settings.setdefault("max_completion_tokens", plan.settings["max_tokens"])
+    return replace(plan, settings=settings)
+
+
 def _tts_provider_ctor(plan) -> dict:
     """A TTS plan's own ctor kwargs, without the ``tts._all`` one.
 
@@ -350,13 +398,10 @@ def create_stt_service(
                 if language_hint:
                     settings_kwargs["language_hints"] = [language_hint]
 
-            flux_settings = {
-                k: v for k, v in plan.settings.items() if k in FLUX_SETTINGS
-            }
             settings = build_settings(
                 DeepgramFluxSTTSettings,
                 settings_kwargs,
-                replace(plan, settings=flux_settings),
+                replace(plan, settings=_flux_settings(plan)),
             )
             if isinstance(settings.language_hints, list):
                 settings.language_hints = [
@@ -507,13 +552,10 @@ def create_stt_service(
                 settings_kwargs["language_hints"] = [language_hint]
 
             plan = tuning_for(tuning, "stt", ServiceProviders.DOGRAH.value)
-            flux_settings = {
-                k: v for k, v in plan.settings.items() if k in FLUX_SETTINGS
-            }
             settings = build_settings(
                 DeepgramFluxSTTSettings,
                 settings_kwargs,
-                replace(plan, settings=flux_settings),
+                replace(plan, settings=_flux_settings(plan)),
             )
             if isinstance(settings.language_hints, list):
                 settings.language_hints = [
@@ -1274,7 +1316,9 @@ def create_llm_service_from_provider(
             # only ever reachable through ``options`` — never through
             # ``from_mapping``'s overflow.
             reasoning = plan.options.get("reasoning") or {}
-            settings = build_settings(OpenAILLMSettings, {"model": model}, plan)
+            settings = build_settings(
+                OpenAILLMSettings, {"model": model}, _gpt5_chat_plan(plan, model)
+            )
             settings.extra = {
                 "reasoning_effort": reasoning.get("effort", "minimal"),
                 "verbosity": plan.options.get("verbosity", "low"),

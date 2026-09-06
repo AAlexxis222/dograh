@@ -141,11 +141,23 @@ class TuningSpec:
     """
     options_allowed: frozenset[str] = frozenset()
     nullable_extra: frozenset[str] = frozenset()
+    non_nullable: frozenset[str] = frozenset()
+    """Settings whose field is nullable upstream but which this build requires.
+
+    Nullability is read off the dataclass, and a field can be ``| None`` for a
+    reason the branch does not share: ``OpenAITTSSettings.voice`` is optional
+    because pipecat lets the constructor supply it, while this factory always
+    resolves it from the model configuration, so an explicit ``null`` would
+    reach the request as ``voice=None`` and fail the call mid-turn. Subtracted
+    from ``nullable()``.
+    """
 
     def nullable(self) -> frozenset[str]:
         if self.settings_cls is None:
-            return self.nullable_extra
-        return nullable_fields(self.settings_cls) | self.nullable_extra
+            return self.nullable_extra - self.non_nullable
+        return (
+            nullable_fields(self.settings_cls) | self.nullable_extra
+        ) - self.non_nullable
 
     def settings_classes(self) -> tuple[type, ...]:
         """The Settings dataclass(es) a field's type is checked against.
@@ -213,6 +225,15 @@ SPECS[("stt", "deepgram")] = TuningSpec(
     service_classes=(DeepgramFluxSTTService, DeepgramSTTService),
     ctor_allowed=frozenset({"url", "mip_opt_out", "tag"}),
     ctor_types={"url": str, "mip_opt_out": bool, "tag": list},
+    # Nova declares ``endpointing`` as ``Any`` (deepgram/stt.py:213), so
+    # nothing about the field constrains the value and ``endpointing: true``
+    # would reach the connection as a nonsense query parameter. Deepgram's
+    # other documented value, ``false`` ("disable endpointing"), is not
+    # exposed: it removes Nova's end-of-speech signal, which is who-owns-the-
+    # turn territory (spec §6, same posture as _PROVIDER_TURN_KNOBS), and it
+    # is indistinguishable at this seam from the ``true`` this check exists to
+    # reject. Milliseconds only.
+    settings_types={"endpointing": int},
     # "keyterm" deliberately excluded: test_null_only_on_nullable_fields
     # requires stt.deepgram.settings.keyterm=None to be rejected even though
     # DeepgramSTTService (Nova) itself defaults keyterm=None at connect time
@@ -313,6 +334,15 @@ SPECS[("stt", "gladia")] = TuningSpec(
     "gladia",
     GladiaSTTSettings,
     _fields(GladiaSTTSettings, "language_config"),
+    # Three pydantic models the branch builds with ``model_validate``
+    # (service_factory.py, gladia branch): the field type is a model, which
+    # this module cannot check, so without these a scalar would pass the PUT
+    # and raise a pydantic ValidationError at run creation. JSON object only.
+    settings_types={
+        "pre_processing": dict,
+        "realtime_processing": dict,
+        "messages_config": dict,
+    },
 )
 SPECS[("stt", "google")] = TuningSpec(
     "stt",
@@ -345,6 +375,11 @@ SPECS[("tts", "openai")] = TuningSpec(
     OpenAITTSSettings,
     _fields(OpenAITTSSettings) | frozenset({"voice"}),
     service_classes=(OpenAITTSService,),
+    # ``voice`` is the one REGISTRY_OWNED name this table re-admits (B6). The
+    # field is ``str | None`` upstream, but the service does not treat None as
+    # "unset": every turn yields an ErrorFrame instead of audio
+    # (openai/tts.py:254-256). A 422 at the PUT, not a mute call.
+    non_nullable=frozenset({"voice"}),
 )
 SPECS[("tts", "cartesia")] = TuningSpec(
     "tts",
@@ -356,6 +391,9 @@ SPECS[("tts", "cartesia")] = TuningSpec(
     # message (cartesia/tts.py:509-510).
     ctor_allowed=frozenset({"max_buffer_delay_ms"}),
     ctor_types={"max_buffer_delay_ms": int},
+    # ``GenerationConfig`` is a pydantic model the branch builds with
+    # ``model_validate``; same hole as gladia's three above.
+    settings_types={"generation_config": dict},
 )
 SPECS[("tts", "inworld")] = TuningSpec(
     "tts", "inworld", InworldTTSSettings, _fields(InworldTTSSettings)
@@ -454,17 +492,25 @@ SPECS[("llm", "openai")] = _llm_row(
 # .py:1079-1101) and so shares its Settings class; the gpt-5 extras are an
 # OpenAI-model rule, so it gets no ``options``.
 SPECS[("llm", "atlascloud")] = _llm_row("atlascloud", OpenAILLMSettings)
+# ``thinking`` is declared as ``ThinkingConfig | None | _NotGiven``
+# (google/llm.py:123) — a pydantic model, which this module cannot check off
+# the field, so a scalar would pass the PUT and blow up in ``from_mapping``'s
+# own coercion (``ThinkingConfig(**value)``, google/llm.py:140-141). It arrives
+# as a JSON object or not at all.
+_GOOGLE_LLM_TYPES: dict[str, type | tuple[type, ...]] = {"thinking": dict}
 SPECS[("llm", "google")] = TuningSpec(
     "llm",
     "google",
     GoogleLLMSettings,
     _fields(GoogleLLMSettings, *_TURN_COMPLETION),
+    settings_types=_GOOGLE_LLM_TYPES,
 )
 SPECS[("llm", "google_vertex")] = TuningSpec(
     "llm",
     "google_vertex",
     GoogleVertexLLMSettings,
     _fields(GoogleVertexLLMSettings, *_TURN_COMPLETION),
+    settings_types=_GOOGLE_LLM_TYPES,
 )
 SPECS[("llm", "groq")] = _llm_row("groq", GroqLLMSettings)
 SPECS[("llm", "openrouter")] = _llm_row("openrouter", OpenRouterLLMSettings)
@@ -556,6 +602,15 @@ _ULTRAVOX_EXTRA_OWNED = {
     "selectedTools": "the workflow tools",
     "medium": "the transport",
     "firstSpeakerSettings": "the greeting decision",
+    # ``firstSpeaker`` is Ultravox's older spelling of the same decision. The
+    # wrapper only strips and rewrites ``firstSpeakerSettings``
+    # (realtime/ultravox_realtime.py:425-436), so this alias would survive the
+    # merge and re-decide who opens the call behind the greeting logic.
+    "firstSpeaker": "the greeting decision",
+    # ``vadSettings`` tunes Ultravox's own endpointing, i.e. who ends the user
+    # turn — the turn PR's subject (spec §6), and the same reason no turn knob
+    # appears in the realtime allow-lists.
+    "vadSettings": "turn handling",
 }
 
 
@@ -621,13 +676,18 @@ _SCALAR_NAMES = {
 _UNCHECKED_NAMES = frozenset({"NoneType", "_NotGiven", "NotGiven"})
 
 
-def _scalar_verdict(expected: tuple[type, ...], value: Any) -> bool | None:
-    """True/False if ``expected`` settles the check; None to keep scanning
-    other union members (a bool value never satisfies a non-bool numeric
-    member, but a later member — e.g. another class's field variant — might
-    still accept it)."""
-    if isinstance(value, bool) and expected != (bool,):
-        return None
+def _scalar_verdict(expected: tuple[type, ...], value: Any) -> bool:
+    """True/False for this member; never None.
+
+    ``isinstance(True, int)`` is True, so a bool has to be rejected explicitly
+    against a numeric member or ``temperature: true`` rides a float field all
+    the way to the wire (the cascade clamp skips bools, cascade.py:196). The
+    rejection is a *member* verdict, not a field verdict: ``_field_type_ok``
+    keeps scanning, so a union that also declares ``bool`` — or another
+    class's variant of the field in a merged row — still accepts it.
+    """
+    if isinstance(value, bool) and bool not in expected:
+        return False
     return isinstance(value, expected)
 
 

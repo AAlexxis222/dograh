@@ -34,6 +34,13 @@ def _section(document: dict | None, kind: str, provider: str) -> dict[str, Any]:
 
 
 def tuning_for(document: dict | None, kind: str, provider: str) -> TuningPlan:
+    """Merge the kind's ``_all`` section under the provider's own, key by key.
+
+    ``_all`` is read for every kind, but only ``tts`` and ``llm`` declare one
+    in ``service_tuning_specs.SPECS``: ``stt._all`` and ``realtime._all`` are
+    "unknown provider" at the PUT, so the merge below is a no-op for them
+    until a row gives them a meaning.
+    """
     common, own = _section(document, kind, ALL), _section(document, kind, provider)
     if not common and not own:
         return EMPTY_PLAN

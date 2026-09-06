@@ -62,6 +62,14 @@ SERVICE_TUNING_NUMERIC_BOUNDS: tuple[tuple[tuple[str, ...], float, float], ...] 
 )
 
 
+def _is_number(value: Any) -> bool:
+    """``isinstance(True, int)`` is True, so a bool would compare as 1/0 and
+    produce a nonsense warning ("True lowered to eot_threshold 0.7"). Same
+    guard the clamp uses (cascade.py:196); the PUT rejects these anyway, and
+    this module also runs over documents stored before it did."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def apply_service_tuning_invariants(effective: dict[str, Any]) -> list[str]:
     """Cross-field rules that a per-key clamp cannot express. Mutates in place."""
     warnings: list[str] = []
@@ -69,11 +77,7 @@ def apply_service_tuning_invariants(effective: dict[str, Any]) -> list[str]:
     for provider in _FLUX_PROVIDERS:
         settings = (stt.get(provider) or {}).get("settings") or {}
         eager, eot = settings.get("eager_eot_threshold"), settings.get("eot_threshold")
-        if (
-            isinstance(eager, (int, float))
-            and isinstance(eot, (int, float))
-            and eager > eot
-        ):
+        if _is_number(eager) and _is_number(eot) and eager > eot:
             settings["eager_eot_threshold"] = eot
             warnings.append(
                 f"service_tuning.stt.{provider}.settings.eager_eot_threshold: {eager} lowered to eot_threshold {eot}"
