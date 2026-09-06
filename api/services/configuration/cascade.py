@@ -31,6 +31,10 @@ from api.schemas.workflow_configurations import (
     WorkflowConfigurationDefaults,
     schema_defaults_document,
 )
+from api.services.configuration.service_tuning_bounds import (
+    SERVICE_TUNING_NUMERIC_BOUNDS,
+    apply_service_tuning_invariants,
+)
 
 if TYPE_CHECKING:
     from api.db.db_client import DBClient
@@ -69,8 +73,8 @@ LIST_MERGE_RULES: dict[tuple[str, ...], ListMergeRule] = {
     ),
 }
 
-# (path, min, max) — schema bounds only. Per-provider ranges are appended here
-# when service tuning lands.
+# (path, min, max) — schema bounds plus the per-provider service_tuning ranges
+# declared in service_tuning_bounds.py.
 NUMERIC_BOUNDS: tuple[tuple[tuple[str, ...], float, float], ...] = (
     (("max_call_duration",), 1, MAX_CALL_DURATION_SECONDS),
     (
@@ -78,7 +82,7 @@ NUMERIC_BOUNDS: tuple[tuple[tuple[str, ...], float, float], ...] = (
         MIN_TEXT_CHAT_INACTIVITY_TIMEOUT_SECONDS,
         MAX_TEXT_CHAT_INACTIVITY_TIMEOUT_SECONDS,
     ),
-)
+) + SERVICE_TUNING_NUMERIC_BOUNDS
 
 
 @dataclass(frozen=True)
@@ -233,6 +237,7 @@ def resolve_effective_workflow_configurations(
     effective, warnings = clamp_effective_configurations(
         effective, provenance=provenance
     )
+    warnings.extend(apply_service_tuning_invariants(effective))
 
     # List invariants are not clamped: the lower layer wins whole.
     if "call_dispositions" in effective and not _call_dispositions_valid(

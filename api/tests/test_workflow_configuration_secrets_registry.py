@@ -130,3 +130,40 @@ def test_unregistered_secret_named_paths_exclude_the_registered_ones():
         )
         == []
     )
+
+
+def test_service_tuning_ctor_url_is_masked():
+    doc = {
+        "service_tuning": {
+            "stt": {
+                "deepgram": {
+                    "ctor": {"url": "wss://proxy.example/listen?token=abcd1234efgh"}
+                }
+            }
+        }
+    }
+    assert find_secret_paths(doc) == [
+        ("service_tuning", "stt", "deepgram", "ctor", "url")
+    ]
+    masked = mask_workflow_configurations(doc)
+    assert (
+        masked["service_tuning"]["stt"]["deepgram"]["ctor"]["url"]
+        != doc["service_tuning"]["stt"]["deepgram"]["ctor"]["url"]
+    )
+
+
+def test_service_tuning_masked_url_is_restored_on_save():
+    from api.services.configuration.merge import merge_workflow_configuration_secrets
+
+    existing = {
+        "service_tuning": {
+            "stt": {
+                "deepgram": {
+                    "ctor": {"url": "wss://proxy.example/listen?token=abcd1234efgh"}
+                }
+            }
+        }
+    }
+    incoming = mask_workflow_configurations(existing)
+    merged = merge_workflow_configuration_secrets(incoming, existing)
+    assert merged == existing
