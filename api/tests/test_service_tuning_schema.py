@@ -4,7 +4,6 @@ import inspect
 import pytest
 from pydantic import ValidationError
 
-from api.schemas.service_tuning import ServiceTuning
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
 from api.services.pipecat import service_tuning_specs as specs
 
@@ -26,7 +25,9 @@ def test_unknown_provider_is_422():
 
 
 def test_unknown_settings_key_is_422_not_silent_extra():
-    with pytest.raises(ValidationError, match="stt.deepgram.settings.eot_treshold: unknown"):
+    with pytest.raises(
+        ValidationError, match="stt.deepgram.settings.eot_treshold: unknown"
+    ):
         _validate({"stt": {"deepgram": {"settings": {"eot_treshold": 0.8}}}})
 
 
@@ -37,14 +38,20 @@ def test_registry_owned_fields_are_rejected():
 
 
 def test_null_only_on_nullable_fields():
-    _validate({"stt": {"deepgram": {"settings": {"eager_eot_threshold": None}}}})  # eager OFF
-    with pytest.raises(ValidationError, match="stt.deepgram.settings.keyterm: null not allowed"):
+    _validate(
+        {"stt": {"deepgram": {"settings": {"eager_eot_threshold": None}}}}
+    )  # eager OFF
+    with pytest.raises(
+        ValidationError, match="stt.deepgram.settings.keyterm: null not allowed"
+    ):
         _validate({"stt": {"deepgram": {"settings": {"keyterm": None}}}})
 
 
 def test_ctor_kwarg_must_be_allow_listed():
     _validate({"stt": {"deepgram": {"ctor": {"mip_opt_out": True}}}})
-    with pytest.raises(ValidationError, match="stt.deepgram.ctor.sample_rate: not allowed"):
+    with pytest.raises(
+        ValidationError, match="stt.deepgram.ctor.sample_rate: not allowed"
+    ):
         _validate({"stt": {"deepgram": {"ctor": {"sample_rate": 8000}}}})
 
 
@@ -63,7 +70,10 @@ def test_all_section_uses_common_fields_only():
 
 def test_scope_flags_and_forbid_extra():
     cfg = _validate({"scope": {"extraction": True}})
-    assert cfg.service_tuning.scope.extraction is True and cfg.service_tuning.scope.voicemail is False
+    assert (
+        cfg.service_tuning.scope.extraction is True
+        and cfg.service_tuning.scope.voicemail is False
+    )
     with pytest.raises(ValidationError):
         _validate({"scope": {"qa": True}})
 
@@ -71,6 +81,49 @@ def test_scope_flags_and_forbid_extra():
 def test_root_null_on_service_tuning_is_unset():
     cfg = WorkflowConfigurationDefaults.model_validate({"service_tuning": None})
     assert "service_tuning" not in cfg.model_dump(exclude_unset=True)
+
+
+def test_typing_union_literal_field_is_nullable():
+    # ElevenLabsTTSSettings.apply_text_normalization renders (no
+    # `from __future__ import annotations` in elevenlabs/tts.py) as
+    # ``typing.Union[Literal['auto','on','off'], NoneType, _NotGiven]`` —
+    # str(f.type) shows "NoneType", not "None", so a plain "|" string split
+    # would miss it. Regression for the false 422 this caused.
+    spec = specs.spec_for("tts", "elevenlabs")
+    assert "apply_text_normalization" in spec.nullable()
+    _validate({"tts": {"elevenlabs": {"settings": {"apply_text_normalization": None}}}})
+
+
+def test_wrong_type_is_rejected_not_silently_accepted():
+    with pytest.raises(
+        ValidationError, match="stt.deepgram.settings.eot_threshold: wrong type"
+    ):
+        _validate({"stt": {"deepgram": {"settings": {"eot_threshold": "banana"}}}})
+    with pytest.raises(
+        ValidationError, match="stt.deepgram.settings.numerals: wrong type"
+    ):
+        _validate({"stt": {"deepgram": {"settings": {"numerals": "yes"}}}})
+    with pytest.raises(
+        ValidationError,
+        match="tts.elevenlabs.settings.apply_text_normalization: wrong type",
+    ):
+        _validate(
+            {
+                "tts": {
+                    "elevenlabs": {
+                        "settings": {"apply_text_normalization": "sometimes"}
+                    }
+                }
+            }
+        )
+
+
+def test_wrong_type_check_does_not_false_reject_valid_values():
+    _validate({"stt": {"deepgram": {"settings": {"language_hints": ["en"]}}}})
+    _validate({"stt": {"deepgram": {"settings": {"keyterm": ["a"]}}}})
+    _validate(
+        {"stt": {"deepgram": {"settings": {"eot_threshold": 1}}}}
+    )  # int for float
 
 
 def test_specs_allow_lists_are_subsets_of_real_settings_fields():
@@ -82,9 +135,16 @@ def test_specs_allow_lists_are_subsets_of_real_settings_fields():
         if spec.settings_cls is None:
             continue
         real = {f.name for f in dataclasses.fields(spec.settings_cls)}
-        assert spec.settings_allowed <= real, (kind, provider, spec.settings_allowed - real)
+        assert spec.settings_allowed <= real, (
+            kind,
+            provider,
+            spec.settings_allowed - real,
+        )
         exempt = allowed_owned.get((kind, provider), set())
-        assert not (spec.settings_allowed & specs.REGISTRY_OWNED - exempt), (kind, provider)
+        assert not (spec.settings_allowed & specs.REGISTRY_OWNED - exempt), (
+            kind,
+            provider,
+        )
 
 
 def _ctor_params(cls: type) -> set[str]:

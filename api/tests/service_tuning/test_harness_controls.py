@@ -21,7 +21,9 @@ from api.tests.service_tuning._transport import (
 @pytest.mark.asyncio
 async def test_control_flux_query_carries_todays_hardcoded_thresholds(monkeypatch):
     service = create_stt_service(
-        user_config_stt(ServiceProviders.DEEPGRAM.value, model="flux-general-multi", language="es"),
+        user_config_stt(
+            ServiceProviders.DEEPGRAM.value, model="flux-general-multi", language="es"
+        ),
         audio_config(),
         keyterms=["Marbella"],
     )
@@ -64,15 +66,27 @@ async def test_control_nova_connect_kwargs_today():
 @pytest.mark.asyncio
 async def test_control_elevenlabs_tts_voice_settings_today():
     service = create_tts_service(
-        user_config_tts(ServiceProviders.ELEVENLABS.value, model="eleven_flash_v2_5", voice="Elena - abc", speed=1.0, base_url="https://api.elevenlabs.io"),
+        user_config_tts(
+            ServiceProviders.ELEVENLABS.value,
+            model="eleven_flash_v2_5",
+            voice="Elena - abc",
+            speed=1.0,
+            base_url="https://api.elevenlabs.io",
+        ),
         audio_config(),
     )
     init = await capture_elevenlabs_context_init(service)
-    assert init["voice_settings"] == {"stability": 0.8, "similarity_boost": 0.75, "speed": 1.0}
+    assert init["voice_settings"] == {
+        "stability": 0.8,
+        "similarity_boost": 0.75,
+        "speed": 1.0,
+    }
 
 
 def test_control_openai_chat_payload_gpt41_has_temperature_and_no_extras():
-    llm = create_llm_service_from_provider(provider="openai", model="gpt-4.1", api_key="k")
+    llm = create_llm_service_from_provider(
+        provider="openai", model="gpt-4.1", api_key="k"
+    )
     p = chat_payload(llm)
     assert p["temperature"] == 0.1
     assert "reasoning_effort" not in p and "verbosity" not in p
@@ -81,7 +95,9 @@ def test_control_openai_chat_payload_gpt41_has_temperature_and_no_extras():
 def test_control_openai_chat_payload_gpt5_has_extras_and_no_temperature():
     from openai import NOT_GIVEN
 
-    llm = create_llm_service_from_provider(provider="openai", model="gpt-5-mini", api_key="k")
+    llm = create_llm_service_from_provider(
+        provider="openai", model="gpt-5-mini", api_key="k"
+    )
     p = chat_payload(llm)
     assert p["reasoning_effort"] == "minimal" and p["verbosity"] == "low"
     assert p["temperature"] is NOT_GIVEN

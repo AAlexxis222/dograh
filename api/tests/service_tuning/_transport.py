@@ -20,15 +20,47 @@ from urllib.parse import parse_qs, urlsplit
 from api.services.pipecat.audio_config import AudioConfig
 
 
-def user_config_stt(provider: str, *, model: str, api_key: str = "test-key", language=None, base_url=None, **fields):
+def user_config_stt(
+    provider: str,
+    *,
+    model: str,
+    api_key: str = "test-key",
+    language=None,
+    base_url=None,
+    **fields,
+):
     return SimpleNamespace(
-        stt=SimpleNamespace(provider=provider, model=model, api_key=api_key, language=language, base_url=base_url, **fields)
+        stt=SimpleNamespace(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            language=language,
+            base_url=base_url,
+            **fields,
+        )
     )
 
 
-def user_config_tts(provider: str, *, model: str, voice: str = "Name - voice-1", api_key: str = "test-key", speed: float = 1.0, base_url=None, **fields):
+def user_config_tts(
+    provider: str,
+    *,
+    model: str,
+    voice: str = "Name - voice-1",
+    api_key: str = "test-key",
+    speed: float = 1.0,
+    base_url=None,
+    **fields,
+):
     return SimpleNamespace(
-        tts=SimpleNamespace(provider=provider, model=model, voice=voice, api_key=api_key, speed=speed, base_url=base_url, **fields)
+        tts=SimpleNamespace(
+            provider=provider,
+            model=model,
+            voice=voice,
+            api_key=api_key,
+            speed=speed,
+            base_url=base_url,
+            **fields,
+        )
     )
 
 
@@ -88,7 +120,9 @@ async def capture_ws_connect(monkeypatch, service) -> dict[str, Any]:
         coro.close()
         return None
 
-    monkeypatch.setattr("pipecat.services.websocket_service.websocket_connect", fake_connect)
+    monkeypatch.setattr(
+        "pipecat.services.websocket_service.websocket_connect", fake_connect
+    )
     monkeypatch.setattr(service, "create_task", fake_create_task)
 
     await service._connect()
@@ -139,11 +173,15 @@ async def capture_elevenlabs_context_init(service) -> dict[str, Any]:
 
 
 def chat_payload(service) -> dict[str, Any]:
-    return service.build_chat_completion_params({"messages": [{"role": "user", "content": "hi"}]})
+    return service.build_chat_completion_params(
+        {"messages": [{"role": "user", "content": "hi"}]}
+    )
 
 
 def responses_payload(service) -> dict[str, Any]:
-    return service._build_response_params({"input": [{"role": "user", "content": "hi"}]})
+    return service._build_response_params(
+        {"input": [{"role": "user", "content": "hi"}]}
+    )
 
 
 async def capture_openai_tts_request(service, text: str = "hi") -> dict[str, Any]:
