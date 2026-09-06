@@ -56,6 +56,78 @@ def test_ctor_kwarg_must_be_allow_listed():
         _validate({"stt": {"deepgram": {"ctor": {"sample_rate": 8000}}}})
 
 
+def test_ctor_kwarg_values_are_checked_where_the_set_is_closed():
+    _validate({"stt": {"elevenlabs": {"ctor": {"commit_strategy": "manual"}}}})
+    for value in ("bogus", ["vad"]):
+        # An unhashable value must not raise TypeError out of the closed-set
+        # check — pydantic would surface that as a 500, not a 422.
+        with pytest.raises(
+            ValidationError,
+            match="stt.elevenlabs.ctor.commit_strategy: must be one of manual, vad",
+        ):
+            _validate({"stt": {"elevenlabs": {"ctor": {"commit_strategy": value}}}})
+
+
+STT_KEYTERM_KNOBS = {
+    "assemblyai": {"keyterms_prompt": ["Marbella"]},
+    "azure_speech": {"profanity": "raw"},
+    "cartesia": {"keyterm": ["Marbella"]},
+    "elevenlabs": {"keyterms": ["Marbella"]},
+    "gladia": {"realtime_processing": {"custom_vocabulary": True}},
+    "google": {"enable_automatic_punctuation": True},
+    "huggingface": {"return_timestamps": True},
+    "openai": {"prompt": "Marbella"},
+    "sarvam": {"prompt": "Marbella"},
+    "smallest": {"keywords": "Marbella:2"},
+    "speaches": {"prompt": "Marbella"},
+    "speechmatics": {"additional_vocab": [{"content": "Marbella"}]},
+}
+
+
+@pytest.mark.parametrize("provider,settings", sorted(STT_KEYTERM_KNOBS.items()))
+def test_every_stt_provider_has_a_row_and_takes_its_biasing_knob(provider, settings):
+    _validate({"stt": {provider: {"settings": settings}}})
+
+
+def test_speechmatics_operating_point_stays_registry_owned():
+    # It *is* the model: sf maps user_config.stt.model to an OperatingPoint and
+    # the service writes it back into settings.model (speechmatics/stt.py:512).
+    with pytest.raises(
+        ValidationError, match="stt.speechmatics.settings.operating_point: unknown"
+    ):
+        _validate(
+            {"stt": {"speechmatics": {"settings": {"operating_point": "enhanced"}}}}
+        )
+
+
+def test_language_aliases_stay_registry_owned():
+    for provider, key in (
+        ("assemblyai", "language_code"),
+        ("assemblyai", "language_codes"),
+        ("google", "languages"),
+        ("google", "language_codes"),
+        ("gladia", "language_config"),
+    ):
+        with pytest.raises(
+            ValidationError, match=f"stt.{provider}.settings.{key}: unknown"
+        ):
+            _validate({"stt": {provider: {"settings": {key: ["en"]}}}})
+
+
+def test_openai_stt_realtime_api_is_a_named_422_not_a_silent_noop():
+    _validate({"stt": {"openai": {"options": {"api": "segments"}}}})
+    with pytest.raises(
+        ValidationError,
+        match="stt.openai.options.api: realtime is not wired in this build",
+    ):
+        _validate({"stt": {"openai": {"options": {"api": "realtime"}}}})
+    for value in ("grpc", ["realtime"], None):
+        with pytest.raises(
+            ValidationError, match="stt.openai.options.api: must be one of"
+        ):
+            _validate({"stt": {"openai": {"options": {"api": value}}}})
+
+
 def test_options_only_where_declared():
     _validate({"llm": {"openai": {"options": {"reasoning": {"effort": "low"}}}}})
     with pytest.raises(ValidationError, match="stt.deepgram.options.api: not allowed"):

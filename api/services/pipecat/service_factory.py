@@ -27,6 +27,7 @@ from api.services.pipecat.service_tuning import (
     ALL,
     LLMRole,
     build_settings,
+    coerce_settings,
     llm_document_for_role,
     tuning_for,
 )
@@ -43,7 +44,10 @@ from pipecat.services.cartesia.tts import (
     CartesiaTTSSettings,
     GenerationConfig,
 )
-from pipecat.services.cartesia.turns.stt import CartesiaTurnsSTTService
+from pipecat.services.cartesia.turns.stt import (
+    CartesiaTurnsSTTService,
+    CartesiaTurnsSTTSettings,
+)
 from pipecat.services.deepgram.flux.stt import (
     DeepgramFluxSTTService,
     DeepgramFluxSTTSettings,
@@ -356,6 +360,7 @@ def create_stt_service(
             **ctor,
         )
     elif user_config.stt.provider == ServiceProviders.OPENAI.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.OPENAI.value)
         kwargs = {}
         base_url = getattr(user_config.stt, "base_url", None)
         if base_url:
@@ -363,11 +368,14 @@ def create_stt_service(
             kwargs["base_url"] = base_url
         return OpenAISTTService(
             api_key=user_config.stt.api_key,
-            settings=OpenAISTTSettings(model=user_config.stt.model),
+            settings=build_settings(
+                OpenAISTTSettings, {"model": user_config.stt.model}, plan
+            ),
             should_interrupt=False,  # Let UserAggregator own interruption confirmation.
             **kwargs,
         )
     elif user_config.stt.provider == ServiceProviders.GOOGLE.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.GOOGLE.value)
         language = getattr(user_config.stt, "language", None) or "en-US"
         location = getattr(user_config.stt, "location", None) or "global"
         credentials = getattr(user_config.stt, "credentials", None)
@@ -381,23 +389,33 @@ def create_stt_service(
         return GoogleSTTService(
             credentials=credentials,
             location=location,
-            settings=GoogleSTTSettings(**settings_kwargs),
+            settings=build_settings(GoogleSTTSettings, settings_kwargs, plan),
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.CARTESIA.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.CARTESIA.value)
+        language = getattr(user_config.stt, "language", None) or "en"
         if user_config.stt.model == "ink-2":
+            # ink-2 got no settings at all until now (C1), so keyterms — the
+            # one biasing knob its wire protocol carries (cartesia/turns/stt
+            # .py:276) — could never reach it.
             return CartesiaTurnsSTTService(
                 api_key=user_config.stt.api_key,
+                settings=build_settings(
+                    CartesiaTurnsSTTSettings,
+                    {"model": user_config.stt.model, "language": language},
+                    plan,
+                ),
                 should_interrupt=False,  # Let UserAggregator emit interruption frames.
                 sample_rate=audio_config.transport_in_sample_rate,
             )
 
-        language = getattr(user_config.stt, "language", None) or "en"
         return CartesiaSTTService(
             api_key=user_config.stt.api_key,
-            settings=CartesiaSTTSettings(
-                model=user_config.stt.model,
-                language=language,
+            settings=build_settings(
+                CartesiaSTTSettings,
+                {"model": user_config.stt.model, "language": language},
+                plan,
             ),
             sample_rate=audio_config.transport_in_sample_rate,
         )
@@ -455,6 +473,7 @@ def create_stt_service(
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.SARVAM.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.SARVAM.value)
         language = getattr(user_config.stt, "language", None)
         language_mapping = {
             "bn-IN": Language.BN_IN,
@@ -483,25 +502,29 @@ def create_stt_service(
             pipecat_language = language
         return SarvamSTTService(
             api_key=user_config.stt.api_key,
-            settings=SarvamSTTSettings(
-                model=user_config.stt.model,
-                language=pipecat_language,
+            settings=build_settings(
+                SarvamSTTSettings,
+                {"model": user_config.stt.model, "language": pipecat_language},
+                plan,
             ),
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.SPEACHES.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.SPEACHES.value)
         language = getattr(user_config.stt, "language", None)
         _validate_runtime_service_url(user_config.stt.base_url, "base_url")
         return SpeachesSTTService(
             base_url=user_config.stt.base_url,
             api_key=user_config.stt.api_key or "none",
-            settings=SpeachesSTTSettings(
-                model=user_config.stt.model,
-                language=language,
+            settings=build_settings(
+                SpeachesSTTSettings,
+                {"model": user_config.stt.model, "language": language},
+                plan,
             ),
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.HUGGINGFACE.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.HUGGINGFACE.value)
         base_url = (
             getattr(user_config.stt, "base_url", None)
             or "https://router.huggingface.co/hf-inference"
@@ -511,25 +534,39 @@ def create_stt_service(
             api_key=user_config.stt.api_key,
             base_url=base_url,
             bill_to=getattr(user_config.stt, "bill_to", None),
-            settings=HuggingFaceSTTSettings(
-                model=user_config.stt.model,
-                return_timestamps=getattr(user_config.stt, "return_timestamps", False),
+            settings=build_settings(
+                HuggingFaceSTTSettings,
+                {
+                    "model": user_config.stt.model,
+                    "return_timestamps": getattr(
+                        user_config.stt, "return_timestamps", False
+                    ),
+                },
+                plan,
             ),
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.ASSEMBLYAI.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.ASSEMBLYAI.value)
         language = getattr(user_config.stt, "language", None)
         settings_kwargs = {"model": user_config.stt.model, "language": language}
         if keyterms:
             settings_kwargs["keyterms_prompt"] = keyterms
         return AssemblyAISTTService(
             api_key=user_config.stt.api_key,
-            settings=AssemblyAISTTSettings(**settings_kwargs),
+            settings=build_settings(AssemblyAISTTSettings, settings_kwargs, plan),
             sample_rate=audio_config.transport_in_sample_rate,
+            **plan.ctor,
         )
     elif user_config.stt.provider == ServiceProviders.GLADIA.value:
-        from pipecat.services.gladia.config import LanguageConfig
+        from pipecat.services.gladia.config import (
+            LanguageConfig,
+            MessagesConfig,
+            PreProcessingConfig,
+            RealtimeProcessingConfig,
+        )
 
+        plan = tuning_for(tuning, "stt", ServiceProviders.GLADIA.value)
         language = getattr(user_config.stt, "language", None) or "en"
         settings_kwargs = {
             "model": user_config.stt.model,
@@ -539,15 +576,29 @@ def create_stt_service(
         }
         return GladiaSTTService(
             api_key=user_config.stt.api_key,
-            settings=GladiaSTTSettings(**settings_kwargs),
+            settings=build_settings(
+                GladiaSTTSettings,
+                settings_kwargs,
+                coerce_settings(
+                    plan,
+                    {
+                        "pre_processing": PreProcessingConfig.model_validate,
+                        "realtime_processing": RealtimeProcessingConfig.model_validate,
+                        "messages_config": MessagesConfig.model_validate,
+                    },
+                ),
+            ),
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.SPEECHMATICS.value:
         from pipecat.services.speechmatics.stt import (
             AdditionalVocabEntry,
             OperatingPoint,
+            SpeakerIdentifier,
+            TurnDetectionMode,
         )
 
+        plan = tuning_for(tuning, "stt", ServiceProviders.SPEECHMATICS.value)
         language = getattr(user_config.stt, "language", None) or "en"
         # Map model field to operating point (standard or enhanced)
         operating_point = (
@@ -561,16 +612,37 @@ def create_stt_service(
             additional_vocab = [AdditionalVocabEntry(content=term) for term in keyterms]
         return SpeechmaticsSTTService(
             api_key=user_config.stt.api_key,
-            settings=SpeechmaticsSTTSettings(
-                language=language,
-                operating_point=operating_point,
-                additional_vocab=additional_vocab,
+            settings=build_settings(
+                SpeechmaticsSTTSettings,
+                {
+                    "language": language,
+                    "operating_point": operating_point,
+                    "additional_vocab": additional_vocab,
+                },
+                coerce_settings(
+                    plan,
+                    {
+                        # _build_config reads .value off the mode
+                        # (speechmatics/stt.py:752); the vocabulary and speaker
+                        # lists are handed to the SDK config, which does not
+                        # validate on assignment (:772-775).
+                        "turn_detection_mode": TurnDetectionMode,
+                        "additional_vocab": lambda entries: [
+                            AdditionalVocabEntry.model_validate(e) for e in entries
+                        ],
+                        "known_speakers": lambda entries: [
+                            SpeakerIdentifier(**e) if isinstance(e, dict) else e
+                            for e in entries
+                        ],
+                    },
+                ),
             ),
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.AZURE_SPEECH.value:
         from pipecat.transcriptions.language import Language as PipecatLanguage
 
+        plan = tuning_for(tuning, "stt", ServiceProviders.AZURE_SPEECH.value)
         language_code = getattr(user_config.stt, "language", None) or "en-US"
         region = getattr(user_config.stt, "region", None) or "eastus"
         try:
@@ -580,10 +652,13 @@ def create_stt_service(
         return AzureSTTService(
             api_key=user_config.stt.api_key,
             region=region,
-            settings=AzureSTTSettings(language=pipecat_language),
+            settings=build_settings(
+                AzureSTTSettings, {"language": pipecat_language}, plan
+            ),
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.SMALLEST.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.SMALLEST.value)
         language_code = getattr(user_config.stt, "language", None) or "en"
         try:
             pipecat_language = Language(language_code)
@@ -591,9 +666,10 @@ def create_stt_service(
             pipecat_language = Language.EN
         return SmallestSTTService(
             api_key=user_config.stt.api_key,
-            settings=SmallestSTTSettings(
-                model=user_config.stt.model,
-                language=pipecat_language,
+            settings=build_settings(
+                SmallestSTTSettings,
+                {"model": user_config.stt.model, "language": pipecat_language},
+                plan,
             ),
             sample_rate=audio_config.transport_in_sample_rate,
         )

@@ -8,7 +8,8 @@ apply_update :258-264). Nothing is routed through ``extra``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from typing import Any, Literal, TypeVar
 
 from pipecat.services.settings import ServiceSettings
@@ -49,6 +50,28 @@ def build_settings(
     if not plan.settings:
         return settings_cls(**base)
     return settings_cls.from_mapping({**base, **plan.settings})
+
+
+def coerce_settings(
+    plan: TuningPlan, coercions: Mapping[str, Callable[[Any], Any]]
+) -> TuningPlan:
+    """Return a copy of ``plan`` with the named settings converted.
+
+    A tuning document carries JSON, so a field declared as an enum or as a
+    provider config object arrives as a string or a dict and
+    ``from_mapping`` stores it unchanged — the service then reads
+    ``.value`` (speechmatics/stt.py:752) or hands the dict to its SDK
+    (speechmatics/stt.py:775). The branch converts it here instead. The
+    converters must accept an already-converted value, and ``None`` (an
+    explicit "unset this field") is left alone. Never mutates ``plan``.
+    """
+    if not plan.settings:
+        return plan
+    settings = dict(plan.settings)
+    for name, convert in coercions.items():
+        if settings.get(name) is not None:
+            settings[name] = convert(settings[name])
+    return replace(plan, settings=settings)
 
 
 def llm_tuning_applies(document: dict | None, role: LLMRole) -> bool:

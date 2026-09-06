@@ -16,8 +16,12 @@ import typing
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAISTTSettings
 from pipecat.services.aws.llm import AWSBedrockLLMSettings
 from pipecat.services.azure.llm import AzureLLMSettings
+from pipecat.services.azure.stt import AzureSTTSettings
+from pipecat.services.cartesia.stt import CartesiaSTTService, CartesiaSTTSettings
+from pipecat.services.cartesia.turns.stt import CartesiaTurnsSTTService
 from pipecat.services.deepgram.flux.base import DeepgramFluxSTTSettings
 from pipecat.services.deepgram.flux.stt import DeepgramFluxSTTService
 from pipecat.services.deepgram.stt import DeepgramSTTService, DeepgramSTTSettings
@@ -27,18 +31,26 @@ from pipecat.services.elevenlabs.stt import (
     ElevenLabsRealtimeSTTSettings,
 )
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService, ElevenLabsTTSSettings
+from pipecat.services.gladia.stt import GladiaSTTSettings
 from pipecat.services.google.llm import GoogleLLMSettings
+from pipecat.services.google.stt import GoogleSTTSettings
 from pipecat.services.google.vertex.llm import GoogleVertexLLMSettings
 from pipecat.services.groq.llm import GroqLLMSettings
 from pipecat.services.huggingface.llm import HuggingFaceLLMSettings
+from pipecat.services.huggingface.stt import HuggingFaceSTTSettings
 from pipecat.services.minimax.llm import MiniMaxLLMSettings
 from pipecat.services.openai.base_llm import OpenAILLMSettings
 from pipecat.services.openai.llm import OpenAILLMService
+from pipecat.services.openai.stt import OpenAISTTSettings
 from pipecat.services.openai.tts import OpenAITTSService, OpenAITTSSettings
 from pipecat.services.openrouter.llm import OpenRouterLLMSettings
 from pipecat.services.sarvam.llm import SarvamLLMSettings
+from pipecat.services.sarvam.stt import SarvamSTTSettings
 from pipecat.services.settings import LLMSettings
+from pipecat.services.smallest.stt import SmallestSTTSettings
 from pipecat.services.speaches.llm import SpeachesLLMSettings
+from pipecat.services.speaches.stt import SpeachesSTTSettings
+from pipecat.services.speechmatics.stt import SpeechmaticsSTTSettings
 
 ALL = "_all"
 KINDS = ("stt", "tts", "llm", "realtime")
@@ -55,6 +67,14 @@ class TuningSpec:
     settings_allowed: frozenset[str]
     service_classes: tuple[type, ...] = ()
     ctor_allowed: frozenset[str] = frozenset()
+    ctor_choices: dict[str, frozenset[str]] = dataclasses.field(default_factory=dict)
+    """Closed value sets for the ctor kwargs that take an enum, keyed by name.
+
+    ``ctor_allowed`` only says a kwarg may be sent; a kwarg whose value the
+    branch feeds straight to an enum constructor (``CommitStrategy(...)``,
+    service_factory.py:610) needs the value checked too, or the 422 arrives as
+    a ValueError at run creation instead.
+    """
     options_allowed: frozenset[str] = frozenset()
     nullable_extra: frozenset[str] = frozenset()
 
@@ -160,6 +180,74 @@ SPECS[("stt", "elevenlabs")] = TuningSpec(
     _fields(ElevenLabsRealtimeSTTSettings),
     service_classes=(ElevenLabsRealtimeSTTService,),
     ctor_allowed=frozenset({"commit_strategy", "include_timestamps"}),
+    ctor_choices={"commit_strategy": frozenset({"vad", "manual"})},
+)
+# ink-whisper and ink-2 speak different wire protocols behind one provider, but
+# their Settings classes declare the same fields (cartesia/stt.py:84-99,
+# cartesia/turns/stt.py:41-56), so one allow-list covers both; the factory
+# builds each branch's own class.
+SPECS[("stt", "cartesia")] = TuningSpec(
+    "stt",
+    "cartesia",
+    CartesiaSTTSettings,
+    _fields(CartesiaSTTSettings),
+    service_classes=(CartesiaSTTService, CartesiaTurnsSTTService),
+)
+SPECS[("stt", "smallest")] = TuningSpec(
+    "stt", "smallest", SmallestSTTSettings, _fields(SmallestSTTSettings)
+)
+# The Responses-style realtime transcription session is a different service
+# class this factory does not build; ``options.api`` is declared so the knob
+# has one name from the start (validated in _validate_openai_stt_options).
+SPECS[("stt", "openai")] = TuningSpec(
+    "stt",
+    "openai",
+    OpenAISTTSettings,
+    _fields(OpenAISTTSettings),
+    options_allowed=frozenset({"api"}),
+)
+SPECS[("stt", "speaches")] = TuningSpec(
+    "stt", "speaches", SpeachesSTTSettings, _fields(SpeachesSTTSettings)
+)
+SPECS[("stt", "sarvam")] = TuningSpec(
+    "stt", "sarvam", SarvamSTTSettings, _fields(SarvamSTTSettings)
+)
+# ``language_code``/``language_codes`` are the registry's language under
+# another name (the factory fills ``language`` from it, service_factory.py:519).
+SPECS[("stt", "assemblyai")] = TuningSpec(
+    "stt",
+    "assemblyai",
+    AssemblyAISTTSettings,
+    _fields(AssemblyAISTTSettings, "language_code", "language_codes"),
+    service_classes=(AssemblyAISTTService,),
+    ctor_allowed=frozenset({"vad_force_turn_endpoint"}),
+)
+# ``operating_point`` is excluded for the same reason: for Speechmatics it *is*
+# the model — the factory derives it from ``user_config.stt.model`` and the
+# service writes it back into ``settings.model`` (speechmatics/stt.py:512).
+SPECS[("stt", "speechmatics")] = TuningSpec(
+    "stt",
+    "speechmatics",
+    SpeechmaticsSTTSettings,
+    _fields(SpeechmaticsSTTSettings, "operating_point"),
+)
+SPECS[("stt", "gladia")] = TuningSpec(
+    "stt",
+    "gladia",
+    GladiaSTTSettings,
+    _fields(GladiaSTTSettings, "language_config"),
+)
+SPECS[("stt", "google")] = TuningSpec(
+    "stt",
+    "google",
+    GoogleSTTSettings,
+    _fields(GoogleSTTSettings, "languages", "language_codes"),
+)
+SPECS[("stt", "azure_speech")] = TuningSpec(
+    "stt", "azure_speech", AzureSTTSettings, _fields(AzureSTTSettings)
+)
+SPECS[("stt", "huggingface")] = TuningSpec(
+    "stt", "huggingface", HuggingFaceSTTSettings, _fields(HuggingFaceSTTSettings)
 )
 SPECS[("tts", "elevenlabs")] = TuningSpec(
     "tts",
@@ -352,6 +440,16 @@ there (``options.api="responses"`` and ``options.reasoning.summary``) are named
 422s rather than a silent downgrade or a knob that reaches nothing.
 """
 
+OPENAI_REALTIME_STT_AVAILABLE = False
+"""Whether this build can serve OpenAI's realtime transcription session.
+
+``create_stt_service`` builds the segmented ``OpenAISTTService`` for every
+OpenAI model; the realtime session is a different service class that is not
+wired yet, so asking for it is a named 422 rather than a silent downgrade to
+segments.
+"""
+
+_OPENAI_STT_APIS = frozenset({"segments", "realtime"})
 _OPENAI_APIS = frozenset({"chat_completions", "responses"})
 _REASONING_KEYS = {
     "effort": frozenset({"none", "minimal", "low", "medium", "high", "xhigh"}),
@@ -421,6 +519,19 @@ def _validate_openai_llm_options(options: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _validate_openai_stt_options(options: dict[str, Any]) -> list[str]:
+    """Value check for ``stt.openai.options.api`` (reserved for the realtime
+    transcription session, which this build does not construct)."""
+    if "api" not in options:
+        return []
+    error = _one_of("stt.openai.options.api", options["api"], _OPENAI_STT_APIS)
+    if error:
+        return [error]
+    if options["api"] == "realtime" and not OPENAI_REALTIME_STT_AVAILABLE:
+        return ["stt.openai.options.api: realtime is not wired in this build"]
+    return []
+
+
 def validate_service_tuning(document: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     for kind in KINDS:
@@ -446,13 +557,20 @@ def validate_service_tuning(document: dict[str, Any]) -> list[str]:
                     errors.append(f"{path}: owned by the model configuration")
                 else:
                     errors.append(f"{path}: unknown setting")
-            for name in tuning.get("ctor") or {}:
+            for name, value in (tuning.get("ctor") or {}).items():
+                path = f"{kind}.{provider}.ctor.{name}"
                 if name not in spec.ctor_allowed:
-                    errors.append(f"{kind}.{provider}.ctor.{name}: not allowed")
+                    errors.append(f"{path}: not allowed")
+                elif name in spec.ctor_choices:
+                    error = _one_of(path, value, spec.ctor_choices[name])
+                    if error:
+                        errors.append(error)
             options = tuning.get("options") or {}
             for name in options:
                 if name not in spec.options_allowed:
                     errors.append(f"{kind}.{provider}.options.{name}: not allowed")
             if kind == "llm" and provider == "openai":
                 errors.extend(_validate_openai_llm_options(options))
+            if kind == "stt" and provider == "openai":
+                errors.extend(_validate_openai_stt_options(options))
     return errors
