@@ -100,6 +100,51 @@ def test_speechmatics_operating_point_stays_registry_owned():
         )
 
 
+def test_speechmatics_extra_params_stays_closed():
+    # _build_config splats it onto the SDK config by hasattr
+    # (speechmatics/stt.py:795-799), so a free-form dict would re-open every
+    # excluded field — operating_point included, which then crashes at :512.
+    with pytest.raises(
+        ValidationError, match="stt.speechmatics.settings.extra_params: unknown"
+    ):
+        _validate(
+            {
+                "stt": {
+                    "speechmatics": {
+                        "settings": {"extra_params": {"operating_point": "enhanced"}}
+                    }
+                }
+            }
+        )
+
+
+def test_enum_typed_setting_checks_the_enum_values():
+    _validate({"stt": {"speechmatics": {"settings": {"focus_mode": "retain"}}}})
+    for field, value in (
+        ("focus_mode", "bogus"),
+        # An unhashable value must not raise TypeError out of the membership
+        # check, and a bad mode must not reach TurnDetectionMode(...) in the
+        # factory as a ValueError.
+        ("focus_mode", ["retain"]),
+        ("turn_detection_mode", "bogus"),
+        ("turn_detection_mode", ["external"]),
+    ):
+        with pytest.raises(
+            ValidationError,
+            match=f"stt.speechmatics.settings.{field}: wrong type",
+        ):
+            _validate({"stt": {"speechmatics": {"settings": {field: value}}}})
+
+
+def test_ctor_choices_are_declared_ctor_kwargs():
+    for (kind, provider), spec in specs.SPECS.items():
+        assert set(spec.ctor_choices) <= spec.ctor_allowed, (
+            kind,
+            provider,
+            set(spec.ctor_choices) - spec.ctor_allowed,
+        )
+
+
 def test_language_aliases_stay_registry_owned():
     for provider, key in (
         ("assemblyai", "language_code"),

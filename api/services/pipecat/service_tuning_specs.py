@@ -6,13 +6,21 @@ table is what the PUT validates against so a misspelt knob is a 422, not a
 no-op. ``settings_allowed`` must be a subset of the real dataclass fields
 (guarded by test_service_tuning_schema.py); identity fields owned by the
 model registry (model/voice/language/api_key) are never tunable here.
+
+Three build gates below name a knob that this build cannot honour rather than
+letting it through as a silent no-op or a broken run (§1.2):
+``RESPONSES_API_AVAILABLE``, ``OPENAI_REALTIME_STT_AVAILABLE`` and
+``PROVIDER_TURN_DETECTION_AVAILABLE``. Each is a constant the PR that wires
+the feature flips.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import enum
 import types
 import typing
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -225,11 +233,14 @@ SPECS[("stt", "assemblyai")] = TuningSpec(
 # ``operating_point`` is excluded for the same reason: for Speechmatics it *is*
 # the model — the factory derives it from ``user_config.stt.model`` and the
 # service writes it back into ``settings.model`` (speechmatics/stt.py:512).
+# ``extra_params`` is excluded as a second ``extra``: _build_config splats it
+# onto the SDK config by hasattr (speechmatics/stt.py:795-799), which would
+# re-open every name this row excludes, operating_point included.
 SPECS[("stt", "speechmatics")] = TuningSpec(
     "stt",
     "speechmatics",
     SpeechmaticsSTTSettings,
-    _fields(SpeechmaticsSTTSettings, "operating_point"),
+    _fields(SpeechmaticsSTTSettings, "operating_point", "extra_params"),
 )
 SPECS[("stt", "gladia")] = TuningSpec(
     "stt",
@@ -359,9 +370,9 @@ def _scalar_verdict(expected: tuple[type, ...], value: Any) -> bool | None:
 
 def _member_verdict(member: Any, value: Any) -> bool | None:
     """True: this member matches the value. False: this member is a
-    checkable type (scalar or Literal) that rejects the value. None: this
+    checkable type (scalar, Literal or Enum) that rejects the value. None: this
     member neither confirms nor denies — it's a sentinel/None placeholder
-    (skip) or a type this module doesn't verify (enum, pydantic model,
+    (skip) or a type this module doesn't verify (pydantic model,
     ``Language``, TypeVar, ``typing.Any`` — left to the provider at connect
     time, so it doesn't veto a match found elsewhere, but also never
     single-handedly excuses an otherwise-wrong-typed value)."""
@@ -384,6 +395,13 @@ def _member_verdict(member: Any, value: Any) -> bool | None:
     origin = typing.get_origin(member)
     if origin is Literal:
         return value in typing.get_args(member)
+    if isinstance(member, type) and issubclass(member, enum.Enum):
+        # The factory feeds these straight to the enum constructor
+        # (service_factory.py, speechmatics turn_detection_mode), so an
+        # out-of-set value has to be a 422 here, not a ValueError at run
+        # creation. Membership over a tuple compares by equality, so an
+        # unhashable JSON list/object is a plain False, not a TypeError.
+        return value in tuple(m.value for m in member)
     checked_type = origin if origin is not None else member
     expected = _SCALAR_TYPES.get(checked_type)
     if expected is None:
@@ -439,6 +457,52 @@ it can replace chat completions; until that lands, both knobs that only exist
 there (``options.api="responses"`` and ``options.reasoning.summary``) are named
 422s rather than a silent downgrade or a knob that reaches nothing.
 """
+
+PROVIDER_TURN_DETECTION_AVAILABLE = False
+"""Whether this build can let an STT provider own turn detection.
+
+The services below hand turns over by broadcasting their own
+``UserStarted/StoppedSpeakingFrame`` and asking the aggregator for
+``ExternalUserTurnStrategies``. That request is a no-op here:
+``run_pipeline.py:968-979`` always passes its own ``user_turn_strategies``,
+which wins (llm_response_universal.py:966-974), so the pipeline would keep
+running local VAD while the provider endpoints server-side. Turn handling
+belongs to the turn PR (spec §6); until then the *values* that flip it over
+are a named 422, while the fields stay declared so the knobs keep one name.
+"""
+
+_TURN_HANDOVER = "hands turn detection to the provider"
+_PROVIDER_TURN_KNOBS: dict[tuple[str, str, str, str], Callable[[Any], bool]] = {
+    # Any mode but EXTERNAL (speechmatics/stt.py:550-554) makes the service
+    # broadcast the turn frames at :915/:936.
+    ("stt", "speechmatics", "settings", "turn_detection_mode"): (
+        lambda v: v != "external"
+    ),
+    # gladia/stt.py:365-367; the broadcasts at :620-640 are guarded by it.
+    ("stt", "gladia", "settings", "enable_vad"): lambda v: v is True,
+    # sarvam/stt.py:815-826 broadcasts on the server's VAD events, :450 stops
+    # honouring pipecat's VAD frames and :641 drops the flush signal. Sarvam
+    # never even recommends external strategies, so nothing would notice.
+    ("stt", "sarvam", "settings", "vad_signals"): lambda v: v is True,
+    # assemblyai/stt.py:664-666; :1128-1133 and :1194-1196 emit turn frames
+    # only in AssemblyAI's own turn-detection mode.
+    ("stt", "assemblyai", "ctor", "vad_force_turn_endpoint"): lambda v: v is False,
+}
+
+
+def _provider_turn_error(
+    kind: str, provider: str, section: str, name: str, value: Any
+) -> str | None:
+    if PROVIDER_TURN_DETECTION_AVAILABLE:
+        return None
+    hands_over = _PROVIDER_TURN_KNOBS.get((kind, provider, section, name))
+    if hands_over is None or not hands_over(value):
+        return None
+    return (
+        f"{kind}.{provider}.{section}.{name}: {value} {_TURN_HANDOVER}, "
+        "not wired in this build (turn PR)"
+    )
+
 
 OPENAI_REALTIME_STT_AVAILABLE = False
 """Whether this build can serve OpenAI's realtime transcription session.
@@ -553,6 +617,12 @@ def validate_service_tuning(document: dict[str, Any]) -> list[str]:
                         errors.append(f"{path}: null not allowed")
                     elif not _type_ok(spec.settings_classes(), name, value):
                         errors.append(f"{path}: wrong type")
+                    else:
+                        error = _provider_turn_error(
+                            kind, provider, "settings", name, value
+                        )
+                        if error:
+                            errors.append(error)
                 elif name in REGISTRY_OWNED:
                     errors.append(f"{path}: owned by the model configuration")
                 else:
@@ -561,10 +631,15 @@ def validate_service_tuning(document: dict[str, Any]) -> list[str]:
                 path = f"{kind}.{provider}.ctor.{name}"
                 if name not in spec.ctor_allowed:
                     errors.append(f"{path}: not allowed")
-                elif name in spec.ctor_choices:
+                    continue
+                if name in spec.ctor_choices:
                     error = _one_of(path, value, spec.ctor_choices[name])
                     if error:
                         errors.append(error)
+                        continue
+                error = _provider_turn_error(kind, provider, "ctor", name, value)
+                if error:
+                    errors.append(error)
             options = tuning.get("options") or {}
             for name in options:
                 if name not in spec.options_allowed:

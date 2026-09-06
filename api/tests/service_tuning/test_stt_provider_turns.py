@@ -1,13 +1,20 @@
 """Provider-side turn knobs on the STT services that detect turns themselves.
 
-Layer 2 again (no isolated query builder); the ctor half checks the kwargs the
-factory forwards from ``plan.ctor``.
+Two halves. The knobs that only tune the provider's own segmentation reach the
+Settings object (layer 2 again — no isolated query builder; the ctor half checks
+the kwargs the factory forwards from ``plan.ctor``). The values that hand turn
+detection to the provider are refused at the PUT while this build still runs its
+own VAD and passes its own ``user_turn_strategies`` (run_pipeline.py:968-979,
+which makes the service's recommendation a no-op in
+llm_response_universal.py:966-974).
 """
 
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
+from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
 from api.services.pipecat.service_factory import create_stt_service
 from api.tests.service_tuning._transport import audio_config, user_config_stt
 
@@ -23,14 +30,13 @@ TURN_CASES = [
             "interruption_delay": 300,
             "mode": "balanced",
         },
-        {"vad_force_turn_endpoint": False},
+        {},
         "AssemblyAISTTService",
     ),
     (
         "speechmatics",
         "enhanced",
         {
-            "turn_detection_mode": "adaptive",
             "end_of_utterance_silence_trigger": 0.5,
             "end_of_utterance_max_delay": 2.0,
             "max_delay": 1.0,
@@ -41,11 +47,7 @@ TURN_CASES = [
     (
         "gladia",
         "solaria-1",
-        {
-            "enable_vad": True,
-            "endpointing": 0.4,
-            "maximum_duration_without_endpointing": 8,
-        },
+        {"endpointing": 0.4, "maximum_duration_without_endpointing": 8},
         {},
         "GladiaSTTService",
     ),
@@ -59,7 +61,7 @@ TURN_CASES = [
     (
         "sarvam",
         "saarika:v2",
-        {"vad_signals": True, "high_vad_sensitivity": True, "min_speech_frames": 3},
+        {"high_vad_sensitivity": True, "min_speech_frames": 3},
         {},
         "SarvamSTTService",
     ),
@@ -81,9 +83,45 @@ def test_turn_knobs_reach_settings_and_ctor(provider, model, settings, ctor, cls
         assert mock.call_args.kwargs[k] == v
 
 
+# provider, tuning section, field, value that hands turns over, value that does not
+HANDOVER_CASES = [
+    # speechmatics/stt.py:550-554 (any mode but external) -> :915/:936 broadcast
+    # UserStarted/StoppedSpeakingFrame.
+    ("speechmatics", "settings", "turn_detection_mode", "adaptive", "external"),
+    # gladia/stt.py:365-367; the broadcasts at :620-640 are guarded by enable_vad.
+    ("gladia", "settings", "enable_vad", True, False),
+    # sarvam/stt.py:815-826 broadcasts on the server's VAD events, :450 stops
+    # honouring pipecat's VAD frames and :641 drops the flush signal.
+    ("sarvam", "settings", "vad_signals", True, False),
+    # assemblyai/stt.py:664-666; :1128-1133 and :1194-1196 emit turn frames only
+    # in AssemblyAI's own turn-detection mode.
+    ("assemblyai", "ctor", "vad_force_turn_endpoint", False, True),
+]
+
+
+@pytest.mark.parametrize("provider,section,field,handover,keeps", HANDOVER_CASES)
+def test_provider_turn_handover_is_a_named_422(
+    provider, section, field, handover, keeps
+):
+    def validate(value):
+        WorkflowConfigurationDefaults.model_validate(
+            {"service_tuning": {"stt": {provider: {section: {field: value}}}}}
+        )
+
+    validate(keeps)
+    with pytest.raises(
+        ValidationError,
+        match=(
+            f"stt.{provider}.{section}.{field}: {handover} hands turn detection "
+            "to the provider"
+        ),
+    ):
+        validate(handover)
+
+
 def test_speechmatics_turn_detection_mode_is_the_service_enum():
     tuning = {
-        "stt": {"speechmatics": {"settings": {"turn_detection_mode": "adaptive"}}}
+        "stt": {"speechmatics": {"settings": {"turn_detection_mode": "external"}}}
     }
     with patch("api.services.pipecat.service_factory.SpeechmaticsSTTService") as mock:
         create_stt_service(
@@ -93,4 +131,4 @@ def test_speechmatics_turn_detection_mode_is_the_service_enum():
         )
     # _build_config reads ``turn_detection_mode.value`` (speechmatics/stt.py:752),
     # which a plain string does not have.
-    assert mock.call_args.kwargs["settings"].turn_detection_mode.value == "adaptive"
+    assert mock.call_args.kwargs["settings"].turn_detection_mode.value == "external"
