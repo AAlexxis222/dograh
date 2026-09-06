@@ -203,6 +203,7 @@ def test_create_workflow_run_uses_draft_and_template_context():
 
     workflow = SimpleNamespace(
         id=33,
+        organization_id=11,
         released_definition=SimpleNamespace(
             id=77,
             template_context_variables={"name": "published"},
@@ -228,6 +229,10 @@ def test_create_workflow_run_uses_draft_and_template_context():
     with patch("api.routes.workflow.db_client") as mock_db:
         mock_db.get_workflow = AsyncMock(return_value=workflow)
         mock_db.get_draft_version = AsyncMock(return_value=draft)
+        mock_db.get_definition_configurations_with_owner = AsyncMock(
+            return_value=({}, workflow.organization_id)
+        )
+        mock_db.get_configuration_value = AsyncMock(return_value={})
         mock_db.create_workflow_run = AsyncMock(return_value=run)
 
         response = client.post(
@@ -251,7 +256,7 @@ def test_create_workflow_webrtc_run_can_simulate_outbound_from_template_context(
     app = _make_test_app()
     client = TestClient(app)
 
-    workflow = SimpleNamespace(id=33, current_definition=None)
+    workflow = SimpleNamespace(id=33, organization_id=11, current_definition=None)
     draft = SimpleNamespace(
         id=88,
         template_context_variables={"direction": " OUTBOUND "},
@@ -270,6 +275,10 @@ def test_create_workflow_webrtc_run_can_simulate_outbound_from_template_context(
     with patch("api.routes.workflow.db_client") as mock_db:
         mock_db.get_workflow = AsyncMock(return_value=workflow)
         mock_db.get_draft_version = AsyncMock(return_value=draft)
+        mock_db.get_definition_configurations_with_owner = AsyncMock(
+            return_value=({}, workflow.organization_id)
+        )
+        mock_db.get_configuration_value = AsyncMock(return_value={})
         mock_db.create_workflow_run = AsyncMock(return_value=run)
 
         response = client.post(
@@ -281,3 +290,83 @@ def test_create_workflow_webrtc_run_can_simulate_outbound_from_template_context(
     create_kwargs = mock_db.create_workflow_run.await_args.kwargs
     assert create_kwargs["call_type"] == CallType.OUTBOUND
     assert create_kwargs["initial_context"]["direction"] == "outbound"
+
+
+def test_update_workflow_rejects_a_secret_under_an_unregistered_key():
+    """The document accepts unknown keys, and masking only knows the registered
+    paths, so a credential parked under any other name would be stored in clear
+    and served in clear on every read of the workflow and of its runs."""
+    app = _make_test_app()
+    client = TestClient(app)
+
+    with patch("api.routes.workflow.db_client") as mock_db:
+        response = client.put(
+            "/workflow/33",
+            json={"workflow_configurations": {"my_integration": {"token": "t-secret"}}},
+        )
+
+    assert response.status_code == 422
+    assert "my_integration.token" in response.json()["detail"]
+    assert mock_db.mock_calls == []
+
+
+def test_update_workflow_accepts_a_secret_under_a_registered_path():
+    """A registered path is masked on read and restored from storage on write,
+    so the model-override credentials the editor sends stay accepted."""
+    app = _make_test_app()
+    client = TestClient(app)
+    stored = SimpleNamespace(
+        workflow_json={"nodes": [], "edges": []},
+        workflow_configurations={},
+        template_context_variables={},
+        version_number=2,
+        status="draft",
+    )
+    workflow = SimpleNamespace(
+        id=33,
+        name="Support Agent",
+        status="active",
+        created_at=datetime.now(UTC),
+        current_definition_id=7,
+        call_disposition_codes=None,
+        released_definition=stored,
+    )
+    overrides = {"llm": {"provider": "openai", "api_key": "sk-1234567890"}}
+
+    with (
+        patch("api.routes.workflow.db_client") as mock_db,
+        patch(
+            "api.routes.workflow.apply_external_pbx_mapping_policy",
+            AsyncMock(side_effect=lambda document, **_: document),
+        ),
+        patch(
+            "api.routes.workflow.merge_workflow_configuration_secrets",
+            lambda incoming, _existing: incoming,
+        ),
+        patch(
+            "api.routes.workflow.get_resolved_ai_model_configuration",
+            AsyncMock(return_value=SimpleNamespace(effective={}, source="user")),
+        ),
+        patch(
+            "api.routes.workflow.enrich_overrides_with_api_keys",
+            lambda incoming, _effective: incoming,
+        ),
+        patch("api.routes.workflow.resolve_effective_config", lambda *_: {}),
+        patch("api.routes.workflow.UserConfigurationValidator") as validator,
+    ):
+        validator.return_value.validate = AsyncMock()
+        mock_db.get_workflow = AsyncMock(return_value=workflow)
+        mock_db.get_draft_version = AsyncMock(return_value=stored)
+        mock_db.update_workflow = AsyncMock(return_value=workflow)
+        response = client.put(
+            "/workflow/33",
+            json={"workflow_configurations": {"model_overrides": overrides}},
+        )
+
+    assert response.status_code == 200, response.text
+    assert (
+        mock_db.update_workflow.await_args.kwargs["workflow_configurations"][
+            "model_overrides"
+        ]
+        == overrides
+    )

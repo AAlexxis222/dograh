@@ -14,10 +14,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
+from api.app import (
+    handle_workflow_definition_missing,
+    handle_workflow_definition_not_visible,
+)
 from api.enums import CallType
 from api.routes.public_embed import PublicEmbedCORSMiddleware
 from api.routes.public_embed import router as public_embed_router
 from api.routes.public_embed_chat import router as public_embed_chat_router
+from api.services.configuration.cascade import (
+    WorkflowDefinitionMissingError,
+    WorkflowDefinitionNotVisibleError,
+)
 from api.services.workflow.embed_context import MAX_VALUE_LENGTH
 from api.services.workflow.embed_session_service import (
     authorize_embed_workflow_run_start,
@@ -44,6 +52,14 @@ app.add_middleware(
 app.add_middleware(PublicEmbedCORSMiddleware, api_prefix="/api/v1")
 app.include_router(public_embed_router, prefix="/api/v1")
 app.include_router(public_embed_chat_router, prefix="/api/v1")
+# Mirror api/app.py so the cascade errors map to 400/403 here too; without
+# them the route's own catch-all is the only thing under test.
+app.add_exception_handler(
+    WorkflowDefinitionMissingError, handle_workflow_definition_missing
+)
+app.add_exception_handler(
+    WorkflowDefinitionNotVisibleError, handle_workflow_definition_not_visible
+)
 client = TestClient(app, raise_server_exceptions=False)
 
 ORIGIN = "https://mysite.vercel.app"
@@ -222,10 +238,17 @@ def _patch_db(monkeypatch):
     async def _get_workflow(*_args, **_kwargs):
         return SimpleNamespace(
             id=1,
+            organization_id=11,
             released_definition=SimpleNamespace(id=55, template_context_variables={}),
             current_definition=None,
             template_context_variables={},
         )
+
+    async def _get_definition_configurations_with_owner(_definition_id):
+        return {}, 11
+
+    async def _get_configuration_value(_organization_id, _key, default=None):
+        return default
 
     async def _get_user(_user_id):
         return SimpleNamespace(id=7)
@@ -243,6 +266,11 @@ def _patch_db(monkeypatch):
         ("create_workflow_run", _create_workflow_run),
         ("update_workflow_run", _update_workflow_run),
         ("get_workflow", _get_workflow),
+        (
+            "get_definition_configurations_with_owner",
+            _get_definition_configurations_with_owner,
+        ),
+        ("get_configuration_value", _get_configuration_value),
         ("get_user_by_id", _get_user),
         ("create_embed_session", _noop),
         ("reserve_embed_token_usage", _allow),
@@ -382,6 +410,51 @@ def test_init_rejects_exhausted_usage_reservation(monkeypatch, _patch_db):
     )
 
     assert resp.status_code == 403
+    assert _patch_db.created_runs == []
+
+
+def test_init_without_runnable_definition_is_400(monkeypatch, _patch_db):
+    async def _missing(_definition_id):
+        return None
+
+    monkeypatch.setattr(
+        "api.routes.public_embed.db_client.get_definition_configurations_with_owner",
+        _missing,
+    )
+
+    resp = client.post(
+        "/api/v1/public/embed/init",
+        headers={"Origin": ORIGIN},
+        json={"token": "chat"},
+    )
+
+    assert resp.status_code == 400
+    # Unauthenticated caller: the body must not name the definition.
+    assert resp.json()["detail"] == "Workflow has no runnable definition"
+    assert _patch_db.created_runs == []
+
+
+def test_init_with_foreign_definition_is_403(monkeypatch, _patch_db):
+    async def _other_tenant(_definition_id):
+        return {}, 999
+
+    monkeypatch.setattr(
+        "api.routes.public_embed.db_client.get_definition_configurations_with_owner",
+        _other_tenant,
+    )
+
+    resp = client.post(
+        "/api/v1/public/embed/init",
+        headers={"Origin": ORIGIN},
+        json={"token": "chat"},
+    )
+
+    assert resp.status_code == 403
+    # The body must not confirm which organization owns the definition.
+    assert (
+        resp.json()["detail"]
+        == "Workflow definition is not available to this organization"
+    )
     assert _patch_db.created_runs == []
 
 

@@ -122,6 +122,10 @@ type WorkflowConfigurationBase = Omit<
     | "text_chat_inactivity_timeout_seconds"
     | "external_pbx_field_mappings"
     | "external_pbx_lead_headers"
+    | "voicemail_detection"
+    | "transcript_configuration"
+    | "model_overrides"
+    | "model_configuration_v2_override"
 >;
 
 export type WorkflowConfigurations = WorkflowConfigurationBase & {
@@ -232,6 +236,19 @@ export function resolveWorkflowConfigurations(
             // carrying this field; the generated defaults type predates it.
             ?? (defaults?.external_pbx_lead_headers as string[] | undefined)
             ?? FALLBACK_WORKFLOW_CONFIGURATIONS.external_pbx_lead_headers,
+        model_overrides:
+            configurations?.model_overrides
+            ?? (defaults?.model_overrides as ModelOverrides | undefined)
+            ?? undefined,
+        model_configuration_v2_override:
+            configurations?.model_configuration_v2_override
+            ?? (defaults?.model_configuration_v2_override as OrganizationAiModelConfigurationV2 | undefined)
+            ?? undefined,
+        voicemail_detection:
+            configurations?.voicemail_detection
+            // Cast because the generated defaults model only carries the fields
+            // the API declares; the UI keeps a richer shape for the settings form.
+            ?? (defaults?.voicemail_detection as VoicemailDetectionConfiguration | undefined),
         transcript_configuration: {
             ...DEFAULT_TRANSCRIPT_CONFIGURATION,
             ...(defaults?.transcript_configuration as Partial<TranscriptConfiguration> | undefined),
