@@ -355,23 +355,31 @@ class PipecatEngine:
                         f"Playing transition audio: {transition_speech_recording_id}"
                     )
                     self._queued_speech_mute_state = "waiting"
-                    result = await self._fetch_recording_audio(
-                        recording_pk=int(transition_speech_recording_id)
-                    )
-                    if result:
-                        await play_audio(
-                            result.audio,
-                            sample_rate=self._audio_config.pipeline_sample_rate
-                            if self._audio_config
-                            else 16000,
-                            queue_frame=self._transport_output.queue_frame,
-                            transcript=result.transcript,
-                            persist_to_logs=True,
+                    played = False
+                    try:
+                        result = await self._fetch_recording_audio(
+                            recording_pk=int(transition_speech_recording_id)
                         )
-                    else:
-                        logger.warning(
-                            f"Failed to fetch transition audio {transition_speech_recording_id}"
-                        )
+                        if result:
+                            await play_audio(
+                                result.audio,
+                                sample_rate=self._audio_config.pipeline_sample_rate
+                                if self._audio_config
+                                else 16000,
+                                queue_frame=self._transport_output.queue_frame,
+                                transcript=result.transcript,
+                                persist_to_logs=True,
+                            )
+                            played = True
+                        else:
+                            logger.warning(
+                                f"Failed to fetch transition audio {transition_speech_recording_id}"
+                            )
+                    finally:
+                        # Nothing was queued, so no BotStoppedSpeakingFrame will
+                        # ever release the mute; release it here instead.
+                        if not played:
+                            self._queued_speech_mute_state = "idle"
                 elif transition_speech:
                     logger.info(f"Playing transition speech: {transition_speech}")
                     self._queued_speech_mute_state = "waiting"
@@ -1153,6 +1161,7 @@ class PipecatEngine:
                 f"Queued speech never started playing within {start_timeout}s; "
                 "continuing without it"
             )
+            self._queued_speech_mute_state = "idle"
             return False
 
         try:
@@ -1164,6 +1173,7 @@ class PipecatEngine:
                 f"Queued speech did not finish playing within {playback_timeout}s; "
                 "continuing"
             )
+            self._queued_speech_mute_state = "idle"
             return False
 
         return True
