@@ -69,7 +69,7 @@ def test_openai_option_values_are_checked_not_just_their_names():
                 "openai": {
                     "options": {
                         "api": "chat_completions",
-                        "reasoning": {"effort": "high", "summary": "concise"},
+                        "reasoning": {"effort": "high"},
                         "verbosity": "high",
                     }
                 }
@@ -77,17 +77,41 @@ def test_openai_option_values_are_checked_not_just_their_names():
         }
     )
     for options, message in (
-        ({"api": "grpc"}, "llm.openai.options.api: invalid value"),
+        ({"api": "grpc"}, "llm.openai.options.api: must be one of"),
+        # Ruling A: explicit null is not one of the choices either.
+        ({"api": None}, "llm.openai.options.api: must be one of"),
         ({"reasoning": "high"}, "llm.openai.options.reasoning: wrong type"),
         (
             {"reasoning": {"effort": "extreme"}},
-            "llm.openai.options.reasoning.effort: invalid value",
+            "llm.openai.options.reasoning.effort: must be one of",
         ),
         (
             {"reasoning": {"depth": "low"}},
             "llm.openai.options.reasoning.depth: unknown key",
         ),
-        ({"verbosity": "loud"}, "llm.openai.options.verbosity: invalid value"),
+        # Ruling B: only the Responses API carries a reasoning summary, and
+        # that path is parked — so the knob is a named 422, not a no-op.
+        (
+            {"reasoning": {"summary": "concise"}},
+            "llm.openai.options.reasoning.summary: not available in this build",
+        ),
+        ({"verbosity": "loud"}, "llm.openai.options.verbosity: must be one of"),
+        # Unhashable values: a bare `value in frozenset` raises TypeError,
+        # which pydantic does NOT convert — the PUT would 500 instead of 422.
+        ({"verbosity": ["low"]}, "llm.openai.options.verbosity: must be one of"),
+        ({"api": ["responses"]}, "llm.openai.options.api: must be one of"),
+        (
+            {"reasoning": {"effort": ["low"]}},
+            "llm.openai.options.reasoning.effort: must be one of",
+        ),
+        (
+            {"reasoning": {"effort": {"a": 1}}},
+            "llm.openai.options.reasoning.effort: must be one of",
+        ),
+        (
+            {"reasoning": {"summary": ["auto"]}},
+            "llm.openai.options.reasoning.summary: not available in this build",
+        ),
     ):
         with pytest.raises(ValidationError, match=message):
             _validate({"llm": {"openai": {"options": options}}})

@@ -344,17 +344,34 @@ def _type_ok(settings_classes: tuple[type, ...], name: str, value: Any) -> bool:
 
 
 RESPONSES_API_AVAILABLE = False
-"""Whether this build can serve ``llm.openai.options.api="responses"``.
+"""Whether this build can serve the OpenAI Responses API.
 
 The Responses service needs the node-transition deferral ported to it before
-it can replace chat completions; until that lands the knob is a named 422
-rather than a silent downgrade to chat completions.
+it can replace chat completions; until that lands, both knobs that only exist
+there (``options.api="responses"`` and ``options.reasoning.summary``) are named
+422s rather than a silent downgrade or a knob that reaches nothing.
 """
 
 _OPENAI_APIS = frozenset({"chat_completions", "responses"})
-_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
-_REASONING_SUMMARIES = frozenset({"auto", "concise", "detailed"})
+_REASONING_KEYS = {
+    "effort": frozenset({"none", "minimal", "low", "medium", "high", "xhigh"}),
+    "summary": frozenset({"auto", "concise", "detailed"}),
+}
 _VERBOSITIES = frozenset({"low", "medium", "high"})
+
+
+def _one_of(path: str, value: Any, allowed: frozenset[str]) -> str | None:
+    """Closed-set check that survives an unhashable value.
+
+    ``options`` is ``dict[str, Any]``, so a JSON list or object reaches here;
+    a bare ``value not in allowed`` would raise TypeError, and pydantic only
+    converts ValueError/AssertionError — the PUT would 500 instead of telling
+    the caller which knob is wrong. ``None`` fails the same way as any other
+    non-choice: null is not one of the choices.
+    """
+    if isinstance(value, str) and value in allowed:
+        return None
+    return f"{path}: must be one of {', '.join(sorted(allowed))}"
 
 
 def _validate_openai_llm_options(options: dict[str, Any]) -> list[str]:
@@ -365,11 +382,11 @@ def _validate_openai_llm_options(options: dict[str, Any]) -> list[str]:
     so a bad value would otherwise reach the provider as a 400 at call time.
     """
     errors: list[str] = []
-    api = options.get("api")
-    if api is not None:
-        if api not in _OPENAI_APIS:
-            errors.append("llm.openai.options.api: invalid value")
-        elif api == "responses" and not RESPONSES_API_AVAILABLE:
+    if "api" in options:
+        error = _one_of("llm.openai.options.api", options["api"], _OPENAI_APIS)
+        if error:
+            errors.append(error)
+        elif options["api"] == "responses" and not RESPONSES_API_AVAILABLE:
             errors.append(
                 "llm.openai.options.api: responses is not available in this build "
                 "(node-transition deferral not ported)"
@@ -379,14 +396,28 @@ def _validate_openai_llm_options(options: dict[str, Any]) -> list[str]:
         if not isinstance(reasoning, dict):
             errors.append("llm.openai.options.reasoning: wrong type")
         else:
-            allowed = {"effort": _REASONING_EFFORTS, "summary": _REASONING_SUMMARIES}
             for name, value in reasoning.items():
-                if name not in allowed:
-                    errors.append(f"llm.openai.options.reasoning.{name}: unknown key")
-                elif value not in allowed[name]:
-                    errors.append(f"llm.openai.options.reasoning.{name}: invalid value")
-    if "verbosity" in options and options["verbosity"] not in _VERBOSITIES:
-        errors.append("llm.openai.options.verbosity: invalid value")
+                path = f"llm.openai.options.reasoning.{name}"
+                if name not in _REASONING_KEYS:
+                    errors.append(f"{path}: unknown key")
+                elif name == "summary" and not RESPONSES_API_AVAILABLE:
+                    # A chat-completions payload has no reasoning summary; only
+                    # the Responses API does. Accepting it would be a knob that
+                    # reaches nothing (§1.2).
+                    errors.append(
+                        f"{path}: not available in this build "
+                        "(Responses API not ported)"
+                    )
+                else:
+                    error = _one_of(path, value, _REASONING_KEYS[name])
+                    if error:
+                        errors.append(error)
+    if "verbosity" in options:
+        error = _one_of(
+            "llm.openai.options.verbosity", options["verbosity"], _VERBOSITIES
+        )
+        if error:
+            errors.append(error)
     return errors
 
 
