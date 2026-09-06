@@ -28,12 +28,17 @@ from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAISTTS
 from pipecat.services.aws.llm import AWSBedrockLLMSettings
 from pipecat.services.azure.llm import AzureLLMSettings
 from pipecat.services.azure.stt import AzureSTTSettings
+from pipecat.services.azure.tts import AzureTTSSettings
+from pipecat.services.camb.tts import CambTTSService
 from pipecat.services.cartesia.stt import CartesiaSTTService, CartesiaSTTSettings
+from pipecat.services.cartesia.tts import CartesiaTTSService, CartesiaTTSSettings
 from pipecat.services.cartesia.turns.stt import CartesiaTurnsSTTService
 from pipecat.services.deepgram.flux.base import DeepgramFluxSTTSettings
 from pipecat.services.deepgram.flux.stt import DeepgramFluxSTTService
 from pipecat.services.deepgram.stt import DeepgramSTTService, DeepgramSTTSettings
+from pipecat.services.deepgram.tts import DeepgramTTSSettings
 from pipecat.services.dograh.flux.stt import DograhFluxSTTService
+from pipecat.services.dograh.tts import DograhTTSSettings
 from pipecat.services.elevenlabs.stt import (
     ElevenLabsRealtimeSTTService,
     ElevenLabsRealtimeSTTSettings,
@@ -42,23 +47,31 @@ from pipecat.services.elevenlabs.tts import ElevenLabsTTSService, ElevenLabsTTSS
 from pipecat.services.gladia.stt import GladiaSTTSettings
 from pipecat.services.google.llm import GoogleLLMSettings
 from pipecat.services.google.stt import GoogleSTTSettings
+from pipecat.services.google.tts import GoogleTTSSettings
 from pipecat.services.google.vertex.llm import GoogleVertexLLMSettings
 from pipecat.services.groq.llm import GroqLLMSettings
 from pipecat.services.huggingface.llm import HuggingFaceLLMSettings
 from pipecat.services.huggingface.stt import HuggingFaceSTTSettings
+from pipecat.services.inworld.tts import InworldTTSSettings
+from pipecat.services.lmnt.tts import LmntTTSSettings
 from pipecat.services.minimax.llm import MiniMaxLLMSettings
+from pipecat.services.minimax.tts import MiniMaxTTSSettings
 from pipecat.services.openai.base_llm import OpenAILLMSettings
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.openai.stt import OpenAISTTSettings
 from pipecat.services.openai.tts import OpenAITTSService, OpenAITTSSettings
 from pipecat.services.openrouter.llm import OpenRouterLLMSettings
+from pipecat.services.rime.tts import RimeTTSSettings
 from pipecat.services.sarvam.llm import SarvamLLMSettings
 from pipecat.services.sarvam.stt import SarvamSTTSettings
+from pipecat.services.sarvam.tts import SarvamTTSSettings
 from pipecat.services.settings import LLMSettings
 from pipecat.services.smallest.stt import SmallestSTTSettings
+from pipecat.services.smallest.tts import SmallestTTSSettings
 from pipecat.services.speaches.llm import SpeachesLLMSettings
 from pipecat.services.speaches.stt import SpeachesSTTSettings
 from pipecat.services.speechmatics.stt import SpeechmaticsSTTSettings
+from pipecat.services.xai.tts import XAIWebsocketTTSSettings
 
 ALL = "_all"
 KINDS = ("stt", "tts", "llm", "realtime")
@@ -297,6 +310,75 @@ SPECS[("tts", "openai")] = TuningSpec(
     OpenAITTSSettings,
     _fields(OpenAITTSSettings) | frozenset({"voice"}),
     service_classes=(OpenAITTSService,),
+)
+SPECS[("tts", "cartesia")] = TuningSpec(
+    "tts",
+    "cartesia",
+    CartesiaTTSSettings,
+    _fields(CartesiaTTSSettings),
+    service_classes=(CartesiaTTSService,),
+    # Sent verbatim as the ``max_buffer_delay_ms`` field of every synthesis
+    # message (cartesia/tts.py:509-510).
+    ctor_allowed=frozenset({"max_buffer_delay_ms"}),
+    ctor_types={"max_buffer_delay_ms": int},
+)
+SPECS[("tts", "inworld")] = TuningSpec(
+    "tts", "inworld", InworldTTSSettings, _fields(InworldTTSSettings)
+)
+# ``pitch`` and ``volume`` are excluded on purpose: the service copies only
+# ``speed`` into the payload it sends (dograh/tts.py:143-150), so exposing them
+# would be a knob that silently does nothing. A 422 says so instead (B9).
+SPECS[("tts", "dograh")] = TuningSpec(
+    "tts", "dograh", DograhTTSSettings, _fields(DograhTTSSettings, "pitch", "volume")
+)
+# ``inlineSpeedAlpha`` is excluded for the same reason: the websocket service
+# never reads it off the settings — neither ``_build_ws_params``
+# (rime/tts.py:324-369) nor ``_build_msg`` (:414-420), which sends only what
+# the ``INLINE_SPEED`` text helper put in ``_extra_msg_fields`` (:391-397).
+# The rest are model-conditional, not dropped, so they stay in.
+SPECS[("tts", "rime")] = TuningSpec(
+    "tts", "rime", RimeTTSSettings, _fields(RimeTTSSettings, "inlineSpeedAlpha")
+)
+SPECS[("tts", "sarvam")] = TuningSpec(
+    "tts", "sarvam", SarvamTTSSettings, _fields(SarvamTTSSettings)
+)
+SPECS[("tts", "minimax")] = TuningSpec(
+    "tts", "minimax", MiniMaxTTSSettings, _fields(MiniMaxTTSSettings)
+)
+SPECS[("tts", "azure_speech")] = TuningSpec(
+    "tts", "azure_speech", AzureTTSSettings, _fields(AzureTTSSettings)
+)
+SPECS[("tts", "xai")] = TuningSpec(
+    "tts", "xai", XAIWebsocketTTSSettings, _fields(XAIWebsocketTTSSettings)
+)
+SPECS[("tts", "smallest")] = TuningSpec(
+    "tts", "smallest", SmallestTTSSettings, _fields(SmallestTTSSettings)
+)
+SPECS[("tts", "google")] = TuningSpec(
+    "tts", "google", GoogleTTSSettings, _fields(GoogleTTSSettings)
+)
+# Deepgram and LMNT declare no TTS settings of their own beyond the identity
+# fields the registry owns, so both allow-lists are empty today; the rows exist
+# so the providers are known (a misspelt knob is "unknown setting", not
+# "unknown provider") and so a field added upstream is honoured by the branch,
+# which already routes through ``build_settings``.
+SPECS[("tts", "deepgram")] = TuningSpec(
+    "tts", "deepgram", DeepgramTTSSettings, _fields(DeepgramTTSSettings)
+)
+SPECS[("tts", "lmnt")] = TuningSpec(
+    "tts", "lmnt", LmntTTSSettings, _fields(LmntTTSSettings)
+)
+# Camb is the one TTS branch that still builds by direct constructor kwargs
+# (service_factory.py:927-943 passes no ``settings=``), so nothing under
+# ``settings`` could reach the service: only the request timeout is tunable.
+SPECS[("tts", "camb")] = TuningSpec(
+    "tts",
+    "camb",
+    None,
+    frozenset(),
+    service_classes=(CambTTSService,),
+    ctor_allowed=frozenset({"timeout"}),
+    ctor_types={"timeout": float},
 )
 SPECS[("tts", ALL)] = TuningSpec(
     "tts",
@@ -615,10 +697,14 @@ def _ctor_type_ok(expected: type | tuple[type, ...], value: Any) -> bool:
     """Whether a ctor value matches its declared type.
 
     Same rule as ``_scalar_verdict`` for settings — a bool never satisfies a
-    non-bool numeric type, since ``isinstance(True, int)`` is True — but
+    non-bool numeric type, since ``isinstance(True, int)`` is True, and a
+    declared ``float`` also takes an int (``_SCALAR_TYPES``), because JSON has
+    a single number type and ``"timeout": 30`` must not be a false 422 — but
     definitive: there is no second union member to fall through to.
     """
     expected = expected if isinstance(expected, tuple) else (expected,)
+    if float in expected:
+        expected += (int,)
     if isinstance(value, bool) and bool not in expected:
         return False
     return isinstance(value, expected)

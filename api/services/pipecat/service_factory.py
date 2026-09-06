@@ -270,6 +270,20 @@ def _validate_runtime_service_url(url: str, field_name: str) -> None:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+def _tts_provider_ctor(plan) -> dict:
+    """A TTS plan's own ctor kwargs, without the ``tts._all`` one.
+
+    ``tuning_for`` merges the ``_all`` section into every provider plan, and
+    ``silence_time_s`` is the only kwarg that section carries: each branch
+    already passes it by hand, so splatting the plan would be a duplicate
+    keyword argument — and it would hand it to Camb, which is the one branch
+    deliberately built without it (C8).
+    """
+    return {
+        name: value for name, value in plan.ctor.items() if name != "silence_time_s"
+    }
+
+
 @_report_service_factory_failures(ErrorSource.STT, config_section="stt")
 def create_stt_service(
     user_config,
@@ -736,9 +750,12 @@ def create_tts_service(
     common = tuning_for(tuning, "tts", ALL)
     silence_time_s = common.ctor.get("silence_time_s", 1.0)
     if user_config.tts.provider == ServiceProviders.DEEPGRAM.value:
+        plan = tuning_for(tuning, "tts", ServiceProviders.DEEPGRAM.value)
         return DeepgramTTSService(
             api_key=user_config.tts.api_key,
-            settings=DeepgramTTSSettings(voice=user_config.tts.voice),
+            settings=build_settings(
+                DeepgramTTSSettings, {"voice": user_config.tts.voice}, plan
+            ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
             silence_time_s=silence_time_s,
@@ -780,10 +797,11 @@ def create_tts_service(
         if speed is not None and speed != 1.0:
             settings_kwargs["speaking_rate"] = speed
 
+        plan = tuning_for(tuning, "tts", ServiceProviders.GOOGLE.value)
         return GoogleTTSService(
             credentials=credentials,
             location=location,
-            settings=GoogleTTSSettings(**settings_kwargs),
+            settings=build_settings(GoogleTTSSettings, settings_kwargs, plan),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
             silence_time_s=silence_time_s,
@@ -837,21 +855,29 @@ def create_tts_service(
             GenerationConfig(**gen_config_kwargs) if gen_config_kwargs else None
         )
         language = getattr(user_config.tts, "language", None) or "en"
+        settings_kwargs = {
+            "voice": user_config.tts.voice,
+            "model": user_config.tts.model,
+            "language": language,
+        }
+        if generation_config:
+            settings_kwargs["generation_config"] = generation_config
+        plan = tuning_for(tuning, "tts", ServiceProviders.CARTESIA.value)
         return CartesiaTTSService(
             api_key=user_config.tts.api_key,
-            settings=CartesiaTTSSettings(
-                voice=user_config.tts.voice,
-                model=user_config.tts.model,
-                language=language,
-                **(
-                    {"generation_config": generation_config}
-                    if generation_config
-                    else {}
+            settings=build_settings(
+                CartesiaTTSSettings,
+                settings_kwargs,
+                # _build_msg calls .model_dump() on it (cartesia/tts.py:515-517),
+                # so the tuning document's plain object has to become the model.
+                coerce_settings(
+                    plan, {"generation_config": GenerationConfig.model_validate}
                 ),
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
             silence_time_s=silence_time_s,
+            **_tts_provider_ctor(plan),
         )
     elif user_config.tts.provider == ServiceProviders.INWORLD.value:
         voice = getattr(user_config.tts, "voice", None) or "Ashley"
@@ -859,14 +885,19 @@ def create_tts_service(
         speed = getattr(user_config.tts, "speed", None)
         language = getattr(user_config.tts, "language", None) or "en-US"
         delivery_mode = getattr(user_config.tts, "delivery_mode", None) or "BALANCED"
+        plan = tuning_for(tuning, "tts", ServiceProviders.INWORLD.value)
         return InworldTTSService(
             api_key=user_config.tts.api_key,
-            settings=InworldTTSSettings(
-                voice=voice,
-                model=model,
-                language=language,
-                speaking_rate=speed,
-                delivery_mode=delivery_mode,
+            settings=build_settings(
+                InworldTTSSettings,
+                {
+                    "voice": voice,
+                    "model": model,
+                    "language": language,
+                    "speaking_rate": speed,
+                    "delivery_mode": delivery_mode,
+                },
+                plan,
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
@@ -875,14 +906,19 @@ def create_tts_service(
     elif user_config.tts.provider == ServiceProviders.DOGRAH.value:
         # Convert HTTP URL to WebSocket URL for TTS
         base_url = MPS_API_URL.replace("http://", "ws://").replace("https://", "wss://")
+        plan = tuning_for(tuning, "tts", ServiceProviders.DOGRAH.value)
         return DograhTTSService(
             base_url=base_url,
             api_key=user_config.tts.api_key,
             correlation_id=correlation_id,
-            settings=DograhTTSSettings(
-                model=user_config.tts.model,
-                voice=user_config.tts.voice,
-                speed=user_config.tts.speed,
+            settings=build_settings(
+                DograhTTSSettings,
+                {
+                    "model": user_config.tts.model,
+                    "voice": user_config.tts.voice,
+                    "speed": user_config.tts.speed,
+                },
+                plan,
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
@@ -893,12 +929,14 @@ def create_tts_service(
 
         voice_id = int(getattr(user_config.tts, "voice", None) or "147320")
         language = getattr(user_config.tts, "language", None) or "en-us"
+        plan = tuning_for(tuning, "tts", ServiceProviders.CAMB.value)
         tts = CambTTSService(
             api_key=user_config.tts.api_key,
             voice_id=voice_id,
             model=user_config.tts.model,
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
+            **_tts_provider_ctor(plan),
         )
         # Set language directly as BCP-47 code (bypasses Language enum conversion)
         tts._settings.language = language
@@ -935,9 +973,10 @@ def create_tts_service(
         }
         if speed and speed != 1.0:
             settings_kwargs["speedAlpha"] = speed
+        plan = tuning_for(tuning, "tts", ServiceProviders.RIME.value)
         return RimeTTSService(
             api_key=user_config.tts.api_key,
-            settings=RimeTTSSettings(**settings_kwargs),
+            settings=build_settings(RimeTTSSettings, settings_kwargs, plan),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
             silence_time_s=silence_time_s,
@@ -971,9 +1010,10 @@ def create_tts_service(
         }
         if speed and speed != 1.0:
             settings_kwargs["pace"] = speed
+        plan = tuning_for(tuning, "tts", ServiceProviders.SARVAM.value)
         return SarvamTTSService(
             api_key=user_config.tts.api_key,
-            settings=SarvamTTSSettings(**settings_kwargs),
+            settings=build_settings(SarvamTTSSettings, settings_kwargs, plan),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
             silence_time_s=silence_time_s,
@@ -998,16 +1038,21 @@ def create_tts_service(
             base_url = f"{base_url}/t2a_v2"
         _validate_runtime_service_url(base_url, "base_url")
 
+        plan = tuning_for(tuning, "tts", ServiceProviders.MINIMAX.value)
         session = aiohttp.ClientSession()
         return MiniMaxOwnedSessionTTSService(
             api_key=user_config.tts.api_key,
             group_id=group_id,
             base_url=base_url,
             aiohttp_session=session,
-            settings=MiniMaxTTSSettings(
-                model=user_config.tts.model,
-                voice=voice,
-                speed=speed,
+            settings=build_settings(
+                MiniMaxTTSSettings,
+                {
+                    "model": user_config.tts.model,
+                    "voice": voice,
+                    "speed": speed,
+                },
+                plan,
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
@@ -1026,10 +1071,11 @@ def create_tts_service(
         }
         if rate:
             settings_kwargs["rate"] = rate
+        plan = tuning_for(tuning, "tts", ServiceProviders.AZURE_SPEECH.value)
         return AzureTTSService(
             api_key=user_config.tts.api_key,
             region=region,
-            settings=AzureTTSSettings(**settings_kwargs),
+            settings=build_settings(AzureTTSSettings, settings_kwargs, plan),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
             silence_time_s=silence_time_s,
@@ -1042,16 +1088,17 @@ def create_tts_service(
             pipecat_language = Language.EN
         speed = getattr(user_config.tts, "speed", None)
         model = user_config.tts.model.replace("lightning-v", "lightning_v")
-        settings_kwargs = SmallestTTSSettings(
-            model=model,
-            voice=user_config.tts.voice,
-            language=pipecat_language,
-        )
+        settings_kwargs = {
+            "model": model,
+            "voice": user_config.tts.voice,
+            "language": pipecat_language,
+        }
         if speed and speed != 1.0:
-            settings_kwargs.speed = speed
+            settings_kwargs["speed"] = speed
+        plan = tuning_for(tuning, "tts", ServiceProviders.SMALLEST.value)
         return SmallestTTSService(
             api_key=user_config.tts.api_key,
-            settings=settings_kwargs,
+            settings=build_settings(SmallestTTSSettings, settings_kwargs, plan),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
             silence_time_s=silence_time_s,
@@ -1066,12 +1113,16 @@ def create_tts_service(
                 pipecat_language = Language(language_code)
             except ValueError:
                 pipecat_language = Language.EN
+        settings_kwargs = {"voice": voice, "language": pipecat_language}
+        # B12: the configured speed used to stop here — the branch built the
+        # settings without it, so xAI always spoke at 1.0.
+        speed = getattr(user_config.tts, "speed", None)
+        if speed and speed != 1.0:
+            settings_kwargs["speed"] = speed
+        plan = tuning_for(tuning, "tts", ServiceProviders.XAI.value)
         return XAITTSService(
             api_key=user_config.tts.api_key,
-            settings=XAIWebsocketTTSSettings(
-                voice=voice,
-                language=pipecat_language,
-            ),
+            settings=build_settings(XAIWebsocketTTSSettings, settings_kwargs, plan),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
             silence_time_s=silence_time_s,
@@ -1084,6 +1135,7 @@ def create_tts_service(
             pipecat_language = Language(language_code)
         except ValueError:
             pipecat_language = Language.EN
+        plan = tuning_for(tuning, "tts", ServiceProviders.LMNT.value)
         return LmntTTSService(
             api_key=user_config.tts.api_key,
             sample_rate=audio_config.transport_out_sample_rate,
@@ -1091,10 +1143,10 @@ def create_tts_service(
             # at the requested sample rate, which is what the output transport
             # consumes; "pcm_s16le" is not a valid LMNT format value.
             output_format="raw",
-            settings=LmntTTSSettings(
-                voice=voice,
-                language=pipecat_language,
-                model=model,
+            settings=build_settings(
+                LmntTTSSettings,
+                {"voice": voice, "language": pipecat_language, "model": model},
+                plan,
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
