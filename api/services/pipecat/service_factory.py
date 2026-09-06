@@ -1,3 +1,4 @@
+from dataclasses import replace
 from functools import wraps
 from typing import TYPE_CHECKING
 from urllib.parse import urlencode, urlparse, urlunparse
@@ -22,7 +23,13 @@ from api.services.pipecat.gemini_json_schema_adapter import (
     DograhGeminiJSONSchemaAdapter,
 )
 from api.services.pipecat.minimax_tts import MiniMaxOwnedSessionTTSService
-from api.services.pipecat.service_tuning import LLMRole, llm_document_for_role
+from api.services.pipecat.service_tuning import (
+    LLMRole,
+    build_settings,
+    llm_document_for_role,
+    tuning_for,
+)
+from api.services.pipecat.service_tuning_specs import FLUX_SETTINGS
 from api.utils.url_security import validate_user_configured_service_url
 from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAISTTSettings
 from pipecat.services.aws.llm import AWSBedrockLLMService, AWSBedrockLLMSettings
@@ -169,6 +176,16 @@ DEEPGRAM_FLUX_LANGUAGE_HINTS = {
 }
 
 
+def _as_language(code: Language | str) -> Language:
+    """Coerce a ``language_hints`` entry to ``Language``.
+
+    Registry-derived hints are already ``Language`` (see
+    ``DEEPGRAM_FLUX_LANGUAGE_HINTS`` above); ``service_tuning``-derived hints
+    arrive as plain strings from the validated JSON document.
+    """
+    return code if isinstance(code, Language) else Language(code)
+
+
 def dograh_stt_uses_flux_language(language: str | None) -> bool:
     language = language or "multi"
     return language in DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGE_OPTIONS
@@ -270,6 +287,7 @@ def create_stt_service(
         f"Creating STT service: provider={user_config.stt.provider}, model={user_config.stt.model}"
     )
     if user_config.stt.provider == ServiceProviders.DEEPGRAM.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.DEEPGRAM.value)
         if user_config.stt.model in DEEPGRAM_FLUX_MODELS:
             settings_kwargs = {
                 "model": user_config.stt.model,
@@ -284,27 +302,55 @@ def create_stt_service(
                 if language_hint:
                     settings_kwargs["language_hints"] = [language_hint]
 
+            flux_settings = {
+                k: v for k, v in plan.settings.items() if k in FLUX_SETTINGS
+            }
+            settings = build_settings(
+                DeepgramFluxSTTSettings,
+                settings_kwargs,
+                replace(plan, settings=flux_settings),
+            )
+            if isinstance(settings.language_hints, list):
+                settings.language_hints = [
+                    _as_language(h) for h in settings.language_hints
+                ]
+
             return DeepgramFluxSTTService(
                 api_key=user_config.stt.api_key,
-                settings=DeepgramFluxSTTSettings(**settings_kwargs),
+                settings=settings,
                 should_interrupt=False,  # Let UserAggregator take care of sending InterruptionFrame
                 sample_rate=audio_config.transport_in_sample_rate,
+                **plan.ctor,
             )
 
         # Other models than flux
         # Use language from user config, defaulting to "multi" for multilingual support
         language = getattr(user_config.stt, "language", None) or "multi"
+        nova_settings = {
+            k: v
+            for k, v in plan.settings.items()
+            if k not in FLUX_SETTINGS or k in ("numerals", "keyterm")
+        }
+        settings = build_settings(
+            DeepgramSTTSettings,
+            {
+                "language": language,
+                "profanity_filter": False,
+                "endpointing": 100,
+                "model": user_config.stt.model,
+                "keyterm": keyterms or [],
+            },
+            replace(plan, settings=nova_settings),
+        )
+        # Nova takes base_url, not url; url is Flux-only, so drop it here even
+        # though the shared allow-list accepts ctor.url for either model.
+        ctor = {k: v for k, v in plan.ctor.items() if k in ("mip_opt_out", "tag")}
         return DeepgramSTTService(
             api_key=user_config.stt.api_key,
-            settings=DeepgramSTTSettings(
-                language=language,
-                profanity_filter=False,
-                endpointing=100,
-                model=user_config.stt.model,
-                keyterm=keyterms or [],
-            ),
+            settings=settings,
             should_interrupt=False,  # Let UserAggregator take care of sending InterruptionFrame
             sample_rate=audio_config.transport_in_sample_rate,
+            **ctor,
         )
     elif user_config.stt.provider == ServiceProviders.OPENAI.value:
         kwargs = {}
@@ -369,13 +415,29 @@ def create_stt_service(
             language_hint = DEEPGRAM_FLUX_LANGUAGE_HINTS.get(language)
             if language_hint:
                 settings_kwargs["language_hints"] = [language_hint]
+
+            plan = tuning_for(tuning, "stt", ServiceProviders.DOGRAH.value)
+            flux_settings = {
+                k: v for k, v in plan.settings.items() if k in FLUX_SETTINGS
+            }
+            settings = build_settings(
+                DeepgramFluxSTTSettings,
+                settings_kwargs,
+                replace(plan, settings=flux_settings),
+            )
+            if isinstance(settings.language_hints, list):
+                settings.language_hints = [
+                    _as_language(h) for h in settings.language_hints
+                ]
+
             return DograhFluxSTTService(
                 base_url=base_url,
                 api_key=user_config.stt.api_key,
                 correlation_id=correlation_id,
-                settings=DeepgramFluxSTTSettings(**settings_kwargs),
+                settings=settings,
                 should_interrupt=False,  # external turn strategies own interruption
                 sample_rate=audio_config.transport_in_sample_rate,
+                **plan.ctor,  # dograh's ctor allow-list has no "url" (SPECS)
             )
 
         return DograhSTTService(

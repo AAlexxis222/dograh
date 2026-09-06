@@ -126,6 +126,7 @@ async def capture_ws_connect(monkeypatch, service) -> dict[str, Any]:
     monkeypatch.setattr(service, "create_task", fake_create_task)
 
     await service._connect()
+    assert service._websocket is not None
     return captured
 
 
