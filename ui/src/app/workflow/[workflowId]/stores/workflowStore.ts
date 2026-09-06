@@ -4,7 +4,7 @@ import { create } from 'zustand';
 
 import { WorkflowError } from '@/client/types.gen';
 import { FlowEdge, FlowNode } from '@/components/flow/types';
-import { WorkflowConfigurations } from '@/types/workflow-configurations';
+import { WorkflowConfigurationState } from '@/types/workflow-configurations';
 
 interface HistoryState {
   nodes: FlowNode[];
@@ -34,8 +34,9 @@ interface WorkflowState {
 
   // Configuration
   templateContextVariables: Record<string, string>;
-  workflowConfigurations: WorkflowConfigurations | null;
-  dictionary: string;
+  // Layered configuration (effective/own/base) with its own lifecycle:
+  // loaded and refreshed by useWorkflowState, never by initializeWorkflow.
+  configurationState: WorkflowConfigurationState | null;
 
   // ReactFlow instance reference
   rfInstance: ReactFlowInstance<FlowNode, FlowEdge> | null;
@@ -48,9 +49,7 @@ interface WorkflowActions {
     workflowName: string,
     nodes: FlowNode[],
     edges: FlowEdge[],
-    templateContextVariables?: Record<string, string>,
-    workflowConfigurations?: WorkflowConfigurations | null,
-    dictionary?: string
+    templateContextVariables?: Record<string, string>
   ) => void;
 
   // History management
@@ -75,8 +74,7 @@ interface WorkflowActions {
   // Workflow metadata
   setWorkflowName: (name: string) => void;
   setTemplateContextVariables: (variables: Record<string, string>) => void;
-  setWorkflowConfigurations: (configurations: WorkflowConfigurations) => void;
-  setDictionary: (dictionary: string) => void;
+  setConfigurationState: (state: WorkflowConfigurationState | null) => void;
 
   // UI state
   setIsDirty: (isDirty: boolean) => void;
@@ -136,12 +134,11 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
   isAddNodePanelOpen: false,
   workflowValidationErrors: [],
   templateContextVariables: {},
-  workflowConfigurations: null,
-  dictionary: '',
+  configurationState: null,
   rfInstance: null,
 
   // Actions
-  initializeWorkflow: (workflowId, workflowName, nodes, edges, templateContextVariables = {}, workflowConfigurations = null, dictionary = '') => {
+  initializeWorkflow: (workflowId, workflowName, nodes, edges, templateContextVariables = {}) => {
     const initialHistory: HistoryState = { nodes, edges, workflowName };
     set({
       workflowId,
@@ -149,8 +146,6 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       nodes,
       edges,
       templateContextVariables,
-      workflowConfigurations,
-      dictionary,
       isDirty: false,
       workflowValidationErrors: [],
       history: [initialHistory],
@@ -363,12 +358,8 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
     set({ templateContextVariables });
   },
 
-  setWorkflowConfigurations: (workflowConfigurations) => {
-    set({ workflowConfigurations });
-  },
-
-  setDictionary: (dictionary) => {
-    set({ dictionary });
+  setConfigurationState: (configurationState) => {
+    set({ configurationState });
   },
 
   setIsDirty: (isDirty) => {
@@ -433,8 +424,7 @@ export const useWorkflowStore = create<WorkflowStore>((set, get) => ({
       isAddNodePanelOpen: false,
       workflowValidationErrors: [],
       templateContextVariables: {},
-      workflowConfigurations: null,
-      dictionary: '',
+      configurationState: null,
       rfInstance: null,
     });
   },

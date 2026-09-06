@@ -7625,6 +7625,47 @@ export type WorkflowCountResponse = {
 };
 
 /**
+ * WorkflowEffectiveConfigurationResponse
+ *
+ * Everything the builder needs to edit a workflow's configuration without
+ * merging layers itself. ``own`` is the sparse document of the definition being
+ * edited (draft, else published); ``effective`` is schema <- organization <- own;
+ * ``base`` is what any leaf absent from ``own`` inherits.
+ */
+export type WorkflowEffectiveConfigurationResponse = {
+    /**
+     * Effective
+     */
+    effective: {
+        [key: string]: unknown;
+    };
+    /**
+     * Own
+     */
+    own: {
+        [key: string]: unknown;
+    };
+    /**
+     * Base
+     */
+    base: {
+        [key: string]: unknown;
+    };
+    /**
+     * Warnings
+     */
+    warnings?: Array<string>;
+    /**
+     * Definition Id
+     */
+    definition_id?: number | null;
+    /**
+     * Definition Status
+     */
+    definition_status?: string | null;
+};
+
+/**
  * WorkflowError
  */
 export type WorkflowError = {
@@ -9184,6 +9225,50 @@ export type GetWorkflowVersionsApiV1WorkflowWorkflowIdVersionsGetResponses = {
 };
 
 export type GetWorkflowVersionsApiV1WorkflowWorkflowIdVersionsGetResponse = GetWorkflowVersionsApiV1WorkflowWorkflowIdVersionsGetResponses[keyof GetWorkflowVersionsApiV1WorkflowWorkflowIdVersionsGetResponses];
+
+export type GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Workflow Id
+         */
+        workflow_id: number;
+    };
+    query?: never;
+    url: '/api/v1/workflow/{workflow_id}/configuration-effective';
+};
+
+export type GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetError = GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetErrors[keyof GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetErrors];
+
+export type GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: WorkflowEffectiveConfigurationResponse;
+};
+
+export type GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetResponse = GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetResponses[keyof GetWorkflowEffectiveConfigurationApiV1WorkflowWorkflowIdConfigurationEffectiveGetResponses];
 
 export type PublishWorkflowApiV1WorkflowWorkflowIdPublishPostData = {
     body?: never;
