@@ -83,6 +83,20 @@ class TuningSpec:
     service_factory.py:610) needs the value checked too, or the 422 arrives as
     a ValueError at run creation instead.
     """
+    ctor_types: dict[str, type | tuple[type, ...]] = dataclasses.field(
+        default_factory=dict
+    )
+    """Accepted value type per ctor kwarg, for the kwargs that carry a scalar.
+
+    A ctor value is forwarded to the constructor verbatim (``**plan.ctor``),
+    unlike a setting it is not checked against a dataclass field, so without
+    this any JSON value reaches the service: ``vad_force_turn_endpoint: null``
+    is falsy, which is how AssemblyAI reads it (assemblyai/stt.py:665), so it
+    hands turns over exactly as ``false`` does while dodging a check written
+    for ``false``. ``None`` is not a member of any entry: in a sparse document
+    "leave it at the constructor default" is written by omitting the key.
+    Guarded by test_scalar_ctor_kwargs_declare_their_type.
+    """
     options_allowed: frozenset[str] = frozenset()
     nullable_extra: frozenset[str] = frozenset()
 
@@ -156,6 +170,7 @@ SPECS[("stt", "deepgram")] = TuningSpec(
     FLUX_SETTINGS | _fields(DeepgramSTTSettings),
     service_classes=(DeepgramFluxSTTService, DeepgramSTTService),
     ctor_allowed=frozenset({"url", "mip_opt_out", "tag"}),
+    ctor_types={"url": str, "mip_opt_out": bool, "tag": list},
     # "keyterm" deliberately excluded: test_null_only_on_nullable_fields
     # requires stt.deepgram.settings.keyterm=None to be rejected even though
     # DeepgramSTTService (Nova) itself defaults keyterm=None at connect time
@@ -180,6 +195,7 @@ SPECS[("stt", "dograh")] = TuningSpec(
     FLUX_SETTINGS,
     service_classes=(DograhFluxSTTService,),
     ctor_allowed=frozenset({"mip_opt_out", "tag"}),
+    ctor_types={"mip_opt_out": bool, "tag": list},
 )
 SPECS[("stt", "elevenlabs")] = TuningSpec(
     "stt",
@@ -189,6 +205,7 @@ SPECS[("stt", "elevenlabs")] = TuningSpec(
     service_classes=(ElevenLabsRealtimeSTTService,),
     ctor_allowed=frozenset({"commit_strategy", "include_timestamps"}),
     ctor_choices={"commit_strategy": frozenset({"vad", "manual"})},
+    ctor_types={"include_timestamps": bool},
 )
 # ink-whisper and ink-2 speak different wire protocols behind one provider, but
 # their Settings classes declare the same fields (cartesia/stt.py:84-99,
@@ -229,6 +246,7 @@ SPECS[("stt", "assemblyai")] = TuningSpec(
     _fields(AssemblyAISTTSettings, "language_code", "language_codes"),
     service_classes=(AssemblyAISTTService,),
     ctor_allowed=frozenset({"vad_force_turn_endpoint"}),
+    ctor_types={"vad_force_turn_endpoint": bool},
 )
 # ``operating_point`` is excluded for the same reason: for Speechmatics it *is*
 # the model — the factory derives it from ``user_config.stt.model`` and the
@@ -267,6 +285,11 @@ SPECS[("tts", "elevenlabs")] = TuningSpec(
     _fields(ElevenLabsTTSSettings),
     service_classes=(ElevenLabsTTSService,),
     ctor_allowed=frozenset({"auto_mode", "enable_ssml_parsing", "reconnect_on_error"}),
+    ctor_types={
+        "auto_mode": bool,
+        "enable_ssml_parsing": bool,
+        "reconnect_on_error": bool,
+    },
 )
 SPECS[("tts", "openai")] = TuningSpec(
     "tts",
@@ -276,7 +299,12 @@ SPECS[("tts", "openai")] = TuningSpec(
     service_classes=(OpenAITTSService,),
 )
 SPECS[("tts", ALL)] = TuningSpec(
-    "tts", ALL, None, frozenset(), ctor_allowed=frozenset({"silence_time_s"})
+    "tts",
+    ALL,
+    None,
+    frozenset(),
+    ctor_allowed=frozenset({"silence_time_s"}),
+    ctor_types={"silence_time_s": (int, float)},
 )
 SPECS[("llm", ALL)] = TuningSpec(
     "llm", ALL, LLMSettings, frozenset({"temperature", "max_tokens"})
@@ -583,6 +611,19 @@ def _validate_openai_llm_options(options: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _ctor_type_ok(expected: type | tuple[type, ...], value: Any) -> bool:
+    """Whether a ctor value matches its declared type.
+
+    Same rule as ``_scalar_verdict`` for settings — a bool never satisfies a
+    non-bool numeric type, since ``isinstance(True, int)`` is True — but
+    definitive: there is no second union member to fall through to.
+    """
+    expected = expected if isinstance(expected, tuple) else (expected,)
+    if isinstance(value, bool) and bool not in expected:
+        return False
+    return isinstance(value, expected)
+
+
 def _validate_openai_stt_options(options: dict[str, Any]) -> list[str]:
     """Value check for ``stt.openai.options.api`` (reserved for the realtime
     transcription session, which this build does not construct)."""
@@ -637,6 +678,11 @@ def validate_service_tuning(document: dict[str, Any]) -> list[str]:
                     if error:
                         errors.append(error)
                         continue
+                elif name in spec.ctor_types and not _ctor_type_ok(
+                    spec.ctor_types[name], value
+                ):
+                    errors.append(f"{path}: wrong type")
+                    continue
                 error = _provider_turn_error(kind, provider, "ctor", name, value)
                 if error:
                     errors.append(error)

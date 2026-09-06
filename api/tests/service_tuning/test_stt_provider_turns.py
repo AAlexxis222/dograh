@@ -30,7 +30,9 @@ TURN_CASES = [
             "interruption_delay": 300,
             "mode": "balanced",
         },
-        {},
+        # True is the value that keeps this build's own turn detection; it is
+        # the row's only ctor kwarg, so this is the ctor half of the test.
+        {"vad_force_turn_endpoint": True},
         "AssemblyAISTTService",
     ),
     (
@@ -117,6 +119,24 @@ def test_provider_turn_handover_is_a_named_422(
         ),
     ):
         validate(handover)
+
+
+@pytest.mark.parametrize("value", [0, None, "", []])
+def test_falsy_ctor_values_cannot_slip_past_the_turn_gate(value):
+    # The service tests this kwarg by truthiness (assemblyai/stt.py:665,
+    # :1129, :1194), so anything falsy hands turns over exactly as False does.
+    # An unhashable value must land as a 422, not a TypeError.
+    with pytest.raises(
+        ValidationError,
+        match="stt.assemblyai.ctor.vad_force_turn_endpoint: wrong type",
+    ):
+        WorkflowConfigurationDefaults.model_validate(
+            {
+                "service_tuning": {
+                    "stt": {"assemblyai": {"ctor": {"vad_force_turn_endpoint": value}}}
+                }
+            }
+        )
 
 
 def test_speechmatics_turn_detection_mode_is_the_service_enum():

@@ -136,13 +136,44 @@ def test_enum_typed_setting_checks_the_enum_values():
             _validate({"stt": {"speechmatics": {"settings": {field: value}}}})
 
 
-def test_ctor_choices_are_declared_ctor_kwargs():
+def test_ctor_choices_and_types_are_declared_ctor_kwargs():
     for (kind, provider), spec in specs.SPECS.items():
-        assert set(spec.ctor_choices) <= spec.ctor_allowed, (
-            kind,
-            provider,
-            set(spec.ctor_choices) - spec.ctor_allowed,
-        )
+        for declared in (set(spec.ctor_choices), set(spec.ctor_types)):
+            assert declared <= spec.ctor_allowed, (
+                kind,
+                provider,
+                declared - spec.ctor_allowed,
+            )
+
+
+def test_scalar_ctor_kwargs_declare_their_type():
+    """A ctor kwarg whose constructor annotation is a plain scalar must be in
+    ``ctor_types``; otherwise any JSON value reaches the constructor raw (the
+    falsy ``vad_force_turn_endpoint`` bypass). Ambiguous annotations
+    (``bool | None``, enums, ``Any``) are skipped — those rows declare their
+    type by hand."""
+    for (kind, provider), spec in specs.SPECS.items():
+        for name in spec.ctor_allowed:
+            annotations = set()
+            for cls in spec.service_classes:
+                for klass in cls.__mro__:
+                    init = klass.__dict__.get("__init__")
+                    if init is None:
+                        continue
+                    param = inspect.signature(init).parameters.get(name)
+                    if param is not None:
+                        annotations.add(param.annotation)
+            if len(annotations) == 1 and next(iter(annotations)) in (
+                bool,
+                str,
+                int,
+                float,
+            ):
+                assert spec.ctor_types.get(name) == next(iter(annotations)), (
+                    kind,
+                    provider,
+                    name,
+                )
 
 
 def test_language_aliases_stay_registry_owned():
