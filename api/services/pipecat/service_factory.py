@@ -24,6 +24,7 @@ from api.services.pipecat.gemini_json_schema_adapter import (
 )
 from api.services.pipecat.minimax_tts import MiniMaxOwnedSessionTTSService
 from api.services.pipecat.service_tuning import (
+    ALL,
     LLMRole,
     build_settings,
     llm_document_for_role,
@@ -603,16 +604,29 @@ def create_stt_service(
         _validate_runtime_service_url(user_config.stt.base_url, "base_url")
         elevenlabs_host = _elevenlabs_realtime_stt_host(user_config.stt.base_url)
 
+        plan = tuning_for(tuning, "stt", ServiceProviders.ELEVENLABS.value)
+        # CommitStrategy is a StrEnum whose values are the lowercase wire
+        # strings ("manual"/"vad" — elevenlabs/stt.py:167-171), so the plan's
+        # string constructs it directly.
+        commit_strategy = CommitStrategy(plan.ctor.get("commit_strategy", "vad"))
+        ctor = {k: v for k, v in plan.ctor.items() if k != "commit_strategy"}
+        settings = build_settings(
+            ElevenLabsRealtimeSTTSettings,
+            {
+                "model": user_config.stt.model,
+                "language": pipecat_language,
+            },
+            plan,
+        )
+
         return ElevenLabsRealtimeSTTService(
             api_key=user_config.stt.api_key,
             base_url=elevenlabs_host,
-            commit_strategy=CommitStrategy.VAD,
-            settings=ElevenLabsRealtimeSTTSettings(
-                model=user_config.stt.model,
-                language=pipecat_language,
-            ),
+            commit_strategy=commit_strategy,
+            settings=settings,
             should_interrupt=False,
             sample_rate=audio_config.transport_in_sample_rate,
+            **ctor,
         )
     else:
         raise HTTPException(
@@ -641,13 +655,17 @@ def create_tts_service(
     )
     # Create function call filter to prevent TTS from speaking function call tags
     xml_function_tag_filter = XMLFunctionTagFilter()
+    # Applies to every TTS branch below (except Camb, which doesn't take
+    # silence_time_s — C8).
+    common = tuning_for(tuning, "tts", ALL)
+    silence_time_s = common.ctor.get("silence_time_s", 1.0)
     if user_config.tts.provider == ServiceProviders.DEEPGRAM.value:
         return DeepgramTTSService(
             api_key=user_config.tts.api_key,
             settings=DeepgramTTSSettings(voice=user_config.tts.voice),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            silence_time_s=silence_time_s,
         )
     elif user_config.tts.provider == ServiceProviders.OPENAI.value:
         kwargs = {}
@@ -655,13 +673,19 @@ def create_tts_service(
         if base_url:
             _validate_runtime_service_url(base_url, "base_url")
             kwargs["base_url"] = base_url
+        plan = tuning_for(tuning, "tts", ServiceProviders.OPENAI.value)
+        settings = build_settings(
+            OpenAITTSSettings,
+            {"model": user_config.tts.model, "voice": user_config.tts.voice},
+            plan,
+        )
         return OpenAITTSService(
             api_key=user_config.tts.api_key,
             sample_rate=OPENAI_SAMPLE_RATE,
-            settings=OpenAITTSSettings(model=user_config.tts.model),
+            settings=settings,
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            silence_time_s=silence_time_s,
             **kwargs,
         )
     elif user_config.tts.provider == ServiceProviders.GOOGLE.value:
@@ -686,7 +710,7 @@ def create_tts_service(
             settings=GoogleTTSSettings(**settings_kwargs),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            silence_time_s=silence_time_s,
         )
     elif user_config.tts.provider == ServiceProviders.ELEVENLABS.value:
         # Backward compatible with older configuration "Name - voice_id"
@@ -699,20 +723,31 @@ def create_tts_service(
         # scheme-less base_url contract.
         _validate_runtime_service_url(user_config.tts.base_url, "base_url")
         elevenlabs_url = _elevenlabs_websocket_url(user_config.tts.base_url)
+        plan = tuning_for(tuning, "tts", ServiceProviders.ELEVENLABS.value)
+        settings = build_settings(
+            ElevenLabsTTSSettings,
+            {
+                "voice": voice_id,
+                "model": user_config.tts.model,
+                "stability": 0.8,
+                "speed": user_config.tts.speed,
+                "similarity_boost": 0.75,
+            },
+            plan,
+        )
+        ctor = {"reconnect_on_error": plan.ctor.get("reconnect_on_error", False)}
+        if "auto_mode" in plan.ctor:
+            ctor["auto_mode"] = plan.ctor["auto_mode"]
+        if "enable_ssml_parsing" in plan.ctor:
+            ctor["enable_ssml_parsing"] = plan.ctor["enable_ssml_parsing"]
         return ElevenLabsTTSService(
-            reconnect_on_error=False,
             api_key=user_config.tts.api_key,
             url=elevenlabs_url,
-            settings=ElevenLabsTTSSettings(
-                voice=voice_id,
-                model=user_config.tts.model,
-                stability=0.8,
-                speed=user_config.tts.speed,
-                similarity_boost=0.75,
-            ),
+            settings=settings,
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            silence_time_s=silence_time_s,
+            **ctor,
         )
     elif user_config.tts.provider == ServiceProviders.CARTESIA.value:
         speed = getattr(user_config.tts, "speed", None)
@@ -740,7 +775,7 @@ def create_tts_service(
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            silence_time_s=silence_time_s,
         )
     elif user_config.tts.provider == ServiceProviders.INWORLD.value:
         voice = getattr(user_config.tts, "voice", None) or "Ashley"
@@ -759,7 +794,7 @@ def create_tts_service(
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            silence_time_s=silence_time_s,
         )
     elif user_config.tts.provider == ServiceProviders.DOGRAH.value:
         # Convert HTTP URL to WebSocket URL for TTS
@@ -775,7 +810,7 @@ def create_tts_service(
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            silence_time_s=silence_time_s,
         )
     elif user_config.tts.provider == ServiceProviders.CAMB.value:
         from pipecat.services.camb.tts import CambTTSService
@@ -804,7 +839,7 @@ def create_tts_service(
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            silence_time_s=silence_time_s,
         )
     elif user_config.tts.provider == ServiceProviders.RIME.value:
         speed = getattr(user_config.tts, "speed", None)
@@ -829,7 +864,7 @@ def create_tts_service(
             settings=RimeTTSSettings(**settings_kwargs),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            silence_time_s=silence_time_s,
         )
     elif user_config.tts.provider == ServiceProviders.SARVAM.value:
         # Map Sarvam language code to pipecat Language enum for TTS
@@ -865,7 +900,7 @@ def create_tts_service(
             settings=SarvamTTSSettings(**settings_kwargs),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            silence_time_s=silence_time_s,
         )
     elif user_config.tts.provider == ServiceProviders.MINIMAX.value:
         group_id = getattr(user_config.tts, "group_id", None)
@@ -900,7 +935,7 @@ def create_tts_service(
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            silence_time_s=silence_time_s,
         )
     elif user_config.tts.provider == ServiceProviders.AZURE_SPEECH.value:
         region = getattr(user_config.tts, "region", None) or "eastus"
@@ -921,7 +956,7 @@ def create_tts_service(
             settings=AzureTTSSettings(**settings_kwargs),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            silence_time_s=silence_time_s,
         )
     elif user_config.tts.provider == ServiceProviders.SMALLEST.value:
         language_code = getattr(user_config.tts, "language", None) or "en"
@@ -943,7 +978,7 @@ def create_tts_service(
             settings=settings_kwargs,
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            silence_time_s=silence_time_s,
         )
     elif user_config.tts.provider == ServiceProviders.XAI.value:
         voice = getattr(user_config.tts, "voice", None) or "eve"
@@ -963,7 +998,7 @@ def create_tts_service(
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            silence_time_s=silence_time_s,
         )
     elif user_config.tts.provider == ServiceProviders.LMNT.value:
         voice = getattr(user_config.tts, "voice", None) or "lily"
@@ -987,7 +1022,7 @@ def create_tts_service(
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            silence_time_s=silence_time_s,
         )
     else:
         raise HTTPException(
