@@ -727,11 +727,15 @@ async def _run_pipeline_impl(
     # shared conversation LLM cannot carry an extraction usage_context without
     # also tagging normal conversation or context-summarization requests.
     #
-    # A tuned conversation LLM must not leak its knobs into extraction unless
-    # scope.extraction says so; sharing the instance would do exactly that.
-    shares_conversation_llm = not llm_tuning_applies(
-        service_tuning, "conversation"
-    ) or llm_tuning_applies(service_tuning, "extraction")
+    # Sharing is only safe when the instance on offer was tuned exactly as
+    # extraction would be: otherwise the shared instance either leaks its knobs
+    # into extraction or denies extraction the ones scope.extraction granted.
+    # The instance on offer is the realtime path's inference LLM (the realtime
+    # service itself reads the separate "realtime" kind) or the conversation LLM.
+    shared_role = "inference" if is_realtime else "conversation"
+    shares_existing_llm = llm_tuning_applies(
+        service_tuning, shared_role
+    ) == llm_tuning_applies(service_tuning, "extraction")
     if (
         needs_extraction_llm
         and user_config.llm.provider == ServiceProviders.DOGRAH.value
@@ -743,7 +747,7 @@ async def _run_pipeline_impl(
             tuning=service_tuning,
             role="extraction",
         )
-    elif needs_extraction_llm and not shares_conversation_llm:
+    elif needs_extraction_llm and not shares_existing_llm:
         variable_extraction_llm = create_llm_service(
             user_config,
             correlation_id=mps_correlation_id,

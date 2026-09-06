@@ -498,11 +498,12 @@ async def execute_text_chat_pending_turn(
     needs_extraction_llm = workflow_graph.uses_variable_extraction() or bool(
         call_dispositions
     )
-    # A tuned conversation LLM must not leak its knobs into extraction unless
-    # scope.extraction says so; sharing the instance would do exactly that.
-    shares_conversation_llm = not llm_tuning_applies(
+    # Sharing is only safe when the instance on offer was tuned exactly as
+    # extraction would be. Here that instance is always the conversation LLM;
+    # run_pipeline has a realtime path where it is the inference LLM instead.
+    shares_existing_llm = llm_tuning_applies(
         service_tuning, "conversation"
-    ) or llm_tuning_applies(service_tuning, "extraction")
+    ) == llm_tuning_applies(service_tuning, "extraction")
     if (
         needs_extraction_llm
         and user_config.llm.provider == ServiceProviders.DOGRAH.value
@@ -514,7 +515,7 @@ async def execute_text_chat_pending_turn(
             tuning=service_tuning,
             role="extraction",
         )
-    elif needs_extraction_llm and not shares_conversation_llm:
+    elif needs_extraction_llm and not shares_existing_llm:
         variable_extraction_llm = create_llm_service(
             user_config,
             correlation_id=mps_correlation_id,

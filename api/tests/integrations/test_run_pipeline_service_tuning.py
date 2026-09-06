@@ -47,6 +47,19 @@ async def workflow_run_setup(db_session, async_session):
     )
 
 
+@pytest.fixture
+async def untuned_workflow_run_setup(db_session, async_session):
+    """Same run, minus service_tuning: the split must not happen."""
+    return await create_workflow_run_rows(
+        db_session,
+        async_session,
+        workflow_definition=WORKFLOW_DEFINITION,
+        name_prefix="Service Tuning Untuned Integration",
+        provider_id_suffix="service-tuning-untuned",
+        organization_configuration_defaults={"call_dispositions": CALL_DISPOSITIONS},
+    )
+
+
 async def _boot_and_stop(workflow_run, user, workflow, captured_task):
     transport = MockTransport(
         TransportParams(
@@ -122,3 +135,26 @@ async def test_extraction_llm_is_requested_with_its_own_role_when_scope_excludes
     # Without llm tuning (or with scope.extraction) there is no "extraction" call.
     assert roles.count("conversation") == 1 and "extraction" in roles
     assert all(c["tuning"] == TUNING for c in llm_calls)
+
+
+@pytest.mark.asyncio
+async def test_extraction_keeps_sharing_the_conversation_llm_without_tuning(
+    untuned_workflow_run_setup, db_session
+):
+    """The off side of the rule: a run that needs extraction but has no tuning
+    must still build a single LLM instance, exactly as it did before."""
+    workflow_run, user, workflow = untuned_workflow_run_setup
+    captured_task: list = []
+    llm_calls = []
+    with (
+        patch_run_pipeline_externals(captured_task),
+        patch(
+            "api.services.pipecat.run_pipeline.create_llm_service",
+            side_effect=lambda *a, **k: (
+                llm_calls.append(k) or MockLLMService(api_key="test")
+            ),
+        ),
+    ):
+        await _boot_and_stop(workflow_run, user, workflow, captured_task)
+    assert [c.get("role", "conversation") for c in llm_calls] == ["conversation"]
+    assert llm_calls[0]["tuning"] is None
