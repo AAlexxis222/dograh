@@ -66,6 +66,7 @@
               "voice-agent/introduction",
               "voice-agent/editing-a-workflow",
               "voice-agent/workflow-settings",
+              "voice-agent/provider-tuning",
               "voice-agent/pre-recorded-audio",
               "voice-agent/template-variables",
               "voice-agent/pre-call-data-fetch",
