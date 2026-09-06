@@ -3144,7 +3144,7 @@ export type HttpApiConfig = {
     /**
      * Custommessage
      *
-     * Custom message to play after tool execution.
+     * Custom message to play before the tool executes, while the request is in flight.
      */
     customMessage?: string | null;
     /**
@@ -7318,6 +7318,18 @@ export type WidgetTexts = {
      * Endchattext
      */
     endChatText?: string;
+    /**
+     * Endchatconfirmtext
+     */
+    endChatConfirmText?: string;
+    /**
+     * Endchatcanceltext
+     */
+    endChatCancelText?: string;
+    /**
+     * Endingchattext
+     */
+    endingChatText?: string;
     /**
      * Conversationendedtext
      */
