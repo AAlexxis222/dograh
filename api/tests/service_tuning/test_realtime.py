@@ -107,6 +107,10 @@ def test_gemini_live_thinking_and_affective_dialog():
 
 
 def test_ultravox_extra_reaches_call_creation_params():
+    # ``recordingEnabled`` is not one of the keys the call-creation body sets
+    # (ultravox/llm.py:342-358) and the wrapper only rewrites
+    # ``firstSpeakerSettings`` (realtime/ultravox_realtime.py:422-434), so it
+    # survives the merge at ultravox/llm.py:361 into the request.
     with (
         patch(
             "api.services.pipecat.service_factory.DograhUltravoxOneShotInputParams"
@@ -119,12 +123,12 @@ def test_ultravox_extra_reaches_call_creation_params():
             tuning={
                 "realtime": {
                     "ultravox_realtime": {
-                        "settings": {"extra": {"firstSpeakerSettings": {"user": {}}}}
+                        "settings": {"extra": {"recordingEnabled": True}}
                     }
                 }
             },
         )
-    assert params_cls.call_args.kwargs["extra"]["firstSpeakerSettings"] == {"user": {}}
+    assert params_cls.call_args.kwargs["extra"] == {"recordingEnabled": True}
 
 
 def test_openai_stt_realtime_api_option_switches_service():
@@ -146,6 +150,9 @@ def test_openai_stt_realtime_api_option_switches_service():
         )
     s = cls.call_args.kwargs["settings"]
     assert s.noise_reduction == "far_field" and s.prompt == "Marbella"
+    # Both OpenAI STT services seed English, so the configured language has to
+    # travel with the delta or the session transcribes Spanish as English.
+    assert s.language == "es"
     # turn knobs belong to the turn PR
     assert cls.call_args.kwargs["turn_detection"] is False
 

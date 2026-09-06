@@ -265,6 +265,34 @@ def test_realtime_rows_check_types_and_closed_sets_without_a_settings_class():
             _validate({"realtime": {"openai_realtime": {"settings": settings}}})
 
 
+def test_ultravox_extra_cannot_reopen_what_the_call_body_owns():
+    # ``request_body | params.extra`` (ultravox/llm.py:361) puts extra last, so
+    # a key the service already set would win over the run's configuration —
+    # and the wrapper rewrites firstSpeakerSettings on every call anyway.
+    _validate(
+        {
+            "realtime": {
+                "ultravox_realtime": {"settings": {"extra": {"recordingEnabled": True}}}
+            }
+        }
+    )
+    for key, owner in (
+        ("model", "the model configuration"),
+        ("voice", "the model configuration"),
+        ("medium", "the transport"),
+        ("selectedTools", "the workflow tools"),
+        ("systemPrompt", "the workflow node"),
+        ("firstSpeakerSettings", "the greeting decision"),
+    ):
+        with pytest.raises(
+            ValidationError,
+            match=f"realtime.ultravox_realtime.settings.extra.{key}: owned by {owner}",
+        ):
+            _validate(
+                {"realtime": {"ultravox_realtime": {"settings": {"extra": {key: "x"}}}}}
+            )
+
+
 def test_realtime_provider_must_be_known():
     with pytest.raises(ValidationError, match="realtime.openai: unknown provider"):
         _validate({"realtime": {"openai": {"settings": {}}}})

@@ -528,13 +528,34 @@ _GEMINI_REALTIME_TYPES: dict[str, type | tuple[type, ...]] = {
 }
 # ``extra`` is the one declared exception to "nothing goes through extra": it
 # is ``OneShotInputParams.extra``, a field Ultravox merges into the
-# call-creation request (ultravox/llm.py:352), not the ``Settings.extra``
+# call-creation request (ultravox/llm.py:361), not the ``Settings.extra``
 # overflow that no service reads. ``max_duration`` is a pydantic timedelta, so
 # it takes seconds or an ISO-8601 duration string.
 _ULTRAVOX_REALTIME_TYPES: dict[str, type | tuple[type, ...]] = {
     "temperature": (int, float),
     "max_duration": (int, float, str),
     "extra": dict,
+}
+# ``extra`` is merged over the call-creation body *last*
+# (``request_body = request_body | params.extra``, ultravox/llm.py:361), so a
+# key the service already put there wins over the run's own configuration —
+# which is how a free-form ``extra`` would otherwise re-open every identity
+# field this table owns, the transport's ``medium`` included. The body keys
+# are built at ultravox/llm.py:342-358; ``firstSpeakerSettings`` is rewritten
+# on every call by the Dograh wrapper from the greeting decision
+# (realtime/ultravox_realtime.py:422-434), so setting it here is a plain
+# no-op. Anything Ultravox accepts that is not in this table still passes.
+_ULTRAVOX_EXTRA_OWNED = {
+    "systemPrompt": "the workflow node",
+    "model": "the model configuration",
+    "voice": "the model configuration",
+    "temperature": "the model configuration",
+    "maxDuration": "the model configuration",
+    "initialOutputMedium": "the model configuration",
+    "metadata": "the service",
+    "selectedTools": "the workflow tools",
+    "medium": "the transport",
+    "firstSpeakerSettings": "the greeting decision",
 }
 
 
@@ -873,6 +894,19 @@ def _settings_value_error(
     return None
 
 
+def _validate_ultravox_extra(settings: dict[str, Any]) -> list[str]:
+    """Keep ``realtime.ultravox_realtime.settings.extra`` out of the keys the
+    call-creation body already owns (see ``_ULTRAVOX_EXTRA_OWNED``)."""
+    extra = settings.get("extra")
+    if not isinstance(extra, dict):
+        return []  # a non-dict is already "wrong type" from the shape check
+    return [
+        f"realtime.ultravox_realtime.settings.extra.{key}: owned by {owner}"
+        for key, owner in _ULTRAVOX_EXTRA_OWNED.items()
+        if key in extra
+    ]
+
+
 def _validate_openai_stt(tuning: dict[str, Any]) -> list[str]:
     """Check ``stt.openai.options.api`` and pair each setting with it.
 
@@ -952,4 +986,6 @@ def validate_service_tuning(document: dict[str, Any]) -> list[str]:
                 errors.extend(_validate_openai_llm_options(options))
             if kind == "stt" and provider == "openai":
                 errors.extend(_validate_openai_stt(tuning))
+            if kind == "realtime" and provider == "ultravox_realtime":
+                errors.extend(_validate_ultravox_extra(tuning.get("settings") or {}))
     return errors

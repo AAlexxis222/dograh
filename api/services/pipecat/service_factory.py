@@ -416,10 +416,20 @@ def create_stt_service(
             # the constructor default: server-side turns would make the service
             # broadcast its own user-turn frames while the pipeline still runs
             # local VAD, and who owns the turn is the turn PR's subject.
+            settings_kwargs = {"model": user_config.stt.model}
+            # Both OpenAI STT services seed English (openai/stt.py:119,313), so
+            # the configured language has to be sent or a Spanish call is
+            # transcribed as English. Sent as the raw code like the other STT
+            # branches: ``Language`` is a StrEnum and the session serialises
+            # either (openai/stt.py:563-568), while ``Language(code)`` would
+            # raise on a code the enum doesn't carry.
+            language = getattr(user_config.stt, "language", None)
+            if language:
+                settings_kwargs["language"] = language
             return OpenAIRealtimeSTTService(
                 api_key=user_config.stt.api_key,
                 settings=build_settings(
-                    OpenAIRealtimeSTTSettings, {"model": user_config.stt.model}, plan
+                    OpenAIRealtimeSTTSettings, settings_kwargs, plan
                 ),
                 turn_detection=False,
                 should_interrupt=False,
