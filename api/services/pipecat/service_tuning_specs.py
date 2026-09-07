@@ -208,6 +208,11 @@ def nullable_fields(settings_cls: type) -> frozenset[str]:
 
 def _fields(settings_cls: type, *exclude: str) -> frozenset[str]:
     names = {f.name for f in dataclasses.fields(settings_cls)}
+    # A misspelt exclude would subtract nothing and leave the knob it meant
+    # to close wide open, with every "unknown setting" test still green.
+    unknown = set(exclude) - names
+    if unknown:
+        raise ValueError(f"{settings_cls.__name__}: not fields: {sorted(unknown)}")
     return frozenset(names - REGISTRY_OWNED - set(exclude))
 
 
@@ -610,11 +615,12 @@ _GEMINI_REALTIME_TYPES: dict[str, type | tuple[type, ...]] = {
 # ``extra`` is the one declared exception to "nothing goes through extra": it
 # is ``OneShotInputParams.extra``, a field Ultravox merges into the
 # call-creation request (ultravox/llm.py:361), not the ``Settings.extra``
-# overflow that no service reads. ``max_duration`` is a pydantic timedelta, so
-# it takes seconds or an ISO-8601 duration string.
+# overflow that no service reads. ``max_duration`` is a pydantic timedelta
+# that would also take an ISO-8601 string, but a string skips the numeric
+# clamp (cascade.py:194) and would only fail at run creation; seconds only.
 _ULTRAVOX_REALTIME_TYPES: dict[str, type | tuple[type, ...]] = {
     "temperature": (int, float),
-    "max_duration": (int, float, str),
+    "max_duration": (int, float),
     "extra": dict,
 }
 # ``extra`` is merged over the call-creation body *last*
@@ -851,11 +857,17 @@ _PROVIDER_TURN_KNOBS: dict[tuple[str, str, str, str], Callable[[Any], bool]] = {
     ("stt", "assemblyai", "ctor", "vad_force_turn_endpoint"): lambda v: v is False,
 }
 # Whole fields, any value: they tune the provider's own turn detection, and
-# the one mode the gate above lets through overwrites them.
+# the one mode the gate above lets through overwrites or ignores them. The
+# PUT cannot see the model, so this set is model-blind by design until the
+# turn PR decides per model at build time.
 _PROVIDER_TURN_FIELDS: frozenset[tuple[str, str, str, str]] = frozenset(
     {
-        # assemblyai/stt.py:601-645 (_configure_pipecat_turn_mode) rewrites
-        # all three under vad_force_turn_endpoint=True.
+        # assemblyai/stt.py:601-645 (_configure_pipecat_turn_mode), under
+        # vad_force_turn_endpoint=True: on u3-rt-pro max_turn_silence is
+        # overwritten with min_turn_silence and the threshold is left to the
+        # API (:628-641, min_turn_silence survives); on universal-streaming
+        # the threshold and min_turn_silence are overwritten (:643-645,
+        # max_turn_silence survives). No single model honours all three.
         ("stt", "assemblyai", "settings", "end_of_turn_confidence_threshold"),
         ("stt", "assemblyai", "settings", "min_turn_silence"),
         ("stt", "assemblyai", "settings", "max_turn_silence"),

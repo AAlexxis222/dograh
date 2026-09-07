@@ -620,8 +620,19 @@ def test_scope_filler_is_gated_until_the_filler_role_exists(monkeypatch):
     assert _validate({"scope": {"filler": True}}).service_tuning.scope.filler is True
 
 
-@pytest.mark.parametrize("name", ["keyterm", "keywords", "replace", "search"])
-@pytest.mark.parametrize("value", [7, {"a": True}, True])
+_DEEPGRAM_STRING_OR_LIST = ["keyterm", "keywords", "replace", "search"]
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        (name, value)
+        for name in _DEEPGRAM_STRING_OR_LIST
+        for value in (7, {"a": True}, True)
+    ]
+    # ``redact`` also takes ``true``, so only the non-bool shapes are wrong.
+    + [("redact", 3), ("redact", {"a": True})],
+)
 def test_deepgram_list_or_string_knobs_reject_other_shapes(name, value):
     # Nova declares these as ``Any`` (deepgram/stt.py:215-222), so nothing on
     # the field constrains the value; the wire takes a string or a list.
@@ -631,13 +642,27 @@ def test_deepgram_list_or_string_knobs_reject_other_shapes(name, value):
         _validate({"stt": {"deepgram": {"settings": {name: value}}}})
 
 
-def test_deepgram_list_or_string_knobs_take_both_shapes():
-    _validate({"stt": {"deepgram": {"settings": {"keyterm": "Marbella"}}}})
-    _validate({"stt": {"deepgram": {"settings": {"keyterm": ["Marbella"]}}}})
-    _validate({"stt": {"deepgram": {"settings": {"redact": True}}}})
-    _validate({"stt": {"deepgram": {"settings": {"redact": "pci"}}}})
-    _validate({"stt": {"deepgram": {"settings": {"redact": ["pci", "ssn"]}}}})
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        (name, value)
+        for name in _DEEPGRAM_STRING_OR_LIST
+        for value in ("Marbella", ["Marbella"])
+    ]
+    + [("redact", True), ("redact", "pci"), ("redact", ["pci", "ssn"])],
+)
+def test_deepgram_list_or_string_knobs_take_both_shapes(name, value):
+    _validate({"stt": {"deepgram": {"settings": {name: value}}}})
+
+
+def test_ultravox_max_duration_is_seconds_only():
+    # ``OneShotInputParams.max_duration`` would also take an ISO-8601 string,
+    # but a string skips the numeric clamp and only fails at run creation.
+    _validate({"realtime": {"ultravox_realtime": {"settings": {"max_duration": 600}}}})
     with pytest.raises(
-        ValidationError, match="stt.deepgram.settings.redact: wrong type"
+        ValidationError,
+        match="realtime.ultravox_realtime.settings.max_duration: wrong type",
     ):
-        _validate({"stt": {"deepgram": {"settings": {"redact": 3}}}})
+        _validate(
+            {"realtime": {"ultravox_realtime": {"settings": {"max_duration": "PT10M"}}}}
+        )

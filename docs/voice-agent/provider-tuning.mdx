@@ -141,8 +141,8 @@ value written and the value used.
 | `realtime.ultravox_realtime.settings.temperature` | 0.0 – 1.0 |
 | `realtime.ultravox_realtime.settings.max_duration` (seconds) | 10 – 3600 |
 
-`max_duration` also accepts an ISO-8601 duration string; the clamp only touches numbers, so a
-string is passed through as written.
+`max_duration` is a number of seconds only. Ultravox would also take an ISO-8601 duration string,
+but a string would skip this clamp and only fail when the run is created, so it is a `422` here.
 
 One cross-field rule applies on top: `eager_eot_threshold` must not exceed `eot_threshold`. If it
 does, it is lowered to `eot_threshold` and a warning says so.
@@ -211,7 +211,7 @@ Each is a single constant that the pull request wiring the feature flips.
 | --- | --- |
 | `llm.openai.options.api: "responses"` and `options.reasoning.summary` | The Responses service still needs the node-transition deferral ported to it. |
 | `stt.speechmatics.settings.turn_detection_mode` other than `external`, `stt.gladia.settings.enable_vad: true`, `stt.sarvam.settings.vad_signals: true`, `stt.assemblyai.ctor.vad_force_turn_endpoint: false` | These values hand turn detection to the provider. The pipeline always passes its own turn strategies today, and the provider's turn frames are not discarded but forwarded alongside the local ones, so one utterance would produce two turn signals. Turn handling is its own change. |
-| `stt.assemblyai.settings.end_of_turn_confidence_threshold`, `min_turn_silence`, `max_turn_silence`; `stt.speechmatics.settings.end_of_utterance_silence_trigger`, `end_of_utterance_max_delay` | Any value. These tune the provider's own turn detection, and the one mode the gate above allows overwrites them: AssemblyAI rewrites all three in its forced-endpoint mode, and Speechmatics' `external` preset switches the end-of-utterance timers off. Same gate, same change. |
+| `stt.assemblyai.settings.end_of_turn_confidence_threshold`, `min_turn_silence`, `max_turn_silence`; `stt.speechmatics.settings.end_of_utterance_silence_trigger`, `end_of_utterance_max_delay` | Any value. These tune the provider's own turn detection, and the one mode the gate above allows overwrites or ignores them. AssemblyAI's forced-endpoint mode keeps `min_turn_silence` and overwrites `max_turn_silence` on `u3-rt-pro`, and keeps `max_turn_silence` while overwriting the other two on `universal-streaming`, so no single model honours all three; Speechmatics' `external` preset switches the end-of-utterance timers off. The save cannot see the model, so the gate is model-blind by design until the turn change decides per model. |
 | `scope.filler: true` | No filler LLM role is built yet, so the flag would reach nothing. It lands with the tools change; `false` and absent are accepted. |
 | `tts._all.ctor.silence_time_s` | It sizes the silence pushed after a TTS turn ends, which only happens when a service is built with `push_silence_after_stop`. No TTS service here is, so the value would size a silence nobody pushes. |
 

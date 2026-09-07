@@ -6,9 +6,8 @@ ElevenLabs websocket speed 0.7-1.2 (pass2/service-factory.md B9). LLM
 temperature 0-2 is the widest range any provider accepts. ElevenLabs realtime
 STT documents its VAD ranges on the field (elevenlabs/stt.py:196-197):
 vad_threshold 0.1-0.9, vad_silence_threshold_secs 0.3-3.0. Ultravox call
-creation takes temperature 0-1 and maxDuration 10-3600 s; the row also accepts
-an ISO-8601 duration string for max_duration, which the clamp leaves alone
-(it only touches numbers).
+creation takes temperature 0-1 and maxDuration 10-3600 s; the row takes
+max_duration as a number of seconds only, so every value passes this clamp.
 """
 
 from __future__ import annotations
@@ -59,6 +58,9 @@ SERVICE_TUNING_NUMERIC_BOUNDS: tuple[tuple[tuple[str, ...], float, float], ...] 
             1.0,
         ),
         (("service_tuning", "tts", "elevenlabs", "settings", "style"), 0.0, 1.0),
+    ]
+    # ElevenLabs realtime STT VAD (elevenlabs/stt.py:196-197).
+    + [
         (
             ("service_tuning", "stt", "elevenlabs", "settings", "vad_threshold"),
             0.1,
@@ -75,6 +77,9 @@ SERVICE_TUNING_NUMERIC_BOUNDS: tuple[tuple[tuple[str, ...], float, float], ...] 
             0.3,
             3.0,
         ),
+    ]
+    # Ultravox call creation (realtime): max_duration in seconds.
+    + [
         (
             (
                 "service_tuning",

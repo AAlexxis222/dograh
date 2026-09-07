@@ -467,7 +467,9 @@ def test_elevenlabs_ws_speed_clamped_to_supported_range():
         ("realtime", "ultravox_realtime", "max_duration", 7200, 3600),
         # elevenlabs/stt.py:196-197 documents both ranges on the field.
         ("stt", "elevenlabs", "vad_threshold", 0.95, 0.9),
+        ("stt", "elevenlabs", "vad_threshold", 0.05, 0.1),
         ("stt", "elevenlabs", "vad_silence_threshold_secs", 0.1, 0.3),
+        ("stt", "elevenlabs", "vad_silence_threshold_secs", 5.0, 3.0),
     ],
 )
 def test_ultravox_and_elevenlabs_vad_knobs_are_clamped(

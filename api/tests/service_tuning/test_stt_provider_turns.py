@@ -123,10 +123,14 @@ def test_provider_turn_handover_is_a_named_422(
 
 
 # provider, field, a well-typed value. Whole fields, not values: these tune the
-# provider's own turn detection, which this build's forced mode overwrites.
+# provider's own turn detection, which this build's forced mode overwrites or
+# ignores; the PUT is model-blind, so the set is too.
 FORCED_MODE_FIELDS = [
-    # assemblyai/stt.py:601-645 (_configure_pipecat_turn_mode) rewrites all
-    # three under vad_force_turn_endpoint=True, the only value the gate lets in.
+    # assemblyai/stt.py:601-645 (_configure_pipecat_turn_mode) under
+    # vad_force_turn_endpoint=True, the only value the gate lets in: u3-rt-pro
+    # keeps min_turn_silence and overwrites max_turn_silence (:628-641),
+    # universal-streaming keeps max_turn_silence and overwrites the other two
+    # (:643-645). No single model honours all three.
     ("assemblyai", "end_of_turn_confidence_threshold", 0.6),
     ("assemblyai", "min_turn_silence", 200),
     ("assemblyai", "max_turn_silence", 1500),
