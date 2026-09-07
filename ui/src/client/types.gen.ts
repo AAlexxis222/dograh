@@ -3554,6 +3554,30 @@ export type InworldTtsConfiguration = {
 export type ItemKind = 'node' | 'edge' | 'workflow';
 
 /**
+ * LLMScope
+ *
+ * Which secondary LLM instances the ``llm`` tuning also applies to.
+ */
+export type LlmScope = {
+    /**
+     * Inference
+     */
+    inference?: boolean;
+    /**
+     * Extraction
+     */
+    extraction?: boolean;
+    /**
+     * Voicemail
+     */
+    voicemail?: boolean;
+    /**
+     * Filler
+     */
+    filler?: boolean;
+};
+
+/**
  * LangfuseCredentialsRequest
  */
 export type LangfuseCredentialsRequest = {
@@ -4996,6 +5020,30 @@ export type ProviderSyncStatus = {
 };
 
 /**
+ * ProviderTuning
+ */
+export type ProviderTuning = {
+    /**
+     * Settings
+     */
+    settings?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Ctor
+     */
+    ctor?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Options
+     */
+    options?: {
+        [key: string]: unknown;
+    };
+};
+
+/**
  * PublicEmbedChatEndRequest
  */
 export type PublicEmbedChatEndRequest = {
@@ -5622,6 +5670,37 @@ export type ServiceKeyResponse = {
      * Created By
      */
     created_by?: string | null;
+};
+
+/**
+ * ServiceTuning
+ */
+export type ServiceTuning = {
+    /**
+     * Stt
+     */
+    stt?: {
+        [key: string]: ProviderTuning;
+    };
+    /**
+     * Tts
+     */
+    tts?: {
+        [key: string]: ProviderTuning;
+    };
+    /**
+     * Llm
+     */
+    llm?: {
+        [key: string]: ProviderTuning;
+    };
+    /**
+     * Realtime
+     */
+    realtime?: {
+        [key: string]: ProviderTuning;
+    };
+    scope?: LlmScope;
 };
 
 /**
@@ -7581,6 +7660,10 @@ export type WorkflowConfigurationDefaults = {
     external_pbx_lead_headers?: Array<string>;
     voicemail_detection?: VoicemailDetectionConfiguration;
     transcript_configuration?: TranscriptConfiguration;
+    /**
+     * Provider knobs applied on top of the model configuration: {stt|tts|llm|realtime: {provider|_all: {settings, ctor, options}}, scope}. Keys are validated against the provider's real settings; explicit null means 'provider default' and is only accepted on nullable fields.
+     */
+    service_tuning?: ServiceTuning | null;
     /**
      * User Turn Stop Timeout
      */

@@ -1,9 +1,12 @@
+from collections.abc import Callable
+from dataclasses import replace
 from functools import wraps
-from typing import TYPE_CHECKING
-from urllib.parse import urlencode, urlparse, urlunparse
+from typing import TYPE_CHECKING, Any
+from urllib.parse import urlencode, urlparse, urlsplit, urlunparse, urlunsplit
 
 import aiohttp
 from fastapi import HTTPException
+from google.genai.types import ProactivityConfig, ThinkingConfig
 from loguru import logger
 
 from api.constants import MPS_API_URL
@@ -22,19 +25,52 @@ from api.services.pipecat.gemini_json_schema_adapter import (
     DograhGeminiJSONSchemaAdapter,
 )
 from api.services.pipecat.minimax_tts import MiniMaxOwnedSessionTTSService
+
+# Module level, unlike the rest of the realtime module's contents, so the
+# branches below name the service class the way every other branch in this
+# file does — and so a test can patch one.
+from api.services.pipecat.realtime.azure_realtime import DograhAzureRealtimeLLMService
+from api.services.pipecat.realtime.gemini_live import DograhGeminiLiveLLMService
+from api.services.pipecat.realtime.gemini_live_vertex import (
+    DograhGeminiLiveVertexLLMService,
+)
+from api.services.pipecat.realtime.grok_realtime import DograhGrokRealtimeLLMService
+from api.services.pipecat.realtime.openai_realtime import DograhOpenAIRealtimeLLMService
+from api.services.pipecat.realtime.ultravox_realtime import (
+    DograhUltravoxOneShotInputParams,
+    DograhUltravoxRealtimeLLMService,
+)
+from api.services.pipecat.service_tuning import (
+    ALL,
+    LLMRole,
+    build_settings,
+    coerce_settings,
+    llm_document_for_role,
+    tuning_for,
+)
+from api.services.pipecat.service_tuning_specs import (
+    FLUX_SETTINGS,
+    NOVA_SETTINGS,
+    SPECS,
+)
 from api.utils.url_security import validate_user_configured_service_url
 from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAISTTSettings
 from pipecat.services.aws.llm import AWSBedrockLLMService, AWSBedrockLLMSettings
 from pipecat.services.azure.llm import AzureLLMService, AzureLLMSettings
+from pipecat.services.azure.realtime.llm import AzureRealtimeLLMSettings
 from pipecat.services.azure.stt import AzureSTTService, AzureSTTSettings
 from pipecat.services.azure.tts import AzureTTSService, AzureTTSSettings
+from pipecat.services.camb.tts import CambTTSService, CambTTSSettings
 from pipecat.services.cartesia.stt import CartesiaSTTService, CartesiaSTTSettings
 from pipecat.services.cartesia.tts import (
     CartesiaTTSService,
     CartesiaTTSSettings,
     GenerationConfig,
 )
-from pipecat.services.cartesia.turns.stt import CartesiaTurnsSTTService
+from pipecat.services.cartesia.turns.stt import (
+    CartesiaTurnsSTTService,
+    CartesiaTurnsSTTSettings,
+)
 from pipecat.services.deepgram.flux.stt import (
     DeepgramFluxSTTService,
     DeepgramFluxSTTSettings,
@@ -52,6 +88,11 @@ from pipecat.services.elevenlabs.stt import (
 )
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService, ElevenLabsTTSSettings
 from pipecat.services.gladia.stt import GladiaSTTService, GladiaSTTSettings
+from pipecat.services.google.gemini_live.llm import (
+    ContextWindowCompressionParams,
+    GeminiLiveLLMSettings,
+)
+from pipecat.services.google.gemini_live.vertex.llm import GeminiLiveVertexLLMSettings
 from pipecat.services.google.llm import GoogleLLMService, GoogleLLMSettings
 from pipecat.services.google.stt import GoogleSTTService, GoogleSTTSettings
 from pipecat.services.google.tts import GoogleTTSService, GoogleTTSSettings
@@ -75,7 +116,11 @@ from pipecat.services.minimax.tts import MiniMaxTTSSettings
 from pipecat.services.openai._constants import OPENAI_SAMPLE_RATE
 from pipecat.services.openai.base_llm import OpenAILLMSettings
 from pipecat.services.openai.llm import OpenAILLMService
+from pipecat.services.openai.realtime.events import InputAudioNoiseReduction, Reasoning
+from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMSettings
 from pipecat.services.openai.stt import (
+    OpenAIRealtimeSTTService,
+    OpenAIRealtimeSTTSettings,
     OpenAISTTService,
     OpenAISTTSettings,
 )
@@ -94,6 +139,8 @@ from pipecat.services.speechmatics.stt import (
     SpeechmaticsSTTService,
     SpeechmaticsSTTSettings,
 )
+from pipecat.services.ultravox.llm import UltravoxRealtimeLLMSettings
+from pipecat.services.xai.realtime.llm import GrokRealtimeLLMSettings
 from pipecat.services.xai.tts import XAITTSService, XAIWebsocketTTSSettings
 from pipecat.transcriptions.language import Language
 from pipecat.utils.text.xml_function_tag_filter import XMLFunctionTagFilter
@@ -166,6 +213,16 @@ DEEPGRAM_FLUX_LANGUAGE_HINTS = {
     "pt": Language.PT,
     "ru": Language.RU,
 }
+
+
+def _as_language(code: Language | str) -> Language:
+    """Coerce a ``language_hints`` entry to ``Language``.
+
+    Registry-derived hints are already ``Language`` (see
+    ``DEEPGRAM_FLUX_LANGUAGE_HINTS`` above); ``service_tuning``-derived hints
+    arrive as plain strings from the validated JSON document.
+    """
+    return code if isinstance(code, Language) else Language(code)
 
 
 def dograh_stt_uses_flux_language(language: str | None) -> bool:
@@ -247,23 +304,206 @@ def _validate_runtime_service_url(url: str, field_name: str) -> None:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+def _warn_dropped(section: str, provider: str, model: str, names, reason: str) -> None:
+    """One run-log line per knob the selected model cannot take (#8).
+
+    The PUT accepts a model-dependent knob because the same document may
+    serve a workflow whose model does use it; when the build drops it, the
+    drop is the only trace, so it is named. ``provider`` is the ``kind.name``
+    path prefix (``stt.deepgram``), ``section`` one of settings/ctor/options.
+    """
+    for name in sorted(names):
+        logger.warning(
+            f"service_tuning: {provider}.{section}.{name} dropped for model "
+            f"{model}: {reason}"
+        )
+
+
+_DEEPGRAM_MULTI_MODEL = "flux-general-multi"
+
+
+def _flux_settings(plan, provider: str, model: str) -> dict:
+    """The Flux-only half of a Deepgram/Dograh plan, with ``keyterm`` normalised.
+
+    ``stt.deepgram`` is one row for two wire protocols, and Nova declares
+    ``keyterm`` as ``Any`` (deepgram/stt.py:215, "str or list of str"), so a
+    bare string passes the PUT. Flux builds one query parameter per element
+    (deepgram/flux/base.py:306), which would send a single keyterm one
+    character at a time. Both Flux branches go through here. Nova-only
+    settings are dropped and logged, and so are ``language_hints`` on a Flux
+    model that is not the multilingual one (the service ignores them there,
+    deepgram/flux/base.py:313-322).
+    """
+    settings = {
+        name: value for name, value in plan.settings.items() if name in FLUX_SETTINGS
+    }
+    _warn_dropped(
+        "settings",
+        provider,
+        model,
+        set(plan.settings) - set(settings),
+        "Nova-only setting, the model is a Flux model",
+    )
+    if "language_hints" in settings and model != _DEEPGRAM_MULTI_MODEL:
+        _warn_dropped(
+            "settings",
+            provider,
+            model,
+            ["language_hints"],
+            f"only read on {_DEEPGRAM_MULTI_MODEL}",
+        )
+    if isinstance(settings.get("keyterm"), str):
+        settings["keyterm"] = [settings["keyterm"]]
+    return settings
+
+
+def _nova_shared_settings() -> frozenset[str]:
+    """Settings both Deepgram wires declare, derived from the specs table so
+    the Nova split follows the table (``numerals``, ``keyterm`` today)."""
+    return FLUX_SETTINGS & NOVA_SETTINGS
+
+
+def _nova_ctor_allowed() -> frozenset[str]:
+    """Nova takes ``base_url``, not ``url``; ``url`` is Flux-only, so the
+    shared allow-list minus it is what Nova's constructor may receive."""
+    return SPECS[("stt", "deepgram")].ctor_allowed - {"url"}
+
+
+def _is_gpt5_reasoning(model: str) -> bool:
+    """Whether ``model`` is a gpt-5 reasoning model over chat/completions.
+
+    Keyed to the model name rather than the provider branch: OpenRouter
+    spells it ``openai/gpt-5-mini`` and Dograh's proxy forwards the bare
+    name. ``gpt-5-chat*`` is the non-reasoning member of the family — it
+    accepts ``temperature`` and rejects ``reasoning_effort``/``verbosity`` —
+    so it is excluded (#15).
+    """
+    return "gpt-5" in model and "gpt-5-chat" not in model
+
+
+# Wires that carry OpenAI's own models and speak chat/completions through an
+# ``OpenAILLMService`` subclass, so the gpt-5 rule applies (#12). Groq,
+# HuggingFace, Speaches, MiniMax and Sarvam serve their own catalogues, which
+# have no gpt-5 model.
+_OPENAI_MODEL_WIRES = frozenset(
+    {
+        ServiceProviders.OPENAI.value,
+        ServiceProviders.ATLASCLOUD.value,
+        ServiceProviders.OPENROUTER.value,
+        ServiceProviders.AZURE.value,
+        ServiceProviders.DOGRAH.value,
+    }
+)
+
+
+def _chat_llm_base(model: str) -> dict:
+    """Base settings for a chat/completions branch that defaults temperature.
+
+    Today's ``temperature: 0.1`` default, except on a gpt-5 reasoning model,
+    which rejects the field over this API: the default would start the run
+    and fail every turn (§1.2), and the plan rewrite in ``_gpt5_chat_plan``
+    never sees the base kwargs.
+    """
+    if _is_gpt5_reasoning(model):
+        return {"model": model}
+    return {"model": model, "temperature": 0.1}
+
+
+def _gpt5_chat_plan(plan, model: str):
+    """Translate an LLM plan into what a gpt-5 reasoning model accepts over
+    chat/completions; a no-op on any other model.
+
+    ``build_chat_completion_params`` sends ``temperature`` and ``max_tokens``
+    verbatim (openai/base_llm.py:356-358), and gpt-5 rejects both over this
+    API: the completion cap has to arrive as ``max_completion_tokens``, and
+    temperature is not supported at all. The cap is translated (lossless);
+    an explicit temperature cannot be honoured, so it fails the run start by
+    name rather than starting a run that silently differs from the document
+    (spec §1.2, R20). An explicitly tuned ``max_completion_tokens`` wins over
+    a translated ``max_tokens``. Returns a copy; the plan is never mutated.
+    """
+    if not _is_gpt5_reasoning(model) or not (
+        {"temperature", "max_tokens"} & set(plan.settings)
+    ):
+        return plan
+    if "temperature" in plan.settings:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"llm temperature is not accepted by {model} over "
+                "chat/completions; remove llm.*.settings.temperature or "
+                "choose another model"
+            ),
+        )
+    settings = {
+        name: value for name, value in plan.settings.items() if name != "max_tokens"
+    }
+    settings.setdefault("max_completion_tokens", plan.settings["max_tokens"])
+    return replace(plan, settings=settings)
+
+
+def _openai_realtime_stt_base_url(base_url: str) -> str:
+    """The websocket URL the Realtime transcription session needs, derived
+    from a configured http(s) base (#7).
+
+    The segmented service takes ``https://host/v1`` and the realtime one a
+    ``wss://…/realtime`` URL (openai/stt.py:242); reusing the http(s) base
+    would fail the connect. Only an OpenAI-shaped base (path ending in
+    ``/v1``) has a known websocket shape; anything else fails the run start
+    by name (§1.2). Assumption, not probed: a custom proxy exposes the
+    Realtime websocket at ``/v1/realtime`` like OpenAI does. A proxy that
+    only serves HTTP passes this check and fails at connect time instead.
+    """
+    parts = urlsplit(base_url)
+    path = parts.path.rstrip("/")
+    if parts.scheme in ("http", "https") and path.endswith("/v1"):
+        scheme = "wss" if parts.scheme == "https" else "ws"
+        return urlunsplit((scheme, parts.netloc, f"{path}/realtime", "", ""))
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"stt.openai base_url {base_url} is not usable with "
+            "options.api=realtime; expected an https://…/v1 OpenAI-compatible "
+            "base or unset"
+        ),
+    )
+
+
+def _tts_provider_ctor(plan) -> dict:
+    """A TTS plan's own ctor kwargs, without the ``tts._all`` ones.
+
+    ``tuning_for`` merges the ``_all`` section into every provider plan, and
+    each branch already passes the ``_all`` kwargs by hand, so splatting the
+    plan would be a duplicate keyword argument — and it would hand them to
+    Camb, which is the one branch deliberately built without them (C8).
+    """
+    common = SPECS[("tts", ALL)].ctor_allowed
+    return {name: value for name, value in plan.ctor.items() if name not in common}
+
+
 @_report_service_factory_failures(ErrorSource.STT, config_section="stt")
 def create_stt_service(
     user_config,
     audio_config: "AudioConfig",
     keyterms: list[str] | None = None,
     correlation_id: str | None = None,
+    *,
+    tuning: dict | None = None,
 ):
     """Create and return appropriate STT service based on user configuration
 
     Args:
         user_config: User configuration containing STT settings
         keyterms: Optional list of keyterms for speech recognition boosting (Deepgram only)
+        tuning: The run's ``service_tuning`` document (validated at the PUT and
+            clamped by the cascade resolver). ``None`` means "build exactly the
+            defaults below".
     """
     logger.info(
         f"Creating STT service: provider={user_config.stt.provider}, model={user_config.stt.model}"
     )
     if user_config.stt.provider == ServiceProviders.DEEPGRAM.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.DEEPGRAM.value)
         if user_config.stt.model in DEEPGRAM_FLUX_MODELS:
             settings_kwargs = {
                 "model": user_config.stt.model,
@@ -278,41 +518,118 @@ def create_stt_service(
                 if language_hint:
                     settings_kwargs["language_hints"] = [language_hint]
 
+            settings = build_settings(
+                DeepgramFluxSTTSettings,
+                settings_kwargs,
+                replace(
+                    plan,
+                    settings=_flux_settings(
+                        plan, "stt.deepgram", user_config.stt.model
+                    ),
+                ),
+            )
+            if isinstance(settings.language_hints, list):
+                settings.language_hints = [
+                    _as_language(h) for h in settings.language_hints
+                ]
+            if "url" in plan.ctor:
+                _validate_runtime_service_url(plan.ctor["url"], "stt.deepgram.ctor.url")
+
             return DeepgramFluxSTTService(
                 api_key=user_config.stt.api_key,
-                settings=DeepgramFluxSTTSettings(**settings_kwargs),
+                settings=settings,
                 should_interrupt=False,  # Let UserAggregator take care of sending InterruptionFrame
                 sample_rate=audio_config.transport_in_sample_rate,
+                **plan.ctor,
             )
 
         # Other models than flux
         # Use language from user config, defaulting to "multi" for multilingual support
         language = getattr(user_config.stt, "language", None) or "multi"
+        nova_settings = {
+            k: v
+            for k, v in plan.settings.items()
+            if k not in FLUX_SETTINGS or k in _nova_shared_settings()
+        }
+        _warn_dropped(
+            "settings",
+            "stt.deepgram",
+            user_config.stt.model,
+            set(plan.settings) - set(nova_settings),
+            "Flux-only setting, the model is a Nova model",
+        )
+        settings = build_settings(
+            DeepgramSTTSettings,
+            {
+                "language": language,
+                "profanity_filter": False,
+                "endpointing": 100,
+                "model": user_config.stt.model,
+                "keyterm": keyterms or [],
+            },
+            replace(plan, settings=nova_settings),
+        )
+        # Nova takes base_url, not url; url is Flux-only, so drop it here even
+        # though the shared allow-list accepts ctor.url for either model.
+        ctor = {k: v for k, v in plan.ctor.items() if k in _nova_ctor_allowed()}
+        _warn_dropped(
+            "ctor",
+            "stt.deepgram",
+            user_config.stt.model,
+            set(plan.ctor) - set(ctor),
+            "Flux-only constructor argument, Nova takes base_url",
+        )
         return DeepgramSTTService(
             api_key=user_config.stt.api_key,
-            settings=DeepgramSTTSettings(
-                language=language,
-                profanity_filter=False,
-                endpointing=100,
-                model=user_config.stt.model,
-                keyterm=keyterms or [],
-            ),
+            settings=settings,
             should_interrupt=False,  # Let UserAggregator take care of sending InterruptionFrame
             sample_rate=audio_config.transport_in_sample_rate,
+            **ctor,
         )
     elif user_config.stt.provider == ServiceProviders.OPENAI.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.OPENAI.value)
         kwargs = {}
         base_url = getattr(user_config.stt, "base_url", None)
+        settings_kwargs = {"model": user_config.stt.model}
+        # Both OpenAI STT services seed English (openai/stt.py:120,313), so
+        # the configured language has to be sent or a Spanish call is
+        # transcribed as English. Sent as the raw code like the other STT
+        # branches: ``Language`` is a StrEnum and both services serialise
+        # either (openai/stt.py:160,563-568), while ``Language(code)`` would
+        # raise on a code the enum doesn't carry.
+        language = getattr(user_config.stt, "language", None)
+        if language:
+            settings_kwargs["language"] = language
+        if plan.options.get("api") == "realtime":
+            # A different service and wire protocol behind the same provider:
+            # the Realtime API in transcription-only mode, over a websocket.
+            # ``turn_detection=False`` is passed explicitly rather than left to
+            # the constructor default: server-side turns would make the service
+            # broadcast its own user-turn frames while the pipeline still runs
+            # local VAD, and who owns the turn is the turn PR's subject.
+            if base_url:
+                kwargs["base_url"] = _openai_realtime_stt_base_url(base_url)
+                _validate_runtime_service_url(kwargs["base_url"], "base_url")
+            return OpenAIRealtimeSTTService(
+                api_key=user_config.stt.api_key,
+                settings=build_settings(
+                    OpenAIRealtimeSTTSettings, settings_kwargs, plan
+                ),
+                turn_detection=False,
+                should_interrupt=False,
+                **kwargs,
+            )
         if base_url:
             _validate_runtime_service_url(base_url, "base_url")
             kwargs["base_url"] = base_url
         return OpenAISTTService(
             api_key=user_config.stt.api_key,
-            settings=OpenAISTTSettings(model=user_config.stt.model),
+            settings=build_settings(OpenAISTTSettings, settings_kwargs, plan),
             should_interrupt=False,  # Let UserAggregator own interruption confirmation.
             **kwargs,
         )
     elif user_config.stt.provider == ServiceProviders.GOOGLE.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.GOOGLE.value)
         language = getattr(user_config.stt, "language", None) or "en-US"
         location = getattr(user_config.stt, "location", None) or "global"
         credentials = getattr(user_config.stt, "credentials", None)
@@ -326,29 +643,40 @@ def create_stt_service(
         return GoogleSTTService(
             credentials=credentials,
             location=location,
-            settings=GoogleSTTSettings(**settings_kwargs),
+            settings=build_settings(GoogleSTTSettings, settings_kwargs, plan),
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.CARTESIA.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.CARTESIA.value)
+        language = getattr(user_config.stt, "language", None) or "en"
         if user_config.stt.model == "ink-2":
+            # ink-2 got no settings at all until now (C1), so keyterms — the
+            # one biasing knob its wire protocol carries (cartesia/turns/stt
+            # .py:276) — could never reach it.
             return CartesiaTurnsSTTService(
                 api_key=user_config.stt.api_key,
+                settings=build_settings(
+                    CartesiaTurnsSTTSettings,
+                    {"model": user_config.stt.model, "language": language},
+                    plan,
+                ),
                 should_interrupt=False,  # Let UserAggregator emit interruption frames.
                 sample_rate=audio_config.transport_in_sample_rate,
             )
 
-        language = getattr(user_config.stt, "language", None) or "en"
         return CartesiaSTTService(
             api_key=user_config.stt.api_key,
-            settings=CartesiaSTTSettings(
-                model=user_config.stt.model,
-                language=language,
+            settings=build_settings(
+                CartesiaSTTSettings,
+                {"model": user_config.stt.model, "language": language},
+                plan,
             ),
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.DOGRAH.value:
         base_url = MPS_API_URL.replace("http://", "ws://").replace("https://", "wss://")
         language = getattr(user_config.stt, "language", None) or "multi"
+        plan = tuning_for(tuning, "stt", ServiceProviders.DOGRAH.value)
 
         if dograh_stt_uses_flux_language(language):
             # Dograh's Flux proxy only supports multilingual auto-detect and the
@@ -363,15 +691,45 @@ def create_stt_service(
             language_hint = DEEPGRAM_FLUX_LANGUAGE_HINTS.get(language)
             if language_hint:
                 settings_kwargs["language_hints"] = [language_hint]
+
+            settings = build_settings(
+                DeepgramFluxSTTSettings,
+                settings_kwargs,
+                replace(
+                    plan,
+                    settings=_flux_settings(
+                        plan, "stt.dograh", settings_kwargs["model"]
+                    ),
+                ),
+            )
+            if isinstance(settings.language_hints, list):
+                settings.language_hints = [
+                    _as_language(h) for h in settings.language_hints
+                ]
+
             return DograhFluxSTTService(
                 base_url=base_url,
                 api_key=user_config.stt.api_key,
                 correlation_id=correlation_id,
-                settings=DeepgramFluxSTTSettings(**settings_kwargs),
+                settings=settings,
                 should_interrupt=False,  # external turn strategies own interruption
                 sample_rate=audio_config.transport_in_sample_rate,
+                **plan.ctor,  # dograh's ctor allow-list has no "url" (SPECS)
             )
 
+        # The non-Flux Dograh service takes none of the stt.dograh knobs (its
+        # Settings carry model and language only); the plan is model- and
+        # language-dependent here the way stt.deepgram is model-dependent,
+        # so every knob is dropped with a trace rather than silently (#8).
+        reason = "Dograh STT applies tuning only on Flux-supported languages"
+        for section, names in (("settings", plan.settings), ("ctor", plan.ctor)):
+            _warn_dropped(
+                section,
+                "stt.dograh",
+                f"{user_config.stt.model} (language {language})",
+                names,
+                reason,
+            )
         return DograhSTTService(
             base_url=base_url,
             api_key=user_config.stt.api_key,
@@ -384,6 +742,7 @@ def create_stt_service(
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.SARVAM.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.SARVAM.value)
         language = getattr(user_config.stt, "language", None)
         language_mapping = {
             "bn-IN": Language.BN_IN,
@@ -412,25 +771,29 @@ def create_stt_service(
             pipecat_language = language
         return SarvamSTTService(
             api_key=user_config.stt.api_key,
-            settings=SarvamSTTSettings(
-                model=user_config.stt.model,
-                language=pipecat_language,
+            settings=build_settings(
+                SarvamSTTSettings,
+                {"model": user_config.stt.model, "language": pipecat_language},
+                plan,
             ),
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.SPEACHES.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.SPEACHES.value)
         language = getattr(user_config.stt, "language", None)
         _validate_runtime_service_url(user_config.stt.base_url, "base_url")
         return SpeachesSTTService(
             base_url=user_config.stt.base_url,
             api_key=user_config.stt.api_key or "none",
-            settings=SpeachesSTTSettings(
-                model=user_config.stt.model,
-                language=language,
+            settings=build_settings(
+                SpeachesSTTSettings,
+                {"model": user_config.stt.model, "language": language},
+                plan,
             ),
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.HUGGINGFACE.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.HUGGINGFACE.value)
         base_url = (
             getattr(user_config.stt, "base_url", None)
             or "https://router.huggingface.co/hf-inference"
@@ -440,25 +803,39 @@ def create_stt_service(
             api_key=user_config.stt.api_key,
             base_url=base_url,
             bill_to=getattr(user_config.stt, "bill_to", None),
-            settings=HuggingFaceSTTSettings(
-                model=user_config.stt.model,
-                return_timestamps=getattr(user_config.stt, "return_timestamps", False),
+            settings=build_settings(
+                HuggingFaceSTTSettings,
+                {
+                    "model": user_config.stt.model,
+                    "return_timestamps": getattr(
+                        user_config.stt, "return_timestamps", False
+                    ),
+                },
+                plan,
             ),
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.ASSEMBLYAI.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.ASSEMBLYAI.value)
         language = getattr(user_config.stt, "language", None)
         settings_kwargs = {"model": user_config.stt.model, "language": language}
         if keyterms:
             settings_kwargs["keyterms_prompt"] = keyterms
         return AssemblyAISTTService(
             api_key=user_config.stt.api_key,
-            settings=AssemblyAISTTSettings(**settings_kwargs),
+            settings=build_settings(AssemblyAISTTSettings, settings_kwargs, plan),
             sample_rate=audio_config.transport_in_sample_rate,
+            **plan.ctor,
         )
     elif user_config.stt.provider == ServiceProviders.GLADIA.value:
-        from pipecat.services.gladia.config import LanguageConfig
+        from pipecat.services.gladia.config import (
+            LanguageConfig,
+            MessagesConfig,
+            PreProcessingConfig,
+            RealtimeProcessingConfig,
+        )
 
+        plan = tuning_for(tuning, "stt", ServiceProviders.GLADIA.value)
         language = getattr(user_config.stt, "language", None) or "en"
         settings_kwargs = {
             "model": user_config.stt.model,
@@ -468,15 +845,29 @@ def create_stt_service(
         }
         return GladiaSTTService(
             api_key=user_config.stt.api_key,
-            settings=GladiaSTTSettings(**settings_kwargs),
+            settings=build_settings(
+                GladiaSTTSettings,
+                settings_kwargs,
+                coerce_settings(
+                    plan,
+                    {
+                        "pre_processing": PreProcessingConfig.model_validate,
+                        "realtime_processing": RealtimeProcessingConfig.model_validate,
+                        "messages_config": MessagesConfig.model_validate,
+                    },
+                ),
+            ),
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.SPEECHMATICS.value:
         from pipecat.services.speechmatics.stt import (
             AdditionalVocabEntry,
             OperatingPoint,
+            SpeakerIdentifier,
+            TurnDetectionMode,
         )
 
+        plan = tuning_for(tuning, "stt", ServiceProviders.SPEECHMATICS.value)
         language = getattr(user_config.stt, "language", None) or "en"
         # Map model field to operating point (standard or enhanced)
         operating_point = (
@@ -490,16 +881,37 @@ def create_stt_service(
             additional_vocab = [AdditionalVocabEntry(content=term) for term in keyterms]
         return SpeechmaticsSTTService(
             api_key=user_config.stt.api_key,
-            settings=SpeechmaticsSTTSettings(
-                language=language,
-                operating_point=operating_point,
-                additional_vocab=additional_vocab,
+            settings=build_settings(
+                SpeechmaticsSTTSettings,
+                {
+                    "language": language,
+                    "operating_point": operating_point,
+                    "additional_vocab": additional_vocab,
+                },
+                coerce_settings(
+                    plan,
+                    {
+                        # _build_config reads .value off the mode
+                        # (speechmatics/stt.py:752); the vocabulary and speaker
+                        # lists are handed to the SDK config, which does not
+                        # validate on assignment (:772-775).
+                        "turn_detection_mode": TurnDetectionMode,
+                        "additional_vocab": lambda entries: [
+                            AdditionalVocabEntry.model_validate(e) for e in entries
+                        ],
+                        "known_speakers": lambda entries: [
+                            SpeakerIdentifier(**e) if isinstance(e, dict) else e
+                            for e in entries
+                        ],
+                    },
+                ),
             ),
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.AZURE_SPEECH.value:
         from pipecat.transcriptions.language import Language as PipecatLanguage
 
+        plan = tuning_for(tuning, "stt", ServiceProviders.AZURE_SPEECH.value)
         language_code = getattr(user_config.stt, "language", None) or "en-US"
         region = getattr(user_config.stt, "region", None) or "eastus"
         try:
@@ -509,10 +921,13 @@ def create_stt_service(
         return AzureSTTService(
             api_key=user_config.stt.api_key,
             region=region,
-            settings=AzureSTTSettings(language=pipecat_language),
+            settings=build_settings(
+                AzureSTTSettings, {"language": pipecat_language}, plan
+            ),
             sample_rate=audio_config.transport_in_sample_rate,
         )
     elif user_config.stt.provider == ServiceProviders.SMALLEST.value:
+        plan = tuning_for(tuning, "stt", ServiceProviders.SMALLEST.value)
         language_code = getattr(user_config.stt, "language", None) or "en"
         try:
             pipecat_language = Language(language_code)
@@ -520,9 +935,10 @@ def create_stt_service(
             pipecat_language = Language.EN
         return SmallestSTTService(
             api_key=user_config.stt.api_key,
-            settings=SmallestSTTSettings(
-                model=user_config.stt.model,
-                language=pipecat_language,
+            settings=build_settings(
+                SmallestSTTSettings,
+                {"model": user_config.stt.model, "language": pipecat_language},
+                plan,
             ),
             sample_rate=audio_config.transport_in_sample_rate,
         )
@@ -533,16 +949,29 @@ def create_stt_service(
         _validate_runtime_service_url(user_config.stt.base_url, "base_url")
         elevenlabs_host = _elevenlabs_realtime_stt_host(user_config.stt.base_url)
 
+        plan = tuning_for(tuning, "stt", ServiceProviders.ELEVENLABS.value)
+        # CommitStrategy is a StrEnum whose values are the lowercase wire
+        # strings ("manual"/"vad" — elevenlabs/stt.py:167-171), so the plan's
+        # string constructs it directly.
+        commit_strategy = CommitStrategy(plan.ctor.get("commit_strategy", "vad"))
+        ctor = {k: v for k, v in plan.ctor.items() if k != "commit_strategy"}
+        settings = build_settings(
+            ElevenLabsRealtimeSTTSettings,
+            {
+                "model": user_config.stt.model,
+                "language": pipecat_language,
+            },
+            plan,
+        )
+
         return ElevenLabsRealtimeSTTService(
             api_key=user_config.stt.api_key,
             base_url=elevenlabs_host,
-            commit_strategy=CommitStrategy.VAD,
-            settings=ElevenLabsRealtimeSTTSettings(
-                model=user_config.stt.model,
-                language=pipecat_language,
-            ),
+            commit_strategy=commit_strategy,
+            settings=settings,
             should_interrupt=False,
             sample_rate=audio_config.transport_in_sample_rate,
+            **ctor,
         )
     else:
         raise HTTPException(
@@ -552,26 +981,45 @@ def create_stt_service(
 
 @_report_service_factory_failures(ErrorSource.TTS, config_section="tts")
 def create_tts_service(
-    user_config, audio_config: "AudioConfig", correlation_id: str | None = None
+    user_config,
+    audio_config: "AudioConfig",
+    correlation_id: str | None = None,
+    *,
+    tuning: dict | None = None,
 ):
     """Create and return appropriate TTS service based on user configuration
 
     Args:
         user_config: User configuration containing TTS settings
         transport_type: Type of transport (e.g., 'twilio', 'webrtc')
+        tuning: The run's ``service_tuning`` document; ``None`` builds the
+            defaults below unchanged.
     """
     logger.info(
         f"Creating TTS service: provider={user_config.tts.provider}, model={user_config.tts.model}"
     )
     # Create function call filter to prevent TTS from speaking function call tags
     xml_function_tag_filter = XMLFunctionTagFilter()
+    # Applies to every TTS branch below (except Camb, which doesn't take
+    # silence_time_s — C8). ``silence_time_s`` is only read under
+    # ``push_silence_after_stop`` (tts_service.py:902-903), so setting the
+    # knob switches the push on; untuned, nothing is pushed and the value is
+    # today's, exactly as before.
+    common = tuning_for(tuning, "tts", ALL)
+    silence = {
+        "push_silence_after_stop": "silence_time_s" in common.ctor,
+        "silence_time_s": common.ctor.get("silence_time_s", 1.0),
+    }
     if user_config.tts.provider == ServiceProviders.DEEPGRAM.value:
+        plan = tuning_for(tuning, "tts", ServiceProviders.DEEPGRAM.value)
         return DeepgramTTSService(
             api_key=user_config.tts.api_key,
-            settings=DeepgramTTSSettings(voice=user_config.tts.voice),
+            settings=build_settings(
+                DeepgramTTSSettings, {"voice": user_config.tts.voice}, plan
+            ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            **silence,
         )
     elif user_config.tts.provider == ServiceProviders.OPENAI.value:
         kwargs = {}
@@ -579,13 +1027,19 @@ def create_tts_service(
         if base_url:
             _validate_runtime_service_url(base_url, "base_url")
             kwargs["base_url"] = base_url
+        plan = tuning_for(tuning, "tts", ServiceProviders.OPENAI.value)
+        settings = build_settings(
+            OpenAITTSSettings,
+            {"model": user_config.tts.model, "voice": user_config.tts.voice},
+            plan,
+        )
         return OpenAITTSService(
             api_key=user_config.tts.api_key,
             sample_rate=OPENAI_SAMPLE_RATE,
-            settings=OpenAITTSSettings(model=user_config.tts.model),
+            settings=settings,
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            **silence,
             **kwargs,
         )
     elif user_config.tts.provider == ServiceProviders.GOOGLE.value:
@@ -604,13 +1058,14 @@ def create_tts_service(
         if speed is not None and speed != 1.0:
             settings_kwargs["speaking_rate"] = speed
 
+        plan = tuning_for(tuning, "tts", ServiceProviders.GOOGLE.value)
         return GoogleTTSService(
             credentials=credentials,
             location=location,
-            settings=GoogleTTSSettings(**settings_kwargs),
+            settings=build_settings(GoogleTTSSettings, settings_kwargs, plan),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            **silence,
         )
     elif user_config.tts.provider == ServiceProviders.ELEVENLABS.value:
         # Backward compatible with older configuration "Name - voice_id"
@@ -623,20 +1078,31 @@ def create_tts_service(
         # scheme-less base_url contract.
         _validate_runtime_service_url(user_config.tts.base_url, "base_url")
         elevenlabs_url = _elevenlabs_websocket_url(user_config.tts.base_url)
+        plan = tuning_for(tuning, "tts", ServiceProviders.ELEVENLABS.value)
+        settings = build_settings(
+            ElevenLabsTTSSettings,
+            {
+                "voice": voice_id,
+                "model": user_config.tts.model,
+                "stability": 0.8,
+                "speed": user_config.tts.speed,
+                "similarity_boost": 0.75,
+            },
+            plan,
+        )
+        ctor = {"reconnect_on_error": plan.ctor.get("reconnect_on_error", False)}
+        if "auto_mode" in plan.ctor:
+            ctor["auto_mode"] = plan.ctor["auto_mode"]
+        if "enable_ssml_parsing" in plan.ctor:
+            ctor["enable_ssml_parsing"] = plan.ctor["enable_ssml_parsing"]
         return ElevenLabsTTSService(
-            reconnect_on_error=False,
             api_key=user_config.tts.api_key,
             url=elevenlabs_url,
-            settings=ElevenLabsTTSSettings(
-                voice=voice_id,
-                model=user_config.tts.model,
-                stability=0.8,
-                speed=user_config.tts.speed,
-                similarity_boost=0.75,
-            ),
+            settings=settings,
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            **silence,
+            **ctor,
         )
     elif user_config.tts.provider == ServiceProviders.CARTESIA.value:
         speed = getattr(user_config.tts, "speed", None)
@@ -650,21 +1116,29 @@ def create_tts_service(
             GenerationConfig(**gen_config_kwargs) if gen_config_kwargs else None
         )
         language = getattr(user_config.tts, "language", None) or "en"
+        settings_kwargs = {
+            "voice": user_config.tts.voice,
+            "model": user_config.tts.model,
+            "language": language,
+        }
+        if generation_config:
+            settings_kwargs["generation_config"] = generation_config
+        plan = tuning_for(tuning, "tts", ServiceProviders.CARTESIA.value)
         return CartesiaTTSService(
             api_key=user_config.tts.api_key,
-            settings=CartesiaTTSSettings(
-                voice=user_config.tts.voice,
-                model=user_config.tts.model,
-                language=language,
-                **(
-                    {"generation_config": generation_config}
-                    if generation_config
-                    else {}
+            settings=build_settings(
+                CartesiaTTSSettings,
+                settings_kwargs,
+                # _build_msg calls .model_dump() on it (cartesia/tts.py:515-517),
+                # so the tuning document's plain object has to become the model.
+                coerce_settings(
+                    plan, {"generation_config": GenerationConfig.model_validate}
                 ),
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            **silence,
+            **_tts_provider_ctor(plan),
         )
     elif user_config.tts.provider == ServiceProviders.INWORLD.value:
         voice = getattr(user_config.tts, "voice", None) or "Ashley"
@@ -672,63 +1146,84 @@ def create_tts_service(
         speed = getattr(user_config.tts, "speed", None)
         language = getattr(user_config.tts, "language", None) or "en-US"
         delivery_mode = getattr(user_config.tts, "delivery_mode", None) or "BALANCED"
+        plan = tuning_for(tuning, "tts", ServiceProviders.INWORLD.value)
         return InworldTTSService(
             api_key=user_config.tts.api_key,
-            settings=InworldTTSSettings(
-                voice=voice,
-                model=model,
-                language=language,
-                speaking_rate=speed,
-                delivery_mode=delivery_mode,
+            settings=build_settings(
+                InworldTTSSettings,
+                {
+                    "voice": voice,
+                    "model": model,
+                    "language": language,
+                    "speaking_rate": speed,
+                    "delivery_mode": delivery_mode,
+                },
+                plan,
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            **silence,
         )
     elif user_config.tts.provider == ServiceProviders.DOGRAH.value:
         # Convert HTTP URL to WebSocket URL for TTS
         base_url = MPS_API_URL.replace("http://", "ws://").replace("https://", "wss://")
+        plan = tuning_for(tuning, "tts", ServiceProviders.DOGRAH.value)
         return DograhTTSService(
             base_url=base_url,
             api_key=user_config.tts.api_key,
             correlation_id=correlation_id,
-            settings=DograhTTSSettings(
-                model=user_config.tts.model,
-                voice=user_config.tts.voice,
-                speed=user_config.tts.speed,
+            settings=build_settings(
+                DograhTTSSettings,
+                {
+                    "model": user_config.tts.model,
+                    "voice": user_config.tts.voice,
+                    "speed": user_config.tts.speed,
+                },
+                plan,
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            **silence,
         )
     elif user_config.tts.provider == ServiceProviders.CAMB.value:
-        from pipecat.services.camb.tts import CambTTSService
-
         voice_id = int(getattr(user_config.tts, "voice", None) or "147320")
         language = getattr(user_config.tts, "language", None) or "en-us"
+        plan = tuning_for(tuning, "tts", ServiceProviders.CAMB.value)
+        # The same values the deprecated ``voice_id=`` / ``model=`` kwargs
+        # carried, as a settings delta (#10): the constructor applied a given
+        # model only, so a missing one stays the constructor's default here
+        # too rather than becoming an explicit None.
+        settings_kwargs: dict = {"voice": voice_id}
+        if user_config.tts.model is not None:
+            settings_kwargs["model"] = user_config.tts.model
         tts = CambTTSService(
             api_key=user_config.tts.api_key,
-            voice_id=voice_id,
-            model=user_config.tts.model,
+            settings=build_settings(CambTTSSettings, settings_kwargs, plan),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
+            **_tts_provider_ctor(plan),
         )
         # Set language directly as BCP-47 code (bypasses Language enum conversion)
         tts._settings.language = language
         return tts
     elif user_config.tts.provider == ServiceProviders.SPEACHES.value:
         _validate_runtime_service_url(user_config.tts.base_url, "base_url")
+        plan = tuning_for(tuning, "tts", ServiceProviders.SPEACHES.value)
         return SpeachesTTSService(
             base_url=user_config.tts.base_url,
             api_key=user_config.tts.api_key or "none",
-            settings=SpeachesTTSSettings(
-                model=user_config.tts.model,
-                voice=user_config.tts.voice,
-                speed=user_config.tts.speed,
+            settings=build_settings(
+                SpeachesTTSSettings,
+                {
+                    "model": user_config.tts.model,
+                    "voice": user_config.tts.voice,
+                    "speed": user_config.tts.speed,
+                },
+                plan,
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            **silence,
         )
     elif user_config.tts.provider == ServiceProviders.RIME.value:
         speed = getattr(user_config.tts, "speed", None)
@@ -748,12 +1243,13 @@ def create_tts_service(
         }
         if speed and speed != 1.0:
             settings_kwargs["speedAlpha"] = speed
+        plan = tuning_for(tuning, "tts", ServiceProviders.RIME.value)
         return RimeTTSService(
             api_key=user_config.tts.api_key,
-            settings=RimeTTSSettings(**settings_kwargs),
+            settings=build_settings(RimeTTSSettings, settings_kwargs, plan),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            **silence,
         )
     elif user_config.tts.provider == ServiceProviders.SARVAM.value:
         # Map Sarvam language code to pipecat Language enum for TTS
@@ -784,12 +1280,13 @@ def create_tts_service(
         }
         if speed and speed != 1.0:
             settings_kwargs["pace"] = speed
+        plan = tuning_for(tuning, "tts", ServiceProviders.SARVAM.value)
         return SarvamTTSService(
             api_key=user_config.tts.api_key,
-            settings=SarvamTTSSettings(**settings_kwargs),
+            settings=build_settings(SarvamTTSSettings, settings_kwargs, plan),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            **silence,
         )
     elif user_config.tts.provider == ServiceProviders.MINIMAX.value:
         group_id = getattr(user_config.tts, "group_id", None)
@@ -811,20 +1308,25 @@ def create_tts_service(
             base_url = f"{base_url}/t2a_v2"
         _validate_runtime_service_url(base_url, "base_url")
 
+        plan = tuning_for(tuning, "tts", ServiceProviders.MINIMAX.value)
         session = aiohttp.ClientSession()
         return MiniMaxOwnedSessionTTSService(
             api_key=user_config.tts.api_key,
             group_id=group_id,
             base_url=base_url,
             aiohttp_session=session,
-            settings=MiniMaxTTSSettings(
-                model=user_config.tts.model,
-                voice=voice,
-                speed=speed,
+            settings=build_settings(
+                MiniMaxTTSSettings,
+                {
+                    "model": user_config.tts.model,
+                    "voice": voice,
+                    "speed": speed,
+                },
+                plan,
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            **silence,
         )
     elif user_config.tts.provider == ServiceProviders.AZURE_SPEECH.value:
         region = getattr(user_config.tts, "region", None) or "eastus"
@@ -839,13 +1341,14 @@ def create_tts_service(
         }
         if rate:
             settings_kwargs["rate"] = rate
+        plan = tuning_for(tuning, "tts", ServiceProviders.AZURE_SPEECH.value)
         return AzureTTSService(
             api_key=user_config.tts.api_key,
             region=region,
-            settings=AzureTTSSettings(**settings_kwargs),
+            settings=build_settings(AzureTTSSettings, settings_kwargs, plan),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            **silence,
         )
     elif user_config.tts.provider == ServiceProviders.SMALLEST.value:
         language_code = getattr(user_config.tts, "language", None) or "en"
@@ -855,19 +1358,20 @@ def create_tts_service(
             pipecat_language = Language.EN
         speed = getattr(user_config.tts, "speed", None)
         model = user_config.tts.model.replace("lightning-v", "lightning_v")
-        settings_kwargs = SmallestTTSSettings(
-            model=model,
-            voice=user_config.tts.voice,
-            language=pipecat_language,
-        )
+        settings_kwargs = {
+            "model": model,
+            "voice": user_config.tts.voice,
+            "language": pipecat_language,
+        }
         if speed and speed != 1.0:
-            settings_kwargs.speed = speed
+            settings_kwargs["speed"] = speed
+        plan = tuning_for(tuning, "tts", ServiceProviders.SMALLEST.value)
         return SmallestTTSService(
             api_key=user_config.tts.api_key,
-            settings=settings_kwargs,
+            settings=build_settings(SmallestTTSSettings, settings_kwargs, plan),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            **silence,
         )
     elif user_config.tts.provider == ServiceProviders.XAI.value:
         voice = getattr(user_config.tts, "voice", None) or "eve"
@@ -879,15 +1383,19 @@ def create_tts_service(
                 pipecat_language = Language(language_code)
             except ValueError:
                 pipecat_language = Language.EN
+        settings_kwargs = {"voice": voice, "language": pipecat_language}
+        # B12: the configured speed used to stop here — the branch built the
+        # settings without it, so xAI always spoke at 1.0.
+        speed = getattr(user_config.tts, "speed", None)
+        if speed and speed != 1.0:
+            settings_kwargs["speed"] = speed
+        plan = tuning_for(tuning, "tts", ServiceProviders.XAI.value)
         return XAITTSService(
             api_key=user_config.tts.api_key,
-            settings=XAIWebsocketTTSSettings(
-                voice=voice,
-                language=pipecat_language,
-            ),
+            settings=build_settings(XAIWebsocketTTSSettings, settings_kwargs, plan),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            **silence,
         )
     elif user_config.tts.provider == ServiceProviders.LMNT.value:
         voice = getattr(user_config.tts, "voice", None) or "lily"
@@ -897,6 +1405,7 @@ def create_tts_service(
             pipecat_language = Language(language_code)
         except ValueError:
             pipecat_language = Language.EN
+        plan = tuning_for(tuning, "tts", ServiceProviders.LMNT.value)
         return LmntTTSService(
             api_key=user_config.tts.api_key,
             sample_rate=audio_config.transport_out_sample_rate,
@@ -904,14 +1413,14 @@ def create_tts_service(
             # at the requested sample rate, which is what the output transport
             # consumes; "pcm_s16le" is not a valid LMNT format value.
             output_format="raw",
-            settings=LmntTTSSettings(
-                voice=voice,
-                language=pipecat_language,
-                model=model,
+            settings=build_settings(
+                LmntTTSSettings,
+                {"voice": voice, "language": pipecat_language, "model": model},
+                plan,
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            silence_time_s=1.0,
+            **silence,
         )
     else:
         raise HTTPException(
@@ -950,6 +1459,7 @@ def create_llm_service_from_provider(
     temperature: float | None = None,
     bill_to: str | None = None,
     usage_context: str | None = None,
+    tuning: dict | None = None,
 ):
     """Create an LLM service from explicit provider/model/api_key.
 
@@ -959,8 +1469,14 @@ def create_llm_service_from_provider(
         usage_context: Optional tag describing what the LLM instance is used for
             (e.g. "voicemail_detection"). Sent as request metadata by the Dograh
             provider; ignored by other providers.
+        tuning: The run's ``service_tuning`` document, already narrowed by the
+            caller to the roles it applies to (``llm_document_for_role``);
+            ``None`` builds the defaults below unchanged.
     """
     logger.info(f"Creating LLM service: provider={provider}, model={model}")
+    plan = tuning_for(tuning, "llm", provider)
+    if provider in _OPENAI_MODEL_WIRES:
+        plan = _gpt5_chat_plan(plan, model)
     if provider in (
         ServiceProviders.OPENAI.value,
         ServiceProviders.ATLASCLOUD.value,
@@ -969,24 +1485,36 @@ def create_llm_service_from_provider(
         if base_url:
             _validate_runtime_service_url(base_url, "base_url")
             kwargs["base_url"] = base_url
-        if "gpt-5" in model:
-            return OpenAILLMService(
-                api_key=api_key,
-                settings=OpenAILLMSettings(
-                    model=model,
-                    extra={"reasoning_effort": "minimal", "verbosity": "low"},
-                ),
-                **kwargs,
-            )
+        if _is_gpt5_reasoning(model):
+            # Today's behaviour, declared: two extras and no temperature
+            # (spec §5.4). ``extra`` is REGISTRY_OWNED, so these two keys are
+            # only ever reachable through ``options`` — never through
+            # ``from_mapping``'s overflow.
+            reasoning = plan.options.get("reasoning") or {}
+            settings = build_settings(OpenAILLMSettings, {"model": model}, plan)
+            settings.extra = {
+                "reasoning_effort": reasoning.get("effort", "minimal"),
+                "verbosity": plan.options.get("verbosity", "low"),
+            }
+            return OpenAILLMService(api_key=api_key, settings=settings, **kwargs)
+        _warn_dropped(
+            "options",
+            f"llm.{provider}",
+            model,
+            {"reasoning", "verbosity"} & set(plan.options),
+            "only a gpt-5 reasoning model takes reasoning_effort/verbosity",
+        )
         return OpenAILLMService(
             api_key=api_key,
-            settings=OpenAILLMSettings(model=model, temperature=0.1),
+            settings=build_settings(OpenAILLMSettings, _chat_llm_base(model), plan),
             **kwargs,
         )
     elif provider == ServiceProviders.GROQ.value:
         return GroqLLMService(
             api_key=api_key,
-            settings=GroqLLMSettings(model=model, temperature=0.1),
+            settings=build_settings(
+                GroqLLMSettings, {"model": model, "temperature": 0.1}, plan
+            ),
         )
     elif provider == ServiceProviders.OPENROUTER.value:
         kwargs = {}
@@ -995,21 +1523,25 @@ def create_llm_service_from_provider(
             kwargs["base_url"] = base_url
         return OpenRouterLLMService(
             api_key=api_key,
-            settings=OpenRouterLLMSettings(model=model, temperature=0.1),
+            settings=build_settings(OpenRouterLLMSettings, _chat_llm_base(model), plan),
             **kwargs,
         )
     elif provider == ServiceProviders.GOOGLE.value:
         model = _migrate_deprecated_google_model(model)
         return DograhGoogleLLMService(
             api_key=api_key,
-            settings=GoogleLLMSettings(model=model, temperature=0.1),
+            settings=build_settings(
+                GoogleLLMSettings, {"model": model, "temperature": 0.1}, plan
+            ),
         )
     elif provider == ServiceProviders.GOOGLE_VERTEX.value:
         return DograhGoogleVertexLLMService(
             credentials=credentials,
             project_id=project_id,
             location=location or "us-east4",
-            settings=GoogleVertexLLMSettings(model=model, temperature=0.1),
+            settings=build_settings(
+                GoogleVertexLLMSettings, {"model": model, "temperature": 0.1}, plan
+            ),
         )
     elif provider == ServiceProviders.AZURE.value:
         if endpoint:
@@ -1017,7 +1549,7 @@ def create_llm_service_from_provider(
         return AzureLLMService(
             api_key=api_key,
             endpoint=endpoint,
-            settings=AzureLLMSettings(model=model, temperature=0.1),
+            settings=build_settings(AzureLLMSettings, _chat_llm_base(model), plan),
         )
     elif provider == ServiceProviders.DOGRAH.value:
         return DograhLLMService(
@@ -1025,14 +1557,14 @@ def create_llm_service_from_provider(
             api_key=api_key,
             correlation_id=correlation_id,
             usage_context=usage_context,
-            settings=OpenAILLMSettings(model=model),
+            settings=build_settings(OpenAILLMSettings, {"model": model}, plan),
         )
     elif provider == ServiceProviders.AWS_BEDROCK.value:
         return AWSBedrockLLMService(
             aws_access_key=aws_access_key,
             aws_secret_key=aws_secret_key,
             aws_region=aws_region,
-            settings=AWSBedrockLLMSettings(model=model),
+            settings=build_settings(AWSBedrockLLMSettings, {"model": model}, plan),
         )
     elif provider == ServiceProviders.SPEACHES.value:
         base_url = base_url or "http://localhost:11434/v1"
@@ -1040,7 +1572,7 @@ def create_llm_service_from_provider(
         return SpeachesLLMService(
             base_url=base_url,
             api_key=api_key or "none",
-            settings=SpeachesLLMSettings(model=model),
+            settings=build_settings(SpeachesLLMSettings, {"model": model}, plan),
         )
     elif provider == ServiceProviders.HUGGINGFACE.value:
         base_url = base_url or "https://router.huggingface.co/v1"
@@ -1049,7 +1581,9 @@ def create_llm_service_from_provider(
             api_key=api_key,
             base_url=base_url,
             bill_to=bill_to,
-            settings=HuggingFaceLLMSettings(model=model, temperature=0.1),
+            settings=build_settings(
+                HuggingFaceLLMSettings, {"model": model, "temperature": 0.1}, plan
+            ),
         )
     elif provider == ServiceProviders.MINIMAX.value:
         base_url = base_url or "https://api.minimax.io/v1"
@@ -1057,29 +1591,133 @@ def create_llm_service_from_provider(
         return MiniMaxLLMService(
             api_key=api_key,
             base_url=base_url,
-            settings=MiniMaxLLMService.Settings(
-                model=model,
-                temperature=temperature if temperature is not None else 1.0,
+            settings=build_settings(
+                MiniMaxLLMService.Settings,
+                {
+                    "model": model,
+                    "temperature": temperature if temperature is not None else 1.0,
+                },
+                plan,
             ),
         )
     elif provider == ServiceProviders.SARVAM.value:
         return SarvamLLMService(
             api_key=api_key,
-            settings=SarvamLLMSettings(
-                model=model,
-                temperature=temperature if temperature is not None else 0.5,
+            settings=build_settings(
+                SarvamLLMSettings,
+                {
+                    "model": model,
+                    "temperature": temperature if temperature is not None else 0.5,
+                },
+                plan,
             ),
         )
     else:
         raise HTTPException(status_code=400, detail=f"Invalid LLM provider {provider}")
 
 
+REALTIME_FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
+    # Where each ``realtime`` knob lands. The realtime branches are the one
+    # part of the plan with no pipecat ``Settings`` mapping for the session:
+    # they build provider pydantic objects, so a knob is written to an
+    # explicit destination instead of merged through ``from_mapping``. Paths
+    # are rooted at the object the branch hands ``_apply_realtime_fields``:
+    # the provider ``SessionProperties`` (OpenAI/Azure/Grok), or the kwargs
+    # dict the branch is about to construct (Gemini settings, Ultravox
+    # params). Kept in step with the allow-lists by
+    # test_realtime.py::test_every_realtime_knob_has_a_destination.
+    #
+    # No turn-detection knob appears here: who owns the user turn is the turn
+    # PR's subject, and none of them is in an allow-list.
+    "openai_realtime": {
+        "noise_reduction": ("audio", "input", "noise_reduction"),
+        "speed": ("audio", "output", "speed"),
+        # The destination is the whole ``Reasoning`` model, not its ``effort``
+        # field: the session leaves ``reasoning`` unset, so there is no object
+        # to write into until a run asks for one (_REALTIME_WRAPPERS).
+        "reasoning_effort": ("reasoning",),
+        "max_output_tokens": ("max_output_tokens",),
+        "tool_choice": ("tool_choice",),
+    },
+    "grok_realtime": {
+        "language_hint": ("audio", "input", "transcription", "language_hint"),
+    },
+    "google_realtime": {
+        "thinking": ("thinking",),
+        "enable_affective_dialog": ("enable_affective_dialog",),
+        "proactivity": ("proactivity",),
+        "context_window_compression": ("context_window_compression",),
+        "temperature": ("temperature",),
+    },
+    "ultravox_realtime": {
+        "temperature": ("temperature",),
+        "max_duration": ("max_duration",),
+        "extra": ("extra",),
+    },
+}
+# Azure Realtime is the OpenAI wire protocol against an Azure deployment and
+# reuses its events module, so the two sessions take the same knobs; Vertex is
+# Gemini Live against Vertex AI.
+REALTIME_FIELDS["azure_realtime"] = REALTIME_FIELDS["openai_realtime"]
+REALTIME_FIELDS["google_vertex_realtime"] = REALTIME_FIELDS["google_realtime"]
+
+_OPENAI_REALTIME_WRAPPERS: dict[str, Callable[[Any], Any]] = {
+    # The session models these two as objects; the knob is the one field
+    # inside each that a run configures.
+    "noise_reduction": lambda value: InputAudioNoiseReduction(type=value),
+    "reasoning_effort": lambda value: Reasoning(effort=value),
+}
+_GEMINI_REALTIME_COERCIONS: dict[str, Callable[[Any], Any]] = {
+    # These arrive from the tuning document as JSON objects. Gemini Live reads
+    # ``thinking`` and ``proactivity`` straight off the settings into its
+    # connect config (google/gemini_live/llm.py:1222,1230), so a bare dict
+    # would reach the SDK; ``model_validate`` also accepts an already-built
+    # model, as ``coerce_settings`` requires.
+    "thinking": ThinkingConfig.model_validate,
+    "proactivity": ProactivityConfig.model_validate,
+    "context_window_compression": ContextWindowCompressionParams.model_validate,
+}
+
+
+def _apply_realtime_fields(
+    root,
+    provider: str,
+    plan,
+    wrappers: dict[str, Callable[[Any], Any]] | None = None,
+) -> None:
+    """Write each tuned knob to the destination ``REALTIME_FIELDS`` declares.
+
+    Only the knobs the plan actually carries are touched, so an untuned run
+    gets exactly the objects the branch just built. Every node on the way to a
+    leaf exists by then — a knob whose destination is a nested model the
+    session leaves unset is wrapped instead of walked into.
+    """
+    fields = REALTIME_FIELDS[provider]
+    for name, value in plan.settings.items():
+        wrap = (wrappers or {}).get(name)
+        *parents, leaf = fields[name]
+        target = root
+        for step in parents:
+            target = target[step] if isinstance(target, dict) else getattr(target, step)
+        value = wrap(value) if wrap else value
+        if isinstance(target, dict):
+            target[leaf] = value
+        else:
+            setattr(target, leaf, value)
+
+
 @_report_service_factory_failures(ErrorSource.LLM, config_section="realtime")
-def create_realtime_llm_service(user_config, audio_config: "AudioConfig"):
+def create_realtime_llm_service(
+    user_config, audio_config: "AudioConfig", *, tuning: dict | None = None
+):
     """Create a realtime (speech-to-speech) LLM service that handles STT+LLM+TTS.
 
     These services bypass separate STT/TTS and handle audio directly via
     a bidirectional WebSocket connection. Reads from user_config.realtime.
+
+    Args:
+        tuning: The run's ``service_tuning`` document; ``None`` builds the
+            defaults below unchanged.
     """
     realtime_config = user_config.realtime
     provider = realtime_config.provider
@@ -1091,11 +1729,9 @@ def create_realtime_llm_service(user_config, audio_config: "AudioConfig"):
     logger.info(
         f"Creating realtime LLM service: provider={provider}, model={model}, voice={voice}, language={language}"
     )
+    plan = tuning_for(tuning, "realtime", provider)
 
     if provider == ServiceProviders.OPENAI_REALTIME.value:
-        from api.services.pipecat.realtime.openai_realtime import (
-            DograhOpenAIRealtimeLLMService,
-        )
         from pipecat.services.openai.realtime.events import (
             AudioConfiguration,
             AudioInput,
@@ -1111,28 +1747,27 @@ def create_realtime_llm_service(user_config, audio_config: "AudioConfig"):
         if language:
             transcription_kwargs["language"] = language
 
-        return DograhOpenAIRealtimeLLMService(
-            api_key=api_key,
-            settings=DograhOpenAIRealtimeLLMService.Settings(
-                model=model,
-                session_properties=SessionProperties(
-                    audio=AudioConfiguration(
-                        input=AudioInput(
-                            transcription=InputAudioTranscription(
-                                **transcription_kwargs
-                            ),
-                        ),
-                        output=AudioOutput(
-                            voice=voice or "alloy",
-                        ),
-                    ),
+        session_properties = SessionProperties(
+            audio=AudioConfiguration(
+                input=AudioInput(
+                    transcription=InputAudioTranscription(**transcription_kwargs),
+                ),
+                output=AudioOutput(
+                    voice=voice or "alloy",
                 ),
             ),
         )
-    elif provider == ServiceProviders.GROK_REALTIME.value:
-        from api.services.pipecat.realtime.grok_realtime import (
-            DograhGrokRealtimeLLMService,
+        _apply_realtime_fields(
+            session_properties, provider, plan, _OPENAI_REALTIME_WRAPPERS
         )
+        return DograhOpenAIRealtimeLLMService(
+            api_key=api_key,
+            settings=OpenAIRealtimeLLMSettings(
+                model=model,
+                session_properties=session_properties,
+            ),
+        )
+    elif provider == ServiceProviders.GROK_REALTIME.value:
         from pipecat.services.xai.realtime.events import (
             AudioConfiguration,
             AudioInput,
@@ -1144,43 +1779,41 @@ def create_realtime_llm_service(user_config, audio_config: "AudioConfig"):
         if grok_voice.lower() in {"ara", "rex", "sal", "eve", "leo"}:
             grok_voice = grok_voice.lower()
 
-        return DograhGrokRealtimeLLMService(
-            api_key=api_key,
-            settings=DograhGrokRealtimeLLMService.Settings(
-                model=model,
-                session_properties=SessionProperties(
-                    voice=grok_voice,
-                    audio=AudioConfiguration(
-                        input=AudioInput(
-                            transcription=InputAudioTranscription(),
-                        ),
-                    ),
+        session_properties = SessionProperties(
+            voice=grok_voice,
+            audio=AudioConfiguration(
+                input=AudioInput(
+                    transcription=InputAudioTranscription(),
                 ),
             ),
         )
-    elif provider == ServiceProviders.ULTRAVOX_REALTIME.value:
-        from api.services.pipecat.realtime.ultravox_realtime import (
-            DograhUltravoxOneShotInputParams,
-            DograhUltravoxRealtimeLLMService,
-        )
-
-        return DograhUltravoxRealtimeLLMService(
-            params=DograhUltravoxOneShotInputParams(
-                api_key=api_key,
+        _apply_realtime_fields(session_properties, provider, plan)
+        return DograhGrokRealtimeLLMService(
+            api_key=api_key,
+            settings=GrokRealtimeLLMSettings(
                 model=model,
-                voice=voice,
-                output_medium="voice",
+                session_properties=session_properties,
             ),
-            settings=DograhUltravoxRealtimeLLMService.Settings(
+        )
+    elif provider == ServiceProviders.ULTRAVOX_REALTIME.value:
+        # Ultravox is the one branch whose knobs are call-creation parameters
+        # rather than session settings: the service posts them when it opens
+        # the call (ultravox/llm.py:341-358).
+        params_kwargs = {
+            "api_key": api_key,
+            "model": model,
+            "voice": voice,
+            "output_medium": "voice",
+        }
+        _apply_realtime_fields(params_kwargs, provider, plan)
+        return DograhUltravoxRealtimeLLMService(
+            params=DograhUltravoxOneShotInputParams(**params_kwargs),
+            settings=UltravoxRealtimeLLMSettings(
                 model=model,
                 output_medium="voice",
             ),
         )
     elif provider == ServiceProviders.GOOGLE_REALTIME.value:
-        from api.services.pipecat.realtime.gemini_live import (
-            DograhGeminiLiveLLMService,
-        )
-
         # Gemini Live enables input/output audio transcription by default
         # in its _connect() method — no need to configure it explicitly.
         settings_kwargs = {
@@ -1192,15 +1825,16 @@ def create_realtime_llm_service(user_config, audio_config: "AudioConfig"):
         temperature = getattr(realtime_config, "temperature", None)
         if temperature is not None:
             settings_kwargs["temperature"] = temperature
+        _apply_realtime_fields(
+            settings_kwargs,
+            provider,
+            coerce_settings(plan, _GEMINI_REALTIME_COERCIONS),
+        )
         return DograhGeminiLiveLLMService(
             api_key=api_key,
-            settings=DograhGeminiLiveLLMService.Settings(**settings_kwargs),
+            settings=GeminiLiveLLMSettings(**settings_kwargs),
         )
     elif provider == ServiceProviders.GOOGLE_VERTEX_REALTIME.value:
-        from api.services.pipecat.realtime.gemini_live_vertex import (
-            DograhGeminiLiveVertexLLMService,
-        )
-
         project_id = getattr(realtime_config, "project_id", None)
         location = getattr(realtime_config, "location", None) or "us-east4"
         credentials = getattr(realtime_config, "credentials", None)
@@ -1214,16 +1848,18 @@ def create_realtime_llm_service(user_config, audio_config: "AudioConfig"):
         temperature = getattr(realtime_config, "temperature", None)
         if temperature is not None:
             settings_kwargs["temperature"] = temperature
+        _apply_realtime_fields(
+            settings_kwargs,
+            provider,
+            coerce_settings(plan, _GEMINI_REALTIME_COERCIONS),
+        )
         return DograhGeminiLiveVertexLLMService(
             credentials=credentials,
             project_id=project_id,
             location=location,
-            settings=DograhGeminiLiveVertexLLMService.Settings(**settings_kwargs),
+            settings=GeminiLiveVertexLLMSettings(**settings_kwargs),
         )
     elif provider == ServiceProviders.AZURE_REALTIME.value:
-        from api.services.pipecat.realtime.azure_realtime import (
-            DograhAzureRealtimeLLMService,
-        )
         from pipecat.services.openai.realtime.events import (
             AudioConfiguration,
             AudioInput,
@@ -1261,21 +1897,25 @@ def create_realtime_llm_service(user_config, audio_config: "AudioConfig"):
                 "",
             )
         )
+        session_properties = SessionProperties(
+            audio=AudioConfiguration(
+                input=AudioInput(
+                    transcription=InputAudioTranscription(),
+                ),
+                output=AudioOutput(
+                    voice=voice or "alloy",
+                ),
+            ),
+        )
+        _apply_realtime_fields(
+            session_properties, provider, plan, _OPENAI_REALTIME_WRAPPERS
+        )
         return DograhAzureRealtimeLLMService(
             api_key=api_key,
             base_url=wss_url,
-            settings=DograhAzureRealtimeLLMService.Settings(
+            settings=AzureRealtimeLLMSettings(
                 model=model,
-                session_properties=SessionProperties(
-                    audio=AudioConfiguration(
-                        input=AudioInput(
-                            transcription=InputAudioTranscription(),
-                        ),
-                        output=AudioOutput(
-                            voice=voice or "alloy",
-                        ),
-                    ),
-                ),
+                session_properties=session_properties,
             ),
         )
     else:
@@ -1288,8 +1928,18 @@ def create_llm_service(
     user_config,
     correlation_id: str | None = None,
     usage_context: str | None = None,
+    *,
+    tuning: dict | None = None,
+    role: LLMRole = "conversation",
 ):
-    """Create and return appropriate LLM service based on user configuration."""
+    """Create and return appropriate LLM service based on user configuration.
+
+    Args:
+        tuning: The run's ``service_tuning`` document.
+        role: Which LLM instance this is. ``llm`` tuning reaches the
+            conversation LLM always and the secondary instances only when
+            ``service_tuning.scope`` opts them in.
+    """
     provider = user_config.llm.provider
     model = user_config.llm.model
     api_key = user_config.llm.api_key
@@ -1329,6 +1979,7 @@ def create_llm_service(
         api_key,
         correlation_id=correlation_id,
         usage_context=usage_context,
+        tuning=llm_document_for_role(tuning, role),
         **kwargs,
     )
 

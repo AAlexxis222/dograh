@@ -356,3 +356,137 @@ def test_workflow_effective_layers_are_consistent():
     assert layers.effective["max_call_duration"] == 600
     assert layers.effective["dictionary"] == "mine"
     assert layers.base["dictionary"] == ""  # schema default
+
+
+def test_flux_thresholds_are_clamped_with_warning():
+    resolved = resolve_effective_workflow_configurations(
+        organization_defaults={
+            "service_tuning": {
+                "stt": {
+                    "deepgram": {
+                        "settings": {"eot_threshold": 1.4, "eot_timeout_ms": 100}
+                    }
+                }
+            }
+        },
+        definition_configurations={},
+    )
+    s = resolved.effective["service_tuning"]["stt"]["deepgram"]["settings"]
+    assert s["eot_threshold"] == 1.0 and s["eot_timeout_ms"] == 500
+    assert any(
+        w.startswith(
+            "service_tuning.stt.deepgram.settings.eot_threshold: 1.4 clamped to 1.0"
+        )
+        for w in resolved.warnings
+    )
+
+
+def test_eager_above_eot_is_lowered_to_eot():
+    resolved = resolve_effective_workflow_configurations(
+        organization_defaults={
+            "service_tuning": {"stt": {"dograh": {"settings": {"eot_threshold": 0.6}}}}
+        },
+        definition_configurations={
+            "service_tuning": {
+                "stt": {"dograh": {"settings": {"eager_eot_threshold": 0.8}}}
+            }
+        },
+    )
+    s = resolved.effective["service_tuning"]["stt"]["dograh"]["settings"]
+    assert s["eager_eot_threshold"] == 0.6
+    assert (
+        "service_tuning.stt.dograh.settings.eager_eot_threshold: 0.8 lowered to eot_threshold 0.6"
+        in resolved.warnings
+    )
+
+
+def test_eager_null_is_kept_and_not_clamped():
+    resolved = resolve_effective_workflow_configurations(
+        organization_defaults={
+            "service_tuning": {
+                "stt": {"deepgram": {"settings": {"eager_eot_threshold": 0.5}}}
+            }
+        },
+        definition_configurations={
+            "service_tuning": {
+                "stt": {"deepgram": {"settings": {"eager_eot_threshold": None}}}
+            }
+        },
+    )
+    assert (
+        resolved.effective["service_tuning"]["stt"]["deepgram"]["settings"][
+            "eager_eot_threshold"
+        ]
+        is None
+    )
+
+
+def test_bool_thresholds_are_left_alone_by_the_cross_field_rule():
+    # ``isinstance(True, int)`` is True, so the invariant used to compare a
+    # bool as 1 and emit "True lowered to eot_threshold 0.7". The clamp
+    # already skips bools (cascade.py:196) and so does this now: the PUT
+    # rejects them, and a document stored before it did must not grow a
+    # nonsense warning.
+    resolved = resolve_effective_workflow_configurations(
+        organization_defaults={},
+        definition_configurations={
+            "service_tuning": {
+                "stt": {
+                    "dograh": {
+                        "settings": {"eager_eot_threshold": True, "eot_threshold": 0.7}
+                    }
+                }
+            }
+        },
+    )
+    s = resolved.effective["service_tuning"]["stt"]["dograh"]["settings"]
+    assert s["eager_eot_threshold"] is True
+    assert not [w for w in resolved.warnings if "eager_eot_threshold" in w]
+
+
+def test_elevenlabs_ws_speed_clamped_to_supported_range():
+    resolved = resolve_effective_workflow_configurations(
+        organization_defaults={},
+        definition_configurations={
+            "service_tuning": {"tts": {"elevenlabs": {"settings": {"speed": 1.9}}}}
+        },
+    )
+    assert (
+        resolved.effective["service_tuning"]["tts"]["elevenlabs"]["settings"]["speed"]
+        == 1.2
+    )
+
+
+@pytest.mark.parametrize(
+    "kind,provider,name,written,used",
+    [
+        # Ultravox call-creation body: temperature 0-1, maxDuration in seconds
+        # (ultravox/llm.py:348 renders the timedelta as "<seconds>s").
+        ("realtime", "ultravox_realtime", "temperature", 1.7, 1.0),
+        ("realtime", "ultravox_realtime", "max_duration", 5, 10),
+        ("realtime", "ultravox_realtime", "max_duration", 7200, 3600),
+        # elevenlabs/stt.py:196-197 documents both ranges on the field.
+        ("stt", "elevenlabs", "vad_threshold", 0.95, 0.9),
+        ("stt", "elevenlabs", "vad_threshold", 0.05, 0.1),
+        ("stt", "elevenlabs", "vad_silence_threshold_secs", 0.1, 0.3),
+        ("stt", "elevenlabs", "vad_silence_threshold_secs", 5.0, 3.0),
+    ],
+)
+def test_ultravox_and_elevenlabs_vad_knobs_are_clamped(
+    kind, provider, name, written, used
+):
+    resolved = resolve_effective_workflow_configurations(
+        organization_defaults={},
+        definition_configurations={
+            "service_tuning": {kind: {provider: {"settings": {name: written}}}}
+        },
+    )
+    assert (
+        resolved.effective["service_tuning"][kind][provider]["settings"][name] == used
+    )
+    assert any(
+        w.startswith(
+            f"service_tuning.{kind}.{provider}.settings.{name}: {written} clamped to {used}"
+        )
+        for w in resolved.warnings
+    )

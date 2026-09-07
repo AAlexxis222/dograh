@@ -797,6 +797,32 @@ export interface components {
             from_phone_number_id?: number | null;
         };
         /**
+         * LLMScope
+         * @description Which secondary LLM instances the ``llm`` tuning also applies to.
+         */
+        LLMScope: {
+            /**
+             * Inference
+             * @default false
+             */
+            inference: boolean;
+            /**
+             * Extraction
+             * @default false
+             */
+            extraction: boolean;
+            /**
+             * Voicemail
+             * @default false
+             */
+            voicemail: boolean;
+            /**
+             * Filler
+             * @default false
+             */
+            filler: boolean;
+        };
+        /**
          * McpToolConfig
          * @description Configuration for a customer MCP server tool definition.
          */
@@ -1066,6 +1092,21 @@ export interface components {
          * @enum {string}
          */
         PropertyType: "string" | "number" | "boolean" | "options" | "multi_options" | "fixed_collection" | "json" | "tool_refs" | "document_refs" | "recording_ref" | "credential_ref" | "mention_textarea" | "url";
+        /** ProviderTuning */
+        ProviderTuning: {
+            /** Settings */
+            settings?: {
+                [key: string]: unknown;
+            };
+            /** Ctor */
+            ctor?: {
+                [key: string]: unknown;
+            };
+            /** Options */
+            options?: {
+                [key: string]: unknown;
+            };
+        };
         /**
          * RecordingListResponseSchema
          * @description Response schema for list of recordings.
@@ -1114,6 +1155,26 @@ export interface components {
             created_at: string;
             /** Is Active */
             is_active: boolean;
+        };
+        /** ServiceTuning */
+        ServiceTuning: {
+            /** Stt */
+            stt?: {
+                [key: string]: components["schemas"]["ProviderTuning"];
+            };
+            /** Tts */
+            tts?: {
+                [key: string]: components["schemas"]["ProviderTuning"];
+            };
+            /** Llm */
+            llm?: {
+                [key: string]: components["schemas"]["ProviderTuning"];
+            };
+            /** Realtime */
+            realtime?: {
+                [key: string]: components["schemas"]["ProviderTuning"];
+            };
+            scope?: components["schemas"]["LLMScope"];
         };
         /**
          * ToolParameter
@@ -1372,6 +1433,8 @@ export interface components {
             external_pbx_lead_headers?: string[];
             voicemail_detection?: components["schemas"]["VoicemailDetectionConfiguration"];
             transcript_configuration?: components["schemas"]["TranscriptConfiguration"];
+            /** @description Provider knobs applied on top of the model configuration: {stt|tts|llm|realtime: {provider|_all: {settings, ctor, options}}, scope}. Keys are validated against the provider's real settings; explicit null means 'provider default' and is only accepted on nullable fields. */
+            service_tuning?: components["schemas"]["ServiceTuning"] | null;
             /** User Turn Stop Timeout */
             user_turn_stop_timeout?: number | null;
             /** Model Overrides */
@@ -1480,6 +1543,7 @@ export type HttpApiConfig = components['schemas']['HttpApiConfig'];
 export type HttpApiToolDefinition = components['schemas']['HttpApiToolDefinition'];
 export type HttpTransferResolverConfig = components['schemas']['HttpTransferResolverConfig'];
 export type InitiateCallRequest = components['schemas']['InitiateCallRequest'];
+export type LlmScope = components['schemas']['LLMScope'];
 export type McpToolConfig = components['schemas']['McpToolConfig'];
 export type McpToolDefinition = components['schemas']['McpToolDefinition'];
 export type NodeCategory = components['schemas']['NodeCategory'];
@@ -1493,8 +1557,10 @@ export type PropertyOption = components['schemas']['PropertyOption'];
 export type PropertyRendererOptions = components['schemas']['PropertyRendererOptions'];
 export type PropertySpec = components['schemas']['PropertySpec'];
 export type PropertyType = components['schemas']['PropertyType'];
+export type ProviderTuning = components['schemas']['ProviderTuning'];
 export type RecordingListResponseSchema = components['schemas']['RecordingListResponseSchema'];
 export type RecordingResponseSchema = components['schemas']['RecordingResponseSchema'];
+export type ServiceTuning = components['schemas']['ServiceTuning'];
 export type ToolParameter = components['schemas']['ToolParameter'];
 export type ToolResponse = components['schemas']['ToolResponse'];
 export type TranscriptConfiguration = components['schemas']['TranscriptConfiguration'];

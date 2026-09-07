@@ -24,6 +24,7 @@ from api.services.configuration.cascade import (
 from api.services.configuration.secrets_registry import (
     REJECTED_SECRET_NAMES,
     find_secret_named_paths,
+    find_secret_paths,
     mask_secrets,
 )
 
@@ -62,6 +63,14 @@ def validate_organization_workflow_configuration_document(document: dict) -> Non
             + ". Drop these keys from the request; a value read back from the "
             "GET is masked, and sending a masked value back is refused the "
             "same way."
+        )
+    # Registered paths whose leaf name is not itself secret-looking (e.g.
+    # service_tuning.*.*.ctor.url) never trip the named-key scan above.
+    registered = find_secret_paths(document)
+    if registered:
+        raise OrganizationWorkflowConfigurationRejected(
+            "organization defaults cannot carry secrets: "
+            + ", ".join(".".join(path) for path in registered)
         )
     size = len(json.dumps(document).encode("utf-8"))
     if size > MAX_DOCUMENT_BYTES:

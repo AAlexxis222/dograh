@@ -55,7 +55,8 @@ SECRET_PATHS: tuple[tuple[str, ...], ...] = tuple(
     ]
     + [("model_configuration_v2_override", "**", leaf) for leaf in SECRET_LEAF_NAMES]
     + [("voicemail_detection", "api_key")]
-    # Later PRs append: ("turn", "analyzer", "url"), ("service_tuning", "*", "ctor", "url")
+    + [("service_tuning", "*", "*", "ctor", "url")]
+    # Later PRs append: ("turn", "analyzer", "url")
 )
 
 

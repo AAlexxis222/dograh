@@ -5,7 +5,7 @@ stored, while honouring masked API keys.
 """
 
 import copy
-from typing import Dict
+from typing import Any, Dict
 
 from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
 from api.services.configuration.masking import (
@@ -13,8 +13,10 @@ from api.services.configuration.masking import (
     SERVICE_SECRET_FIELDS,
     VOICEMAIL_DETECTION_KEY,
     contains_masked_key,
+    is_mask_of,
     resolve_masked_api_keys,
 )
+from api.services.configuration.secrets_registry import find_secret_paths
 
 SERVICE_FIELDS = ("llm", "tts", "stt", "embeddings", "realtime")
 
@@ -148,6 +150,48 @@ def _merge_voicemail_secret(merged: dict, existing_config: dict) -> None:
     incoming["api_key"] = existing_key
 
 
+# Root keys whose registered secrets are restored by their own dedicated
+# merge above (voicemail_detection) or by an explicit masked-value check
+# elsewhere (model_overrides via MODEL_OVERRIDE_FIELDS below;
+# model_configuration_v2_override in ai_model_configuration.py — see the
+# secrets_registry.py module docstring for why that one is deliberately not
+# restored here).
+_SECRET_ROOTS_MERGED_ELSEWHERE = frozenset(
+    {VOICEMAIL_DETECTION_KEY, "model_overrides", "model_configuration_v2_override"}
+)
+
+
+def _merge_registered_secret_leaves(merged: dict, existing_config: dict) -> None:
+    """Restore any other registered secret leaf (e.g. ``service_tuning.*.*.ctor.url``)
+    when the incoming value is missing or the mask of the stored one."""
+    for path in find_secret_paths(existing_config):
+        if path[0] in _SECRET_ROOTS_MERGED_ELSEWHERE:
+            continue
+        existing_node: Any = existing_config
+        incoming_node: Any = merged
+        for part in path[:-1]:
+            if not isinstance(existing_node, dict) or part not in existing_node:
+                existing_node = None
+                break
+            existing_node = existing_node[part]
+            if not isinstance(incoming_node, dict):
+                incoming_node = None
+                continue
+            incoming_node = incoming_node.get(part)
+        if not isinstance(existing_node, dict) or not isinstance(incoming_node, dict):
+            continue
+        leaf = path[-1]
+        existing_value = existing_node.get(leaf)
+        if not isinstance(existing_value, str) or not existing_value:
+            continue
+        incoming_value = incoming_node.get(leaf)
+        if incoming_value is None or (
+            isinstance(incoming_value, str)
+            and is_mask_of(incoming_value, existing_value)
+        ):
+            incoming_node[leaf] = existing_value
+
+
 def merge_workflow_configuration_secrets(
     incoming_config: dict | None,
     existing_config: dict | None,
@@ -167,6 +211,7 @@ def merge_workflow_configuration_secrets(
 
     merged = copy.deepcopy(incoming_config)
     _merge_voicemail_secret(merged, existing_config)
+    _merge_registered_secret_leaves(merged, existing_config)
 
     incoming_overrides = merged.get("model_overrides")
     existing_overrides = existing_config.get("model_overrides")

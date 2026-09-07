@@ -42,6 +42,7 @@ from api.services.pipecat.pipeline_metrics_aggregator import (
 from api.services.pipecat.pre_call_fetch import execute_pre_call_fetch
 from api.services.pipecat.recording_audio_cache import create_recording_audio_fetcher
 from api.services.pipecat.service_factory import create_llm_service
+from api.services.pipecat.service_tuning import llm_tuning_applies
 from api.services.pipecat.tracing_config import (
     build_remote_parent_context,
     get_trace_url,
@@ -486,7 +487,10 @@ async def execute_text_chat_pending_turn(
         initial_context=base_initial_context,
     )
 
-    llm = create_llm_service(user_config, correlation_id=mps_correlation_id)
+    service_tuning = run_configs.get("service_tuning")
+    llm = create_llm_service(
+        user_config, correlation_id=mps_correlation_id, tuning=service_tuning
+    )
     inference_llm = llm
     call_dispositions = WorkflowConfigurationDefaults.model_validate(
         {"call_dispositions": run_configs.get("call_dispositions") or []}
@@ -494,16 +498,32 @@ async def execute_text_chat_pending_turn(
     needs_extraction_llm = workflow_graph.uses_variable_extraction() or bool(
         call_dispositions
     )
-    variable_extraction_llm = (
-        create_llm_service(
+    # Sharing is only safe when the instance on offer was tuned exactly as
+    # extraction would be. Here that instance is always the conversation LLM;
+    # run_pipeline has a realtime path where it is the inference LLM instead.
+    shares_existing_llm = llm_tuning_applies(
+        service_tuning, "conversation"
+    ) == llm_tuning_applies(service_tuning, "extraction")
+    if (
+        needs_extraction_llm
+        and user_config.llm.provider == ServiceProviders.DOGRAH.value
+    ):
+        variable_extraction_llm = create_llm_service(
             user_config,
             correlation_id=mps_correlation_id,
             usage_context="variable_extraction",
+            tuning=service_tuning,
+            role="extraction",
         )
-        if needs_extraction_llm
-        and user_config.llm.provider == ServiceProviders.DOGRAH.value
-        else llm
-    )
+    elif needs_extraction_llm and not shares_existing_llm:
+        variable_extraction_llm = create_llm_service(
+            user_config,
+            correlation_id=mps_correlation_id,
+            tuning=service_tuning,
+            role="extraction",
+        )
+    else:
+        variable_extraction_llm = llm
 
     runtime_configuration = {
         "llm_provider": user_config.llm.provider,
