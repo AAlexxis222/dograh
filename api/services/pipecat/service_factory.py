@@ -395,6 +395,19 @@ _OPENAI_MODEL_WIRES = frozenset(
 )
 
 
+def _chat_llm_base(model: str) -> dict:
+    """Base settings for a chat/completions branch that defaults temperature.
+
+    Today's ``temperature: 0.1`` default, except on a gpt-5 reasoning model,
+    which rejects the field over this API: the default would start the run
+    and fail every turn (§1.2), and the plan rewrite in ``_gpt5_chat_plan``
+    never sees the base kwargs.
+    """
+    if _is_gpt5_reasoning(model):
+        return {"model": model}
+    return {"model": model, "temperature": 0.1}
+
+
 def _gpt5_chat_plan(plan, model: str):
     """Translate an LLM plan into what a gpt-5 reasoning model accepts over
     chat/completions; a no-op on any other model.
@@ -1468,9 +1481,7 @@ def create_llm_service_from_provider(
         )
         return OpenAILLMService(
             api_key=api_key,
-            settings=build_settings(
-                OpenAILLMSettings, {"model": model, "temperature": 0.1}, plan
-            ),
+            settings=build_settings(OpenAILLMSettings, _chat_llm_base(model), plan),
             **kwargs,
         )
     elif provider == ServiceProviders.GROQ.value:
@@ -1487,9 +1498,7 @@ def create_llm_service_from_provider(
             kwargs["base_url"] = base_url
         return OpenRouterLLMService(
             api_key=api_key,
-            settings=build_settings(
-                OpenRouterLLMSettings, {"model": model, "temperature": 0.1}, plan
-            ),
+            settings=build_settings(OpenRouterLLMSettings, _chat_llm_base(model), plan),
             **kwargs,
         )
     elif provider == ServiceProviders.GOOGLE.value:
@@ -1515,9 +1524,7 @@ def create_llm_service_from_provider(
         return AzureLLMService(
             api_key=api_key,
             endpoint=endpoint,
-            settings=build_settings(
-                AzureLLMSettings, {"model": model, "temperature": 0.1}, plan
-            ),
+            settings=build_settings(AzureLLMSettings, _chat_llm_base(model), plan),
         )
     elif provider == ServiceProviders.DOGRAH.value:
         return DograhLLMService(

@@ -278,3 +278,6 @@ worked:
   `verbosity`.** They were treated as reasoning models, which they are not: they accept a
   temperature and reject the two extras. An untuned `gpt-5-chat` workflow now sends the default
   temperature and no extras.
+- **Untuned `gpt-5` reasoning models on OpenRouter and Azure no longer receive the default
+  `temperature`.** Those branches sent `0.1` regardless of model, which those models reject over
+  chat completions. Every other model on those wires still gets `0.1`.

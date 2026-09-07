@@ -124,3 +124,35 @@ def test_gpt5_max_tokens_is_translated_on_every_openai_compatible_wire(provider,
         )
     )
     assert p["max_completion_tokens"] == 400 and p["max_tokens"] is NOT_GIVEN
+
+
+# Untuned, the openrouter and azure branches hardcode ``temperature: 0.1`` in
+# the base kwargs, which the gpt-5 rule (a plan rewrite) never saw, so an
+# untuned gpt-5 workflow on those wires sent a temperature the model rejects.
+@pytest.mark.parametrize(
+    "provider, model, kwargs",
+    [
+        ("openrouter", "openai/gpt-5-mini", {}),
+        ("azure", "gpt-5", {"endpoint": "https://example.openai.azure.com"}),
+    ],
+)
+def test_untuned_gpt5_on_openrouter_and_azure_sends_no_temperature(
+    provider, model, kwargs
+):
+    llm = create_llm_service_from_provider(
+        provider=provider, model=model, api_key="k", **kwargs
+    )
+    assert chat_payload(llm)["temperature"] is NOT_GIVEN
+
+
+@pytest.mark.parametrize(
+    "provider, kwargs",
+    [("openrouter", {}), ("azure", {"endpoint": "https://example.openai.azure.com"})],
+)
+def test_control_untuned_gpt41_on_openrouter_and_azure_keeps_temperature(
+    provider, kwargs
+):
+    llm = create_llm_service_from_provider(
+        provider=provider, model="gpt-4.1", api_key="k", **kwargs
+    )
+    assert chat_payload(llm)["temperature"] == 0.1
