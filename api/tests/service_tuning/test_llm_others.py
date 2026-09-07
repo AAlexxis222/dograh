@@ -7,6 +7,8 @@ the dict handed to ``GenerateContentConfig``.
 
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
 from openai import NOT_GIVEN
 
 from api.services.pipecat.service_factory import (
@@ -86,3 +88,39 @@ def test_llm_tuning_does_not_apply_to_extraction_role_by_default():
         role="extraction",
     )
     assert chat_payload(llm)["temperature"] == 0.1
+
+
+# The gpt-5 chat/completions rule is keyed to the model, so it holds on every
+# OpenAI-compatible wire that can carry an OpenAI model, not only on the
+# ``openai`` branch (#12).
+@pytest.mark.parametrize(
+    "provider, model",
+    [("dograh", "gpt-5-mini"), ("openrouter", "openai/gpt-5-mini")],
+)
+def test_gpt5_temperature_fails_by_name_on_every_openai_compatible_wire(
+    provider, model
+):
+    with pytest.raises(HTTPException) as info:
+        create_llm_service_from_provider(
+            provider=provider,
+            model=model,
+            api_key="k",
+            tuning={"llm": {"_all": {"settings": {"temperature": 0.3}}}},
+        )
+    assert info.value.status_code == 400 and model in info.value.detail
+
+
+@pytest.mark.parametrize(
+    "provider, model",
+    [("dograh", "gpt-5-mini"), ("openrouter", "openai/gpt-5-mini")],
+)
+def test_gpt5_max_tokens_is_translated_on_every_openai_compatible_wire(provider, model):
+    p = chat_payload(
+        create_llm_service_from_provider(
+            provider=provider,
+            model=model,
+            api_key="k",
+            tuning={"llm": {"_all": {"settings": {"max_tokens": 400}}}},
+        )
+    )
+    assert p["max_completion_tokens"] == 400 and p["max_tokens"] is NOT_GIVEN

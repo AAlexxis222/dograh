@@ -379,14 +379,23 @@ def test_all_section_uses_common_fields_only():
         _validate({"llm": {"_all": {"settings": {"reasoning_effort": "low"}}}})
 
 
-def test_tts_all_silence_time_is_gated_while_no_service_pushes_silence():
-    # The only ``tts._all`` ctor kwarg, and inert: ``silence_time_s`` is read
-    # solely under ``push_silence_after_stop`` (tts_service.py:902), which
-    # nothing sets. Declared and rejected by name rather than stored as a
-    # placebo; the row itself stays, so the name survives the flip.
+def test_tts_all_silence_time_is_accepted_now_that_services_push_silence():
+    # The only ``tts._all`` ctor kwarg. It sizes the silence pushed after a
+    # TTS turn (tts_service.py:902), which the factory now enables whenever
+    # the knob is set, so the gate is open and the value is stored.
     assert specs.SPECS[("tts", specs.ALL)].ctor_allowed == {"silence_time_s"}
-    with pytest.raises(ValidationError, match="not wired in this build"):
-        _validate({"tts": {"_all": {"ctor": {"silence_time_s": 0.4}}}})
+    assert specs.TTS_SILENCE_AFTER_STOP_AVAILABLE is True
+    cfg = _validate({"tts": {"_all": {"ctor": {"silence_time_s": 0.4}}}})
+    assert cfg.service_tuning.tts["_all"].ctor == {"silence_time_s": 0.4}
+
+
+def test_fields_raises_on_a_name_that_is_not_a_field():
+    # A misspelt exclude would subtract nothing and leave the knob it meant
+    # to close wide open; the guard is import-time, so it needs one test.
+    from pipecat.services.openai.base_llm import OpenAILLMSettings
+
+    with pytest.raises(ValueError, match=r"OpenAILLMSettings: not fields: \['typo'\]"):
+        specs._fields(OpenAILLMSettings, "typo")
 
 
 def test_scope_flags_and_forbid_extra():

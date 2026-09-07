@@ -1,7 +1,11 @@
+from dataclasses import replace
+
 import pytest
 from fastapi import HTTPException
+from loguru import logger
 
 from api.services.configuration.registry import ServiceProviders
+from api.services.pipecat import service_factory
 from api.services.pipecat.service_factory import create_stt_service
 from api.tests.service_tuning._transport import (
     audio_config,
@@ -194,3 +198,97 @@ async def test_nova_endpointing_null_omits_it():
         tuning={"stt": {"deepgram": {"settings": {"endpointing": None}}}},
     )
     assert "endpointing" not in await capture_nova_connect(service)
+
+
+# --- Model-dependent drops are logged, one line per knob (#8) --------------
+
+
+@pytest.fixture
+def warnings():
+    records = []
+    sink = logger.add(lambda m: records.append(m.record["message"]), level="WARNING")
+    yield records
+    logger.remove(sink)
+
+
+def _dropped(warnings):
+    return [w for w in warnings if w.startswith("service_tuning:")]
+
+
+def test_nova_logs_each_flux_only_knob_it_drops(warnings):
+    create_stt_service(
+        user_config_stt(ServiceProviders.DEEPGRAM.value, model="nova-3", language=None),
+        audio_config(),
+        tuning={
+            "stt": {
+                "deepgram": {
+                    "settings": {"eot_threshold": 0.8, "numerals": True},
+                    "ctor": {"url": "wss://proxy.example/v2/listen", "tag": ["a"]},
+                }
+            }
+        },
+    )
+    dropped = _dropped(warnings)
+    assert any(
+        "stt.deepgram.settings.eot_threshold" in w and "nova-3" in w for w in dropped
+    )
+    assert any("stt.deepgram.ctor.url" in w and "nova-3" in w for w in dropped)
+    assert not any("numerals" in w or "ctor.tag" in w for w in dropped)
+
+
+def test_flux_logs_the_nova_only_knob_and_the_hints_it_drops(warnings):
+    create_stt_service(
+        user_config_stt(
+            ServiceProviders.DEEPGRAM.value, model="flux-general-en", language="es"
+        ),
+        audio_config(),
+        tuning={
+            "stt": {
+                "deepgram": {"settings": {"endpointing": 300, "language_hints": ["es"]}}
+            }
+        },
+    )
+    dropped = _dropped(warnings)
+    assert any(
+        "stt.deepgram.settings.endpointing" in w and "flux-general-en" in w
+        for w in dropped
+    )
+    assert any(
+        "stt.deepgram.settings.language_hints" in w and "flux-general-multi" in w
+        for w in dropped
+    )
+
+
+def test_control_no_drop_logs_nothing(warnings):
+    create_stt_service(
+        user_config_stt(**FLUX),
+        audio_config(),
+        tuning={"stt": {"deepgram": {"settings": {"eot_threshold": 0.8}}}},
+    )
+    assert not _dropped(warnings)
+
+
+# --- The Nova/Flux split is derived from the specs table, not spelt out (§B)
+
+
+def test_nova_split_is_derived_from_the_specs_table(monkeypatch):
+    assert service_factory._nova_shared_settings() == {"numerals", "keyterm"}
+    assert service_factory._nova_ctor_allowed() == {"mip_opt_out", "tag"}
+    # If the table changes, the split follows it.
+    monkeypatch.setattr(
+        service_factory,
+        "NOVA_SETTINGS",
+        service_factory.NOVA_SETTINGS | {"eot_threshold"},
+    )
+    spec = service_factory.SPECS[("stt", "deepgram")]
+    monkeypatch.setitem(
+        service_factory.SPECS,
+        ("stt", "deepgram"),
+        replace(spec, ctor_allowed=spec.ctor_allowed | {"extra_kw"}),
+    )
+    assert service_factory._nova_shared_settings() == {
+        "numerals",
+        "keyterm",
+        "eot_threshold",
+    }
+    assert service_factory._nova_ctor_allowed() == {"mip_opt_out", "tag", "extra_kw"}

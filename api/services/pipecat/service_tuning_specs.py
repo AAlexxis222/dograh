@@ -219,6 +219,7 @@ def _fields(settings_cls: type, *exclude: str) -> frozenset[str]:
 FLUX_SETTINGS = _fields(
     DeepgramFluxSTTSettings
 )  # eager_eot_threshold, eot_threshold, eot_timeout_ms, keyterm, min_confidence, numerals, language_hints
+NOVA_SETTINGS = _fields(DeepgramSTTSettings)
 
 SPECS: dict[tuple[str, str], TuningSpec] = {}
 # Deepgram is one provider with two wire protocols; the allow-list is the
@@ -227,7 +228,7 @@ SPECS[("stt", "deepgram")] = TuningSpec(
     "stt",
     "deepgram",
     None,
-    FLUX_SETTINGS | _fields(DeepgramSTTSettings),
+    FLUX_SETTINGS | NOVA_SETTINGS,
     service_classes=(DeepgramFluxSTTService, DeepgramSTTService),
     ctor_allowed=frozenset({"url", "mip_opt_out", "tag"}),
     ctor_types={"url": str, "mip_opt_out": bool, "tag": list},
@@ -917,16 +918,15 @@ def _scope_error(document: dict[str, Any]) -> list[str]:
     ]
 
 
-TTS_SILENCE_AFTER_STOP_AVAILABLE = False
+TTS_SILENCE_AFTER_STOP_AVAILABLE = True
 """Whether this build pushes silence after a TTS turn ends.
 
 ``silence_time_s`` sizes that silence, and it is read in exactly one place,
-under ``if self._push_silence_after_stop`` (tts_service.py:902-903). That flag
-is a constructor parameter defaulting to False (:159) that no branch of this
-factory and no pipecat subclass ever sets, so the knob cannot reach anything:
-a placebo, which is the one failure this table exists to prevent (§1.2). The
-factory plumbing stays wired, so enabling ``push_silence_after_stop`` and
-flipping this constant is the whole change.
+under ``if self._push_silence_after_stop`` (tts_service.py:902-903), a
+constructor parameter defaulting to False (:159). Wired: ``create_tts_service``
+passes ``push_silence_after_stop=True`` to every TTS branch but Camb whenever
+``tts._all.ctor.silence_time_s`` is set, and leaves it False otherwise. The
+gate stays so the knob has one place to be turned off again.
 """
 
 _SILENCE_AFTER_STOP_KNOB = ("tts", ALL, "ctor", "silence_time_s")

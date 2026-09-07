@@ -183,3 +183,24 @@ def test_all_section_silence_time_is_not_splatted_into_the_provider_ctor():
             tuning=tuning,
         )
     assert "silence_time_s" not in mock.call_args.kwargs
+
+
+def test_all_section_silence_time_enables_push_silence_after_stop():
+    # ``silence_time_s`` is only read under ``push_silence_after_stop``
+    # (tts_service.py:902-903), so setting the knob has to switch that on or
+    # it sizes a silence nobody pushes.
+    tuning = {"tts": {"_all": {"ctor": {"silence_time_s": 0.4}}}}
+    with patch("api.services.pipecat.service_factory.CartesiaTTSService") as mock:
+        create_tts_service(
+            user_config_tts("cartesia", model="sonic-2"), audio_config(), tuning=tuning
+        )
+    kwargs = mock.call_args.kwargs
+    assert kwargs["push_silence_after_stop"] is True and kwargs["silence_time_s"] == 0.4
+    # Camb stays the one branch built without either (C8).
+    with patch("pipecat.services.camb.tts.CambTTSService") as mock:
+        create_tts_service(
+            user_config_tts("camb", model="mars-flash", voice="147320"),
+            audio_config(),
+            tuning=tuning,
+        )
+    assert "push_silence_after_stop" not in mock.call_args.kwargs
