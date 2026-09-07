@@ -441,14 +441,15 @@ class TestQueuedSpeechMuteOwnership:
         assert await engine.should_mute_user(TTSSpeakFrame("anything")) is False
 
     @pytest.mark.asyncio
-    async def test_partial_playback_queue_keeps_user_muted(
+    async def test_playback_queue_failure_before_audio_releases_mute(
         self, simple_workflow: WorkflowGraph
     ):
-        """A frame failing mid-utterance must not unmute the queued audio.
+        """Failing before the audio frame has queued nothing audible.
 
-        ``play_audio`` pushes several frames. Once the first has reached the
-        transport the utterance is on its way to the caller, so the hold
-        belongs to playback even though the call raised.
+        ``play_audio`` pushes TTSStarted, the transcript, the audio and
+        TTSStopped. The transport only starts speaking on the audio frame, so
+        failing before it means no BotStoppedSpeakingFrame will ever come and
+        the hold has to be released by its owner.
         """
         llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
         engine, _transport, _task, _strategy, _agg = await _build_engine_and_pipeline(
@@ -469,9 +470,61 @@ class TestQueuedSpeechMuteOwnership:
 
         await _run_transition_with_audio(engine)
 
+        assert _mute_holds(engine) == set()
+        assert await engine.should_mute_user(TTSSpeakFrame("anything")) is False
+
+    @pytest.mark.asyncio
+    async def test_playback_queue_failure_after_audio_keeps_user_muted(
+        self, simple_workflow: WorkflowGraph
+    ):
+        """A frame failing once the audio is queued must not unmute it.
+
+        The utterance is on its way to the caller, so the hold belongs to
+        playback even though ``play_audio`` raised.
+        """
+        llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
+        engine, _transport, _task, _strategy, _agg = await _build_engine_and_pipeline(
+            simple_workflow, llm
+        )
+        engine.set_fetch_recording_audio(
+            AsyncMock(
+                return_value=SimpleNamespace(audio=b"\x00\x00", transcript="hello")
+            )
+        )
+        engine.set_transport_output(
+            SimpleNamespace(
+                queue_frame=AsyncMock(
+                    side_effect=[None, None, None, RuntimeError("transport gone")]
+                )
+            )
+        )
+
+        await _run_transition_with_audio(engine)
+
         assert engine._queued_speech_mute_pending == set()
         assert len(engine._queued_speech_mute_playing) == 1
         assert await engine.should_mute_user(TTSSpeakFrame("anything")) is True
+
+    @pytest.mark.asyncio
+    async def test_playback_end_releases_the_hold_it_was_armed_with(
+        self, simple_workflow: WorkflowGraph
+    ):
+        """The normal path: speech plays, and its end unmutes the user."""
+        llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
+        engine, _transport, _task, _strategy, _agg = await _build_engine_and_pipeline(
+            simple_workflow, llm
+        )
+        engine.mute_until_speech_playback_ends()
+        engine.arm_speech_playback()
+        waiter = asyncio.create_task(engine.wait_for_speech_playback())
+
+        await engine.should_mute_user(BotStartedSpeakingFrame())
+        assert await engine.should_mute_user(TTSSpeakFrame("anything")) is True
+        await engine.should_mute_user(BotStoppedSpeakingFrame())
+
+        assert await waiter is True
+        assert _mute_holds(engine) == set()
+        assert await engine.should_mute_user(TTSSpeakFrame("anything")) is False
 
     @pytest.mark.asyncio
     async def test_wait_for_speech_playback_start_timeout_keeps_other_holds(

@@ -19,6 +19,7 @@ from pipecat.frames.frames import (
     EndFrame,
     FunctionCallResultProperties,
     LLMContextFrame,
+    TTSAudioRawFrame,
     TTSSpeakFrame,
 )
 from pipecat.pipeline.worker import PipelineWorker
@@ -1124,6 +1125,10 @@ class PipecatEngine:
         )
         await self.task.queue_frame(frame_to_push)
 
+    def _next_queued_speech_mute_token(self) -> int:
+        self._queued_speech_mute_last_token += 1
+        return self._queued_speech_mute_last_token
+
     def acquire_queued_speech_mute(self) -> int:
         """Mute the user for one piece of queued speech, before it exists.
 
@@ -1132,8 +1137,7 @@ class PipecatEngine:
         token is the caller's own hold and releasing it leaves every other
         operation muted.
         """
-        self._queued_speech_mute_last_token += 1
-        token = self._queued_speech_mute_last_token
+        token = self._next_queued_speech_mute_token()
         self._queued_speech_mute_pending.add(token)
         return token
 
@@ -1141,26 +1145,25 @@ class PipecatEngine:
         """Mute the user for speech being queued right now.
 
         For speech that goes straight to the pipeline there is nothing to
-        release by hand: the hold ends with the BotStoppedSpeakingFrame that
-        closes playback.
+        release by hand: the hold ends with a BotStoppedSpeakingFrame.
         """
-        token = self.acquire_queued_speech_mute()
-        self._queued_speech_mute_pending.discard(token)
-        self._queued_speech_mute_playing.add(token)
+        self._queued_speech_mute_playing.add(self._next_queued_speech_mute_token())
 
     def queued_speech_frame_sink(
         self, token: int
     ) -> Callable[["Frame"], Awaitable[None]]:
         """Frame sink that hands *token* over to playback once audio is queued.
 
-        The first frame to reach the transport puts the utterance in flight, so
-        from then on the hold belongs to the BotStoppedSpeakingFrame that ends
-        it: a later frame failing must not unmute the user mid-utterance.
+        The handover happens on the audio frame, not on the first frame of any
+        kind: the transport only counts as speaking once a TTSAudioRawFrame
+        reaches it (``base_output.py`` ``_handle_bot_speech``), so a failure
+        before that point has queued nothing audible and the owner must still
+        release the hold itself.
         """
 
         async def sink(frame: "Frame") -> None:
             await self._transport_output.queue_frame(frame)
-            if token in self._queued_speech_mute_pending:
+            if isinstance(frame, TTSAudioRawFrame):
                 self._queued_speech_mute_pending.discard(token)
                 self._queued_speech_mute_playing.add(token)
 
@@ -1169,7 +1172,7 @@ class PipecatEngine:
     def release_queued_speech_mute(self, token: int) -> None:
         """Release a hold whose speech never reached the transport.
 
-        A hold already handed over to playback is left alone; no frame was
+        A hold already handed over to playback is left alone; no audio was
         queued for this one, so no BotStoppedSpeakingFrame will ever release it.
         """
         self._queued_speech_mute_pending.discard(token)
@@ -1252,9 +1255,16 @@ class PipecatEngine:
             self._speech_playback_finished.clear()
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_is_speaking = False
-            # Playback has drained, so every hold whose speech was queued
-            # before this point has been heard. Holds still waiting for audio
-            # belong to their own operation and keep the user muted.
+            # The transport emits this frame per utterance (on the
+            # TTSStoppedFrame that follows audio, or after 0.35s of silence),
+            # and it says nothing about *which* speech ended: the callback sees
+            # no context id. So a hold handed over while an earlier utterance
+            # was still playing is released here, one boundary early. That is
+            # the deliberate bias -- unmute a moment too soon rather than leave
+            # the caller muted for the rest of the call. Releasing them in FIFO
+            # order instead would mis-align on the first LLM utterance or silent
+            # TTS and put the stuck mute back. Holds still waiting for audio are
+            # their operation's own and stay.
             self._queued_speech_mute_playing.clear()
             self._speech_playback_finished.set()
 
