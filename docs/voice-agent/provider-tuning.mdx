@@ -43,10 +43,11 @@ up to three dictionaries:
 
 `_all` is a provider key that applies to every provider of its kind. `llm._all.settings.temperature`
 and `max_tokens` are the two fields every LLM provider declares, so they can be set once for all of
-them; on a `gpt-5` model they are translated rather than sent as written, see the model-dependent
-table below. A provider's own key wins over `_all` key by key. The TTS section has one `_all` key,
-`ctor.silence_time_s`, which this build cannot serve — see [Knobs this build does not
-serve](#knobs-this-build-does-not-serve).
+them; on a `gpt-5` reasoning model the cap is translated and the temperature is refused, see the
+model-dependent table below. A provider's own key wins over `_all` key by key. The TTS section has
+one `_all` key, `ctor.silence_time_s`: setting it makes every TTS service but Camb push that much
+silence after each spoken turn (an aid to transports that cut the tail of a turn short). Unset,
+nothing is pushed, as before.
 
 Every knob is validated at save time against the provider's real settings. A name the provider does
 not have, a value of the wrong type, a value outside a closed set, and a knob that belongs to the
@@ -59,7 +60,8 @@ string or a list of strings, with `redact` also taking `true`, where Nova declar
 
 The save cannot see which model the run will use, though, so a handful of knobs are
 **model-dependent**: they are accepted and then applied only if the selected model is one that uses
-them. Otherwise they are dropped when the service is built:
+them. Otherwise they are dropped when the service is built, and every drop writes one warning to
+the run log naming the knob, the model and the reason:
 
 | Knob | Applied when |
 | --- | --- |
@@ -67,9 +69,13 @@ them. Otherwise they are dropped when the service is built:
 | Deepgram Nova-only settings (`endpointing`, `utterance_end_ms`, `keywords`, `redact`, …) | The model is not a Flux model |
 | `stt.deepgram.ctor.url` | The model is a Flux model. Nova takes a different constructor argument |
 | `stt.deepgram.settings.language_hints` | The model is `flux-general-multi` |
-| `llm.openai.options.reasoning` and `verbosity` | The model is a `gpt-5` model. On any other model they are accepted and unused |
-| `llm.<openai>.settings.temperature` | The model is not a `gpt-5` model. Chat completions rejects temperature on `gpt-5`, so it is dropped there with a warning in the run log |
-| `llm.<openai>.settings.max_tokens` | Always, but on a `gpt-5` model it is sent as `max_completion_tokens`, the only completion cap that API accepts |
+| `llm.openai.options.reasoning` and `verbosity` | The model is a `gpt-5` reasoning model. On any other model, `gpt-5-chat` included, they are accepted and dropped |
+| `llm.<openai>.settings.temperature` | The model is not a `gpt-5` reasoning model. Chat completions rejects temperature on those, and a knob that cannot be honoured is not dropped: the run fails to start with an error naming the model, so remove the temperature or choose another model. `gpt-5-chat` models take it |
+| `llm.<openai>.settings.max_tokens` | Always, but on a `gpt-5` reasoning model it is sent as `max_completion_tokens`, the only completion cap that API accepts |
+
+The `gpt-5` rule is keyed to the model name, not to the provider: it holds on every wire that
+carries OpenAI's models over chat completions (`openai`, `atlascloud`, `openrouter` as
+`openai/gpt-5…`, `azure`, `dograh`).
 
 ### Providers covered
 
@@ -186,12 +192,15 @@ not reach it.
 | `verbosity` | `low`, `medium`, `high` |
 
 `reasoning.effort` and `verbosity` are how the `gpt-5` extras above are overridden. They are
-model-dependent: only a `gpt-5` model sends them, and on any other model they are accepted and
-unused.
+model-dependent: only a `gpt-5` reasoning model sends them, and on any other model (`gpt-5-chat`
+included) they are accepted and dropped with a warning in the run log.
 
 `stt.openai.options.api` chooses between `segments`, the segmented Audio transcription service, and
 `realtime`, the realtime transcription session. Each has its own settings, and a knob belonging to
-the other one is rejected rather than quietly ignored.
+the other one is rejected rather than quietly ignored. The realtime session speaks a websocket, so
+a `base_url` set on the OpenAI STT model configuration is derived into one: `https://host/v1`
+becomes `wss://host/v1/realtime`. A base whose path does not end in `/v1` has no known websocket
+shape and fails the run start with an error naming it; leave it unset to use OpenAI's endpoint.
 
 ## Secrets
 
@@ -213,7 +222,6 @@ Each is a single constant that the pull request wiring the feature flips.
 | `stt.speechmatics.settings.turn_detection_mode` other than `external`, `stt.gladia.settings.enable_vad: true`, `stt.sarvam.settings.vad_signals: true`, `stt.assemblyai.ctor.vad_force_turn_endpoint: false` | These values hand turn detection to the provider. The pipeline always passes its own turn strategies today, and the provider's turn frames are not discarded but forwarded alongside the local ones, so one utterance would produce two turn signals. Turn handling is its own change. |
 | `stt.assemblyai.settings.end_of_turn_confidence_threshold`, `min_turn_silence`, `max_turn_silence`; `stt.speechmatics.settings.end_of_utterance_silence_trigger`, `end_of_utterance_max_delay` | Any value. These tune the provider's own turn detection, and the one mode the gate above allows overwrites or ignores them. AssemblyAI's forced-endpoint mode keeps `min_turn_silence` and overwrites `max_turn_silence` on `u3-rt-pro`, and keeps `max_turn_silence` while overwriting the other two on `universal-streaming`, so no single model honours all three; Speechmatics' `external` preset switches the end-of-utterance timers off. The save cannot see the model, so the gate is model-blind by design until the turn change decides per model. |
 | `scope.filler: true` | No filler LLM role is built yet, so the flag would reach nothing. It lands with the tools change; `false` and absent are accepted. |
-| `tts._all.ctor.silence_time_s` | It sizes the silence pushed after a TTS turn ends, which only happens when a service is built with `push_silence_after_stop`. No TTS service here is, so the value would size a silence nobody pushes. |
 
 The fields stay declared either way, so the knobs keep one name across the change.
 
@@ -255,7 +263,7 @@ speed and volume in the model configuration rather than merging into it.
 
 ## Behaviour changes
 
-Three fixes ride along with this section, because a knob cannot be exposed on a path that never
+Five fixes ride along with this section, because a knob cannot be exposed on a path that never
 worked:
 
 - **OpenAI TTS now uses the configured voice.** It previously ignored the model configuration's
@@ -264,3 +272,9 @@ worked:
 - **Cartesia `ink-2` now receives its settings object**, carrying the configured language. The
   service does not put that language on the wire today, so nothing changes on the call.
 - **xAI TTS `speed` now reaches the service.** It was accepted and dropped before.
+- **The segmented OpenAI STT now transcribes in the configured language.** It pinned English, so a
+  Spanish call was transcribed as English. Without a configured language nothing changes.
+- **`gpt-5-chat` models now take `temperature` and no longer receive `reasoning_effort` /
+  `verbosity`.** They were treated as reasoning models, which they are not: they accept a
+  temperature and reject the two extras. An untuned `gpt-5-chat` workflow now sends the default
+  temperature and no extras.
