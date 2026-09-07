@@ -23,7 +23,11 @@ import types
 import typing
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache
 from typing import Any, Literal
+
+from google.genai.types import ProactivityConfig, SafetySetting, ThinkingConfig
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAISTTSettings
 from pipecat.services.aws.llm import AWSBedrockLLMSettings
@@ -32,7 +36,11 @@ from pipecat.services.azure.stt import AzureSTTSettings
 from pipecat.services.azure.tts import AzureTTSSettings
 from pipecat.services.camb.tts import CambTTSService
 from pipecat.services.cartesia.stt import CartesiaSTTService, CartesiaSTTSettings
-from pipecat.services.cartesia.tts import CartesiaTTSService, CartesiaTTSSettings
+from pipecat.services.cartesia.tts import (
+    CartesiaTTSService,
+    CartesiaTTSSettings,
+    GenerationConfig,
+)
 from pipecat.services.cartesia.turns.stt import CartesiaTurnsSTTService
 from pipecat.services.deepgram.flux.base import DeepgramFluxSTTSettings
 from pipecat.services.deepgram.flux.stt import DeepgramFluxSTTService
@@ -45,8 +53,14 @@ from pipecat.services.elevenlabs.stt import (
     ElevenLabsRealtimeSTTSettings,
 )
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService, ElevenLabsTTSSettings
+from pipecat.services.gladia.config import (
+    MessagesConfig,
+    PreProcessingConfig,
+    RealtimeProcessingConfig,
+)
 from pipecat.services.gladia.stt import GladiaSTTSettings
-from pipecat.services.google.llm import GoogleLLMSettings
+from pipecat.services.google.gemini_live.llm import ContextWindowCompressionParams
+from pipecat.services.google.llm import GoogleLLMService, GoogleLLMSettings
 from pipecat.services.google.stt import GoogleSTTSettings
 from pipecat.services.google.tts import GoogleTTSSettings
 from pipecat.services.google.vertex.llm import GoogleVertexLLMSettings
@@ -76,7 +90,11 @@ from pipecat.services.smallest.stt import SmallestSTTSettings
 from pipecat.services.smallest.tts import SmallestTTSSettings
 from pipecat.services.speaches.llm import SpeachesLLMSettings
 from pipecat.services.speaches.stt import SpeachesSTTSettings
-from pipecat.services.speechmatics.stt import SpeechmaticsSTTSettings
+from pipecat.services.speechmatics.stt import (
+    AdditionalVocabEntry,
+    SpeakerIdentifier,
+    SpeechmaticsSTTSettings,
+)
 from pipecat.services.xai.tts import XAIWebsocketTTSSettings
 
 ALL = "_all"
@@ -139,6 +157,20 @@ class TuningSpec:
     provider model whose ``Literal`` pipecat widens with ``| str`` for forward
     compatibility (openai/realtime/events.py:182), so a typo would be a
     provider-side 400 mid-call rather than a 422 at the PUT.
+    """
+    settings_models: dict[str, Any] = dataclasses.field(default_factory=dict)
+    """The provider object a setting is built into, for settings whose value
+    is an object: a pydantic model, a dataclass, or a ``list[...]`` of one.
+
+    ``from_mapping`` stores the JSON object unchanged and the branch converts
+    it at run creation (``model_validate``, ``SpeakerIdentifier(**e)``).
+    Those models ignore unknown keys (``model_config`` is not ``forbid`` on
+    most of them), so a misspelt key inside the object was silently dropped,
+    and a wrong scalar was a ValidationError at run creation rather than a
+    422 at the PUT (#11, #12). ``_model_error`` walks the object against the
+    model's fields for unknown keys and then validates it with the model
+    itself; ``settings_types`` still names the JSON shape (dict/list), which
+    is checked first. Completeness is guarded by test_nested_settings.py.
     """
     options_allowed: frozenset[str] = frozenset()
     nullable_extra: frozenset[str] = frozenset()
@@ -344,6 +376,13 @@ SPECS[("stt", "speechmatics")] = TuningSpec(
     "speechmatics",
     SpeechmaticsSTTSettings,
     _fields(SpeechmaticsSTTSettings, "operating_point", "extra_params"),
+    # Both lists are handed to the SDK config, which does not validate on
+    # assignment (speechmatics/stt.py:772-775); ``SpeakerIdentifier`` is a
+    # dataclass, so an unknown key was a TypeError at run creation (#12).
+    settings_models={
+        "additional_vocab": list[AdditionalVocabEntry],
+        "known_speakers": list[SpeakerIdentifier],
+    },
 )
 SPECS[("stt", "gladia")] = TuningSpec(
     "stt",
@@ -352,12 +391,18 @@ SPECS[("stt", "gladia")] = TuningSpec(
     _fields(GladiaSTTSettings, "language_config"),
     # Three pydantic models the branch builds with ``model_validate``
     # (service_factory.py, gladia branch): the field type is a model, which
-    # this module cannot check, so without these a scalar would pass the PUT
-    # and raise a pydantic ValidationError at run creation. JSON object only.
+    # ``_type_ok`` cannot check, so without these a scalar would pass the PUT
+    # and raise a pydantic ValidationError at run creation. JSON object only,
+    # and the object's keys and scalars are checked against the model.
     settings_types={
         "pre_processing": dict,
         "realtime_processing": dict,
         "messages_config": dict,
+    },
+    settings_models={
+        "pre_processing": PreProcessingConfig,
+        "realtime_processing": RealtimeProcessingConfig,
+        "messages_config": MessagesConfig,
     },
 )
 # ``use_separate_recognition_per_channel`` is excluded: ``_connect`` hard-codes
@@ -418,6 +463,7 @@ SPECS[("tts", "cartesia")] = TuningSpec(
     # ``GenerationConfig`` is a pydantic model the branch builds with
     # ``model_validate``; same hole as gladia's three above.
     settings_types={"generation_config": dict},
+    settings_models={"generation_config": GenerationConfig},
 )
 SPECS[("tts", "inworld")] = TuningSpec(
     "tts", "inworld", InworldTTSSettings, _fields(InworldTTSSettings)
@@ -534,12 +580,20 @@ SPECS[("llm", "atlascloud")] = _llm_row("atlascloud", OpenAILLMSettings)
 # own coercion (``ThinkingConfig(**value)``, google/llm.py:140-141). It arrives
 # as a JSON object or not at all.
 _GOOGLE_LLM_TYPES: dict[str, type | tuple[type, ...]] = {"thinking": dict}
+# ``safety_settings`` entries are converted the same way (``SafetySetting(
+# **entry)``, google/llm.py:142-145); the genai models take camelCase aliases
+# too, which the key walk honours.
+_GOOGLE_LLM_MODELS: dict[str, Any] = {
+    "thinking": GoogleLLMService.ThinkingConfig,
+    "safety_settings": list[SafetySetting],
+}
 SPECS[("llm", "google")] = TuningSpec(
     "llm",
     "google",
     GoogleLLMSettings,
     _fields(GoogleLLMSettings, *_TURN_COMPLETION, *_PENALTIES_AND_SEED),
     settings_types=_GOOGLE_LLM_TYPES,
+    settings_models=_GOOGLE_LLM_MODELS,
 )
 SPECS[("llm", "google_vertex")] = TuningSpec(
     "llm",
@@ -547,6 +601,7 @@ SPECS[("llm", "google_vertex")] = TuningSpec(
     GoogleVertexLLMSettings,
     _fields(GoogleVertexLLMSettings, *_TURN_COMPLETION, *_PENALTIES_AND_SEED),
     settings_types=_GOOGLE_LLM_TYPES,
+    settings_models=_GOOGLE_LLM_MODELS,
 )
 SPECS[("llm", "groq")] = _llm_row("groq", GroqLLMSettings)
 SPECS[("llm", "openrouter")] = _llm_row("openrouter", OpenRouterLLMSettings)
@@ -613,6 +668,12 @@ _GEMINI_REALTIME_TYPES: dict[str, type | tuple[type, ...]] = {
     "context_window_compression": dict,
     "temperature": (int, float),
 }
+# The models ``service_factory._GEMINI_REALTIME_COERCIONS`` builds them into.
+_GEMINI_REALTIME_MODELS: dict[str, Any] = {
+    "thinking": ThinkingConfig,
+    "proactivity": ProactivityConfig,
+    "context_window_compression": ContextWindowCompressionParams,
+}
 # ``extra`` is the one declared exception to "nothing goes through extra": it
 # is ``OneShotInputParams.extra``, a field Ultravox merges into the
 # call-creation request (ultravox/llm.py:361), not the ``Settings.extra``
@@ -660,6 +721,7 @@ def _realtime_row(
     provider: str,
     types: dict[str, type | tuple[type, ...]],
     choices: dict[str, frozenset[str]] | None = None,
+    models: dict[str, Any] | None = None,
 ) -> TuningSpec:
     return TuningSpec(
         "realtime",
@@ -668,6 +730,7 @@ def _realtime_row(
         frozenset(types),
         settings_types=types,
         settings_choices=choices or {},
+        settings_models=models or {},
     )
 
 
@@ -684,10 +747,10 @@ SPECS[("realtime", "grok_realtime")] = _realtime_row(
     "grok_realtime", {"language_hint": str}
 )
 SPECS[("realtime", "google_realtime")] = _realtime_row(
-    "google_realtime", _GEMINI_REALTIME_TYPES
+    "google_realtime", _GEMINI_REALTIME_TYPES, models=_GEMINI_REALTIME_MODELS
 )
 SPECS[("realtime", "google_vertex_realtime")] = _realtime_row(
-    "google_vertex_realtime", _GEMINI_REALTIME_TYPES
+    "google_vertex_realtime", _GEMINI_REALTIME_TYPES, models=_GEMINI_REALTIME_MODELS
 )
 SPECS[("realtime", "ultravox_realtime")] = _realtime_row(
     "ultravox_realtime", _ULTRAVOX_REALTIME_TYPES
@@ -1045,6 +1108,89 @@ def _ctor_type_ok(expected: type | tuple[type, ...], value: Any) -> bool:
     return isinstance(value, expected)
 
 
+def _model_fields(model: Any) -> dict[str, Any] | None:
+    """``{accepted key: annotation}`` for a pydantic model or a dataclass.
+
+    A pydantic field is reachable by its alias as well (the genai models
+    take camelCase), so both names are accepted.
+    """
+    if isinstance(model, type) and issubclass(model, BaseModel):
+        fields: dict[str, Any] = {}
+        for name, f in model.model_fields.items():
+            fields[name] = f.annotation
+            if f.alias:
+                fields[f.alias] = f.annotation
+        return fields
+    if dataclasses.is_dataclass(model):
+        return {f.name: f.type for f in dataclasses.fields(model)}
+    return None
+
+
+def _model_shape_errors(model: Any, value: Any, path: str) -> list[str]:
+    """Unknown keys and booleans on numeric fields, anywhere inside ``value``.
+
+    Neither is something the model's own validation reports: unknown keys
+    are ignored unless ``extra="forbid"``, and lax mode coerces ``true`` to
+    ``1.0`` on a float field — the same hole ``_scalar_verdict`` closes for
+    top-level settings.
+    """
+    origin = typing.get_origin(model)
+    if origin is list:
+        if not isinstance(value, list):
+            return []
+        (item,) = typing.get_args(model)
+        return [
+            e
+            for i, v in enumerate(value)
+            for e in _model_shape_errors(item, v, f"{path}[{i}]")
+        ]
+    if _is_union(model):
+        return [
+            e
+            for member in typing.get_args(model)
+            for e in _model_shape_errors(member, value, path)
+        ]
+    fields = _model_fields(model)
+    if fields is None:
+        if isinstance(value, bool) and origin is None and model in (int, float):
+            return [f"{path}: wrong type"]
+        return []
+    if not isinstance(value, dict):
+        return []
+    errors = []
+    for key, sub in value.items():
+        if key not in fields:
+            errors.append(f"{path}.{key}: unknown key")
+        else:
+            errors.extend(_model_shape_errors(fields[key], sub, f"{path}.{key}"))
+    return errors
+
+
+@cache
+def _adapter(model: Any) -> TypeAdapter:
+    return TypeAdapter(model)
+
+
+def _model_error(path: str, model: Any, value: Any) -> str | None:
+    """Whether ``value`` builds the provider object the branch will build.
+
+    Keys and booleans first (``_model_shape_errors``), then the model's own
+    validation in the lax mode the branch uses, so a value the PUT accepts is
+    one ``model_validate`` accepts at run creation, with the first failing
+    location named.
+    """
+    errors = _model_shape_errors(model, value, path)
+    if errors:
+        return "; ".join(errors)
+    try:
+        _adapter(model).validate_python(value)
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        where = ".".join(str(step) for step in first["loc"])
+        return f"{path}{'.' + where if where else ''}: {first['msg']}"
+    return None
+
+
 def _settings_value_error(
     spec: TuningSpec,
     nullable: frozenset[str],
@@ -1054,10 +1200,11 @@ def _settings_value_error(
 ) -> str | None:
     """Whether an allow-listed setting's *value* is acceptable.
 
-    Three checks in order of how definitive they are: null against the
+    Four checks in order of how definitive they are: null against the
     nullable set, then the row's own declaration (a closed set first, since a
     ``Literal`` widened with ``| str`` upstream is not checkable from the
-    field), then the declaring dataclass.
+    field), then the declaring dataclass, then — for an object-valued
+    setting — the provider model it is built into.
     """
     if value is None:
         return None if name in nullable else f"{path}: null not allowed"
@@ -1069,6 +1216,8 @@ def _settings_value_error(
         return f"{path}: wrong type"
     if not _type_ok(spec.settings_classes(), name, value):
         return f"{path}: wrong type"
+    if name in spec.settings_models:
+        return _model_error(path, spec.settings_models[name], value)
     return None
 
 
