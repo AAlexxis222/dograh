@@ -106,6 +106,13 @@ _ENGINE_OWNED_CONTEXT_KEYS = frozenset(
 # p50 1.4s / p90 4.0s / max 21.3s, so this cuts off the tail and nothing else.
 FINAL_EXTRACTION_TIMEOUT_SECONDS = 8.0
 
+# Seconds a queued-speech mute hold waits for playback to begin before it is
+# dropped. Speech handed to the pipeline that never produces audio -- a TTS
+# provider error, an empty synthesis -- gets no BotStoppedSpeakingFrame, and
+# without this deadline the caller would stay muted for the rest of the call.
+# Same question, same answer as the transfer path's playback start timeout.
+_QUEUED_SPEECH_PLAYBACK_START_TIMEOUT_SECONDS = 5.0
+
 
 class PipecatEngine:
     def __init__(
@@ -186,6 +193,7 @@ class PipecatEngine:
         self._queued_speech_mute_pending: set[int] = set()
         self._queued_speech_mute_playing: set[int] = set()
         self._queued_speech_mute_last_token: int = 0
+        self._queued_speech_mute_watchdogs: set[asyncio.Task] = set()
 
         # Tracks whether the bot is currently speaking (for allow_interrupt logic)
         self._bot_is_speaking: bool = False
@@ -1145,9 +1153,41 @@ class PipecatEngine:
         """Mute the user for speech being queued right now.
 
         For speech that goes straight to the pipeline there is nothing to
-        release by hand: the hold ends with a BotStoppedSpeakingFrame.
+        release by hand: the hold ends with a BotStoppedSpeakingFrame, or with
+        the deadline below if that speech never reaches the caller.
         """
-        self._queued_speech_mute_playing.add(self._next_queued_speech_mute_token())
+        self._hold_until_playback_ends(self._next_queued_speech_mute_token())
+
+    def _hold_until_playback_ends(self, token: int) -> None:
+        """Hand *token* to playback, and guard it against speech that never plays.
+
+        TTS can yield nothing at all (provider error, empty synthesis) and the
+        transport only speaks once audio reaches it, so a hold waiting on a
+        BotStoppedSpeakingFrame needs a deadline of its own. Missing it is
+        rare; staying muted for the rest of the call is not recoverable, so the
+        hold is dropped rather than kept.
+        """
+        self._queued_speech_mute_pending.discard(token)
+        self._queued_speech_mute_playing.add(token)
+
+        async def drop_if_playback_never_starts() -> None:
+            await asyncio.sleep(_QUEUED_SPEECH_PLAYBACK_START_TIMEOUT_SECONDS)
+            # Anything the bot is saying ends in a BotStoppedSpeakingFrame,
+            # which releases this hold; only silence has no way out.
+            if token not in self._queued_speech_mute_playing or self._bot_is_speaking:
+                return
+            logger.warning(
+                f"Queued speech never started playing within "
+                f"{_QUEUED_SPEECH_PLAYBACK_START_TIMEOUT_SECONDS}s; "
+                "releasing the user mute it was holding"
+            )
+            self._queued_speech_mute_playing.discard(token)
+
+        task = asyncio.create_task(
+            drop_if_playback_never_starts(), name=f"queued-speech-mute:{token}"
+        )
+        self._queued_speech_mute_watchdogs.add(task)
+        task.add_done_callback(self._queued_speech_mute_watchdogs.discard)
 
     def queued_speech_frame_sink(
         self, token: int
@@ -1164,8 +1204,7 @@ class PipecatEngine:
         async def sink(frame: "Frame") -> None:
             await self._transport_output.queue_frame(frame)
             if isinstance(frame, TTSAudioRawFrame):
-                self._queued_speech_mute_pending.discard(token)
-                self._queued_speech_mute_playing.add(token)
+                self._hold_until_playback_ends(token)
 
         return sink
 
@@ -1467,6 +1506,9 @@ class PipecatEngine:
             and not self._user_response_timeout_task.done()
         ):
             self._user_response_timeout_task.cancel()
+
+        for watchdog in list(self._queued_speech_mute_watchdogs):
+            watchdog.cancel()
 
         # Cancel any in-flight background summarization.
         if self._context_summarization_manager:
