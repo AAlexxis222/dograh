@@ -1166,7 +1166,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ]
     }
   },
@@ -1180,7 +1191,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ],
       "voice_id": 147320
     }
@@ -1204,7 +1226,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ]
     }
   },
@@ -1232,7 +1265,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ]
     }
   },
@@ -1253,7 +1297,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ]
     }
   },
@@ -1279,7 +1334,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ]
     }
   },
@@ -1307,7 +1373,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ],
       "url": "wss://api.elevenlabs.io"
     }
@@ -1331,7 +1408,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ]
     }
   },
@@ -1355,7 +1443,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ]
     }
   },
@@ -1378,7 +1477,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ]
     }
   },
@@ -1409,7 +1519,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ]
     }
   },
@@ -1433,7 +1554,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ]
     }
   },
@@ -1466,7 +1598,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ]
     }
   },
@@ -1494,7 +1637,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ]
     }
   },
@@ -1516,7 +1670,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ]
     }
   },
@@ -1540,7 +1705,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ]
     }
   },
@@ -1565,7 +1741,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ]
     }
   },
@@ -1590,7 +1777,18 @@
         "recording"
       ],
       "text_filters": [
-        "<XMLFunctionTagFilter>"
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
       ]
     }
   }

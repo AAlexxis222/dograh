@@ -166,7 +166,15 @@ def test_control_camb_untuned_matches_the_deprecated_kwargs_construction():
     # written after construction included, and the timeout is the default.
     from pipecat.services.camb.tts import CambTTSService
 
-    expected = CambTTSService(api_key="test-key", voice_id=147320, model="mars-flash")
+    # The reference build goes through the deprecated kwargs on purpose: it
+    # is the construction this control compares against, so its two
+    # DeprecationWarnings are expected here (and recorded, not reported). An
+    # ``ignore`` filter would not do: pipecat forces ``simplefilter("always")``
+    # around the warn (ai_service.py:192-194).
+    with pytest.warns(DeprecationWarning, match="parameter is deprecated"):
+        expected = CambTTSService(
+            api_key="test-key", voice_id=147320, model="mars-flash"
+        )
     expected._settings.language = "en-us"
     service = create_tts_service(
         user_config_tts("camb", model="mars-flash", voice="147320"), audio_config()

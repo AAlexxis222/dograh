@@ -1132,6 +1132,15 @@ def _model_fields(model: Any) -> dict[str, Any] | None:
     return None
 
 
+def _shape_checkable(model: Any) -> bool:
+    """Whether the shape walk has anything to say about ``model``: a model or
+    dataclass, a numeric scalar, or a list/union containing one."""
+    origin = typing.get_origin(model)
+    if origin is list or _is_union(model):
+        return any(_shape_checkable(arg) for arg in typing.get_args(model))
+    return _model_fields(model) is not None or model in (int, float)
+
+
 def _model_shape_errors(model: Any, value: Any, path: str) -> list[str]:
     """Unknown keys and booleans on numeric fields, anywhere inside ``value``.
 
@@ -1151,11 +1160,16 @@ def _model_shape_errors(model: Any, value: Any, path: str) -> list[str]:
             for e in _model_shape_errors(item, v, f"{path}[{i}]")
         ]
     if _is_union(model):
-        return [
-            e
+        # A value is fine if any member with an opinion takes it cleanly
+        # (``None`` and other unchecked members have none). No declared field
+        # is a union of two models today; if every member objects, the
+        # shortest objection is the one reported.
+        opinions = [
+            _model_shape_errors(member, value, path)
             for member in typing.get_args(model)
-            for e in _model_shape_errors(member, value, path)
+            if _shape_checkable(member)
         ]
+        return min(opinions, key=len) if opinions else []
     fields = _model_fields(model)
     if fields is None:
         if isinstance(value, bool) and origin is None and model in (int, float):
@@ -1192,8 +1206,12 @@ def _model_error(path: str, model: Any, value: Any) -> str | None:
         _adapter(model).validate_python(value)
     except ValidationError as exc:
         first = exc.errors()[0]
-        where = ".".join(str(step) for step in first["loc"])
-        return f"{path}{'.' + where if where else ''}: {first['msg']}"
+        # Same spelling as the shape walk: ``[i]`` for a list index.
+        where = "".join(
+            f"[{step}]" if isinstance(step, int) else f".{step}"
+            for step in first["loc"]
+        )
+        return f"{path}{where}: {first['msg']}"
     return None
 
 

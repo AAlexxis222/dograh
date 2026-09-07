@@ -47,8 +47,8 @@ biasing. The run builds the STT service with the workflow's keyword dictionary a
 setting that carries it — `keyterm` on Deepgram (Flux and Nova) and Dograh Flux, `keyterms_prompt`
 on AssemblyAI, `additional_vocab` on Speechmatics — so a tuned value for that setting **replaces**
 the dictionary rather than adding to it. To keep the dictionary's words, repeat them in the tuned
-list. The other biasing knobs (ElevenLabs `keyterms`, OpenAI and Sarvam `prompt`, Nova `keywords`)
-never carry the dictionary, so tuning them replaces nothing.
+list. The other biasing knobs (Cartesia `keyterm`, ElevenLabs `keyterms`, OpenAI and Sarvam
+`prompt`, Nova `keywords`) never carry the dictionary, so tuning them replaces nothing.
 
 `_all` is a provider key that applies to every provider of its kind. `llm._all.settings.temperature`
 and `max_tokens` are the two fields every LLM provider declares, so they can be set once for all of

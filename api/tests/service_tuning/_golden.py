@@ -20,9 +20,11 @@ from __future__ import annotations
 import dataclasses
 import enum
 import importlib
+import re
+from collections.abc import Callable
 from contextlib import ExitStack
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 # (defining module, class name) for every service class a factory branch
@@ -208,6 +210,8 @@ def _serial(value: Any) -> Any:
         return "<mock>"
     if type(value).__name__ == "_NotGiven":
         return "NOT_GIVEN"
+    if isinstance(value, re.Pattern):
+        return value.pattern
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {
             "__class__": type(value).__name__,
@@ -222,6 +226,16 @@ def _serial(value: Any) -> Any:
         return [_serial(v) for v in value]
     if isinstance(value, dict):
         return {str(k): _serial(v) for k, v in value.items()}
+    # An object passed by reference (the XML function-tag filter): its whole
+    # instance state, so a change inside it is visible too. Nothing here is
+    # public — pipecat keeps filter state in ``_``-prefixed attributes — so
+    # the filter is the full ``vars()``, callables and patterns by type name.
+    state = getattr(value, "__dict__", None)
+    if state is not None:
+        return {
+            "__class__": type(value).__name__,
+            **{k: _serial(v) for k, v in state.items()},
+        }
     return f"<{type(value).__name__}>"
 
 
