@@ -209,3 +209,17 @@ def test_valid_nested_object_reaches_the_service():
             },
         )
     assert mock.call_args.kwargs["settings"].generation_config.speed == 1.2
+
+
+def test_shape_walk_resolves_string_annotations_on_a_dataclass():
+    # Under ``from __future__ import annotations`` a dataclass field type is
+    # a string; the boolean-on-numeric rule must still see the float.
+    @dataclasses.dataclass
+    class Synthetic:
+        speed: "float"
+        label: "str"
+
+    assert specs._model_shape_errors(Synthetic, {"speed": True}, "p") == [
+        "p.speed: wrong type"
+    ]
+    assert specs._model_shape_errors(Synthetic, {"speed": 1.5}, "p") == []

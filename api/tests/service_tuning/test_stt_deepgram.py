@@ -292,3 +292,27 @@ def test_nova_split_is_derived_from_the_specs_table(monkeypatch):
         "eot_threshold",
     }
     assert service_factory._nova_ctor_allowed() == {"mip_opt_out", "tag", "extra_kw"}
+
+
+def test_non_flux_dograh_logs_every_knob_it_drops(warnings):
+    # The non-Flux Dograh service takes none of the stt.dograh knobs; the
+    # drop is model- and language-dependent, so it is logged like the
+    # Nova/Flux split rather than being a silent placebo (#8).
+    create_stt_service(
+        user_config_stt(ServiceProviders.DOGRAH.value, model="nova-3", language="zz"),
+        audio_config(),
+        tuning={
+            "stt": {
+                "dograh": {
+                    "settings": {"eot_threshold": 0.9, "numerals": True},
+                    "ctor": {"tag": ["x"]},
+                }
+            }
+        },
+    )
+    dropped = _dropped(warnings)
+    for knob in ("settings.eot_threshold", "settings.numerals", "ctor.tag"):
+        assert any(
+            f"stt.dograh.{knob}" in w and "nova-3" in w and "zz" in w for w in dropped
+        ), knob
+    assert len(dropped) == 3

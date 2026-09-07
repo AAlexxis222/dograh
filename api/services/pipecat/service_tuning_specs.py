@@ -1128,7 +1128,13 @@ def _model_fields(model: Any) -> dict[str, Any] | None:
                 fields[f.alias] = f.annotation
         return fields
     if dataclasses.is_dataclass(model):
-        return {f.name: f.type for f in dataclasses.fields(model)}
+        # ``f.type`` is a string under ``from __future__ import annotations``
+        # and the walk would have no opinion on it; resolve where possible.
+        try:
+            hints = typing.get_type_hints(model)
+        except Exception:  # a forward reference the module cannot see
+            hints = {}
+        return {f.name: hints.get(f.name, f.type) for f in dataclasses.fields(model)}
     return None
 
 

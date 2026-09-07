@@ -65,7 +65,8 @@ for a numeric field: JSON booleans are rejected there rather than travelling as 
 fields are narrower here than in the provider's own settings class, because the wider value would
 break a call: `stt.deepgram.settings.endpointing` takes milliseconds only, `tts.openai.settings.voice`
 cannot be `null`, and the Deepgram biasing knobs (`keyterm`, `keywords`, `replace`, `search`) take a
-string or a list of strings, with `redact` also taking `true`, where Nova declares them as anything.
+string or a list of strings, where Nova declares them as anything; `redact` also takes a boolean,
+`true` for Deepgram's default redaction and `false` meaning the same as leaving the key out.
 
 A setting whose value is an object — Cartesia `generation_config`, Gladia `pre_processing`,
 `realtime_processing` and `messages_config`, Speechmatics `additional_vocab` and `known_speakers`,
@@ -85,6 +86,7 @@ the run log naming the knob, the model and the reason:
 | Deepgram Nova-only settings (`endpointing`, `utterance_end_ms`, `keywords`, `redact`, …) | The model is not a Flux model |
 | `stt.deepgram.ctor.url` | The model is a Flux model. Nova takes a different constructor argument |
 | `stt.deepgram.settings.language_hints` | The model is `flux-general-multi` |
+| Every `stt.dograh` setting and constructor argument | The configured language is one Dograh's Flux proxy serves (`multi` or one of its hinted languages). On any other language Dograh STT is a different service that takes none of them, and every knob is dropped with a warning naming the model and the language |
 | `llm.openai.options.reasoning` and `verbosity` | The model is a `gpt-5` reasoning model. On any other model, `gpt-5-chat` included, they are accepted and dropped |
 | `llm.<openai>.settings.temperature` | The model is not a `gpt-5` reasoning model. Chat completions rejects temperature on those, and a knob that cannot be honoured is not dropped: the run fails to start with an error naming the model, so remove the temperature or choose another model. `gpt-5-chat` models take it |
 | `llm.<openai>.settings.max_tokens` | Always, but on a `gpt-5` reasoning model it is sent as `max_completion_tokens`, the only completion cap that API accepts |
@@ -120,10 +122,10 @@ services it built before, with the same values on the wire:
 | Deepgram Flux | `eot_timeout_ms` / `eot_threshold` / `eager_eot_threshold` | 3000 / 0.7 / 0.5 |
 | Deepgram Nova | `endpointing` | 100 |
 | ElevenLabs TTS | `stability` / `similarity_boost` | 0.8 / 0.75 |
-| OpenAI (not `gpt-5*`), AtlasCloud, Groq, OpenRouter, Google, Google Vertex, Azure, HuggingFace | `temperature` | 0.1 |
+| OpenAI, AtlasCloud, OpenRouter, Azure (any model that is not a `gpt-5` reasoning model, `gpt-5-chat` included), Groq, Google, Google Vertex, HuggingFace | `temperature` | 0.1 |
 | MiniMax / Sarvam | `temperature` | 1.0 / 0.5, unless the model configuration sets one |
-| Dograh, AWS Bedrock, Speaches | `temperature` | not sent at all |
-| OpenAI `gpt-5*` | `reasoning_effort` / `verbosity`, no temperature | `minimal` / `low` |
+| Dograh, AWS Bedrock, Speaches; OpenRouter and Azure on a `gpt-5` reasoning model | `temperature` | not sent at all |
+| OpenAI `gpt-5` reasoning models (`gpt-5-chat` excluded) | `reasoning_effort` / `verbosity`, no temperature | `minimal` / `low` |
 
 Those values are asserted at the transport layer by their own control tests, and the complete set
 of constructor arguments every provider receives untuned — one case per model- or
@@ -220,6 +222,8 @@ the other one is rejected rather than quietly ignored. The realtime session spea
 a `base_url` set on the OpenAI STT model configuration is derived into one: `https://host/v1`
 becomes `wss://host/v1/realtime`. A base whose path does not end in `/v1` has no known websocket
 shape and fails the run start with an error naming it; leave it unset to use OpenAI's endpoint.
+The derivation assumes the proxy mounts the Realtime websocket at `/v1/realtime`, as OpenAI does;
+it is not probed at save time, so a proxy that serves only HTTP fails when the call connects.
 
 ## Secrets
 

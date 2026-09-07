@@ -450,7 +450,9 @@ def _openai_realtime_stt_base_url(base_url: str) -> str:
     ``wss://…/realtime`` URL (openai/stt.py:242); reusing the http(s) base
     would fail the connect. Only an OpenAI-shaped base (path ending in
     ``/v1``) has a known websocket shape; anything else fails the run start
-    by name (§1.2).
+    by name (§1.2). Assumption, not probed: a custom proxy exposes the
+    Realtime websocket at ``/v1/realtime`` like OpenAI does. A proxy that
+    only serves HTTP passes this check and fails at connect time instead.
     """
     parts = urlsplit(base_url)
     path = parts.path.rstrip("/")
@@ -674,6 +676,7 @@ def create_stt_service(
     elif user_config.stt.provider == ServiceProviders.DOGRAH.value:
         base_url = MPS_API_URL.replace("http://", "ws://").replace("https://", "wss://")
         language = getattr(user_config.stt, "language", None) or "multi"
+        plan = tuning_for(tuning, "stt", ServiceProviders.DOGRAH.value)
 
         if dograh_stt_uses_flux_language(language):
             # Dograh's Flux proxy only supports multilingual auto-detect and the
@@ -689,7 +692,6 @@ def create_stt_service(
             if language_hint:
                 settings_kwargs["language_hints"] = [language_hint]
 
-            plan = tuning_for(tuning, "stt", ServiceProviders.DOGRAH.value)
             settings = build_settings(
                 DeepgramFluxSTTSettings,
                 settings_kwargs,
@@ -715,6 +717,19 @@ def create_stt_service(
                 **plan.ctor,  # dograh's ctor allow-list has no "url" (SPECS)
             )
 
+        # The non-Flux Dograh service takes none of the stt.dograh knobs (its
+        # Settings carry model and language only); the plan is model- and
+        # language-dependent here the way stt.deepgram is model-dependent,
+        # so every knob is dropped with a trace rather than silently (#8).
+        reason = "Dograh STT applies tuning only on Flux-supported languages"
+        for section, names in (("settings", plan.settings), ("ctor", plan.ctor)):
+            _warn_dropped(
+                section,
+                "stt.dograh",
+                f"{user_config.stt.model} (language {language})",
+                names,
+                reason,
+            )
         return DograhSTTService(
             base_url=base_url,
             api_key=user_config.stt.api_key,
