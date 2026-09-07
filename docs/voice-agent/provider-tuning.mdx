@@ -41,6 +41,15 @@ up to three dictionaries:
 | `ctor` | Allow-listed constructor arguments, which are not settings at all | `stt.deepgram.ctor.mip_opt_out` |
 | `options` | Switches that are neither, such as which OpenAI API to speak | `llm.openai.options.api` |
 
+"Merged over the defaults" is key by key: a tuned setting replaces the value the run would have
+built for that key, it does not combine with it. The one place this matters is vocabulary
+biasing. The run builds the STT service with the workflow's keyword dictionary already in the
+setting that carries it — `keyterm` on Deepgram (Flux and Nova) and Dograh Flux, `keyterms_prompt`
+on AssemblyAI, `additional_vocab` on Speechmatics — so a tuned value for that setting **replaces**
+the dictionary rather than adding to it. To keep the dictionary's words, repeat them in the tuned
+list. The other biasing knobs (ElevenLabs `keyterms`, OpenAI and Sarvam `prompt`, Nova `keywords`)
+never carry the dictionary, so tuning them replaces nothing.
+
 `_all` is a provider key that applies to every provider of its kind. `llm._all.settings.temperature`
 and `max_tokens` are the two fields every LLM provider declares, so they can be set once for all of
 them; on a `gpt-5` reasoning model the cap is translated and the temperature is refused, see the
@@ -57,6 +66,13 @@ fields are narrower here than in the provider's own settings class, because the 
 break a call: `stt.deepgram.settings.endpointing` takes milliseconds only, `tts.openai.settings.voice`
 cannot be `null`, and the Deepgram biasing knobs (`keyterm`, `keywords`, `replace`, `search`) take a
 string or a list of strings, with `redact` also taking `true`, where Nova declares them as anything.
+
+A setting whose value is an object — Cartesia `generation_config`, Gladia `pre_processing`,
+`realtime_processing` and `messages_config`, Speechmatics `additional_vocab` and `known_speakers`,
+Google `thinking` and `safety_settings`, Gemini Live `thinking`, `proactivity` and
+`context_window_compression` — is checked against the provider's own model at save time too: a
+misspelt key inside it, at any depth, and a scalar the model rejects are each a `422` naming the
+path, instead of a key silently dropped or a run that fails to start.
 
 The save cannot see which model the run will use, though, so a handful of knobs are
 **model-dependent**: they are accepted and then applied only if the selected model is one that uses
@@ -82,7 +98,7 @@ carries OpenAI's models over chat completions (`openai`, `atlascloud`, `openrout
 | Kind | Providers |
 | --- | --- |
 | `stt` | `assemblyai`, `azure_speech`, `cartesia`, `deepgram`, `dograh`, `elevenlabs`, `gladia`, `google`, `huggingface`, `openai`, `sarvam`, `smallest`, `speaches`, `speechmatics` |
-| `tts` | `azure_speech`, `camb`, `cartesia`, `deepgram`, `dograh`, `elevenlabs`, `google`, `inworld`, `lmnt`, `minimax`, `openai`, `rime`, `sarvam`, `smallest`, `xai`, `_all` |
+| `tts` | `azure_speech`, `camb`, `cartesia`, `deepgram`, `dograh`, `elevenlabs`, `google`, `inworld`, `lmnt`, `minimax`, `openai`, `rime`, `sarvam`, `smallest`, `speaches`, `xai`, `_all` |
 | `llm` | `atlascloud`, `aws_bedrock`, `azure`, `dograh`, `google`, `google_vertex`, `groq`, `huggingface`, `minimax`, `openai`, `openrouter`, `sarvam`, `speaches`, `_all` |
 | `realtime` | `azure_realtime`, `google_realtime`, `google_vertex_realtime`, `grok_realtime`, `openai_realtime`, `ultravox_realtime` |
 
@@ -91,8 +107,8 @@ which is why its knobs are model-dependent in the table above. OpenAI STT also h
 transcription services behind one key, but there the choice is explicit — `stt.openai.options.api`
 selects it — so a knob belonging to the other one is a `422` at save time rather than a drop.
 
-`tts.speaches` is not tunable yet: the provider works, but it has no row, so any knob under it is
-rejected as an unknown provider rather than accepted and dropped.
+Camb exposes `user_instructions` (read on `mars-instruct` only) and the request `ctor.timeout`;
+Speaches TTS speaks OpenAI's audio API and takes its `instructions` and `speed`.
 
 ## Defaults never change
 
@@ -109,8 +125,11 @@ services it built before, with the same values on the wire:
 | Dograh, AWS Bedrock, Speaches | `temperature` | not sent at all |
 | OpenAI `gpt-5*` | `reasoning_effort` / `verbosity`, no temperature | `minimal` / `low` |
 
-Those values are asserted at the transport layer by their own control tests, so a future change to
-them is a test failure and not a surprise on a call.
+Those values are asserted at the transport layer by their own control tests, and the complete set
+of constructor arguments every provider receives untuned — one case per model- or
+language-dependent branch, 63 in all — is compared against a capture taken from the commit before
+this section, with the behaviour changes listed below as the only allowed differences. A future
+change to any of them is a test failure and not a surprise on a call.
 
 ## Explicit null
 
@@ -263,7 +282,7 @@ speed and volume in the model configuration rather than merging into it.
 
 ## Behaviour changes
 
-Five fixes ride along with this section, because a knob cannot be exposed on a path that never
+Seven fixes ride along with this section, because a knob cannot be exposed on a path that never
 worked:
 
 - **OpenAI TTS now uses the configured voice.** It previously ignored the model configuration's
@@ -281,3 +300,6 @@ worked:
 - **Untuned `gpt-5` reasoning models on OpenRouter and Azure no longer receive the default
   `temperature`.** Those branches sent `0.1` regardless of model, which those models reject over
   chat completions. Every other model on those wires still gets `0.1`.
+- **Camb TTS is built through its settings object** instead of the constructor arguments pipecat
+  deprecated, which is what lets `user_instructions` reach it. The voice, model, language and
+  timeout an untuned workflow ends up with are the same as before.
