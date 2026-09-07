@@ -111,6 +111,13 @@ FINAL_EXTRACTION_TIMEOUT_SECONDS = 8.0
 # provider error, an empty synthesis -- gets no BotStoppedSpeakingFrame, and
 # without this deadline the caller would stay muted for the rest of the call.
 # Same question, same answer as the transfer path's playback start timeout.
+#
+# The deadline cannot tell "no audio ever" from "first audio later than this",
+# so a TTS that is merely slow (and nothing else speaking to hold the mute)
+# unmutes the caller shortly before the message plays. That is the trade: an
+# early unmute is recoverable, a mute that lasts the rest of the call is not.
+# Timing it from the TTSStartedFrame instead of from the handover, or setting
+# it per provider, would narrow the window if that ever proves too tight.
 _QUEUED_SPEECH_PLAYBACK_START_TIMEOUT_SECONDS = 5.0
 
 
@@ -1203,7 +1210,12 @@ class PipecatEngine:
 
         async def sink(frame: "Frame") -> None:
             await self._transport_output.queue_frame(frame)
-            if isinstance(frame, TTSAudioRawFrame):
+            # Only while the hold is still its owner's: today play_audio sends
+            # one audio frame, but if that audio is ever chunked, a later chunk
+            # must not take the hold back after playback released it.
+            if isinstance(frame, TTSAudioRawFrame) and (
+                token in self._queued_speech_mute_pending
+            ):
                 self._hold_until_playback_ends(token)
 
         return sink

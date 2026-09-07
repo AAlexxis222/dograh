@@ -17,6 +17,7 @@ import pytest
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    TTSAudioRawFrame,
     TTSSpeakFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
@@ -44,6 +45,22 @@ from api.services.workflow.pipecat_engine_variable_extractor import (
 from api.services.workflow.workflow_graph import WorkflowGraph
 from api.tests.pipecat_test_utils import run_engine_test_pipeline
 from pipecat.tests import MockLLMService, MockTTSService
+
+
+_engines_under_test: list[PipecatEngine] = []
+
+
+@pytest.fixture(autouse=True)
+async def cleanup_engines():
+    """Tear down every engine a test built.
+
+    Queued-speech holds arm a watchdog that sleeps for the playback start
+    timeout, so without this the tasks outlive the tests that made them.
+    """
+    yield
+    for engine in _engines_under_test:
+        await engine.cleanup()
+    _engines_under_test.clear()
 
 
 async def _build_engine_and_pipeline(
@@ -110,6 +127,7 @@ async def _build_engine_and_pipeline(
 
     task = PipelineWorker(pipeline, params=PipelineParams(), enable_rtvi=False)
     engine.set_task(task)
+    _engines_under_test.append(engine)
 
     return (
         engine,
@@ -504,6 +522,37 @@ class TestQueuedSpeechMuteOwnership:
         assert engine._queued_speech_mute_pending == set()
         assert len(engine._queued_speech_mute_playing) == 1
         assert await engine.should_mute_user(TTSSpeakFrame("anything")) is True
+
+    @pytest.mark.asyncio
+    async def test_audio_after_the_hold_was_released_does_not_mute_again(
+        self, simple_workflow: WorkflowGraph
+    ):
+        """Only the first audio frame hands the hold over.
+
+        ``play_audio`` sends one audio frame today. Were it ever chunked, a
+        chunk arriving after playback released the hold must not mute the
+        caller for an utterance that has already ended.
+        """
+        llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
+        engine, _transport, _task, _strategy, _agg = await _build_engine_and_pipeline(
+            simple_workflow, llm
+        )
+        engine.set_transport_output(SimpleNamespace(queue_frame=AsyncMock()))
+
+        token = engine.acquire_queued_speech_mute()
+        sink = engine.queued_speech_frame_sink(token)
+        audio = TTSAudioRawFrame(audio=b"\x00\x00", sample_rate=16000, num_channels=1)
+
+        await sink(audio)
+        assert await engine.should_mute_user(TTSSpeakFrame("anything")) is True
+
+        await engine.should_mute_user(BotStoppedSpeakingFrame())
+        assert _mute_holds(engine) == set()
+
+        await sink(audio)
+
+        assert _mute_holds(engine) == set()
+        assert await engine.should_mute_user(TTSSpeakFrame("anything")) is False
 
     @pytest.mark.asyncio
     async def test_silent_tts_releases_the_hold_it_took(
