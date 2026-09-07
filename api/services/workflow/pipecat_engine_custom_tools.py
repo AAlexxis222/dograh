@@ -422,8 +422,7 @@ class CustomToolManager:
                         logger.info(
                             f"Playing audio message before HTTP tool: pk={recording_pk}"
                         )
-                        self._engine._queued_speech_mute_state = "waiting"
-                        played = False
+                        mute_token = self._engine.acquire_queued_speech_mute()
                         try:
                             result = await self._engine._fetch_recording_audio(
                                 recording_pk=int(recording_pk)
@@ -434,25 +433,25 @@ class CustomToolManager:
                                     sample_rate=self._engine._audio_config.pipeline_sample_rate
                                     if self._engine._audio_config
                                     else 16000,
-                                    queue_frame=self._engine._transport_output.queue_frame,
+                                    queue_frame=self._engine.queued_speech_frame_sink(
+                                        mute_token
+                                    ),
                                     transcript=result.transcript,
                                     persist_to_logs=True,
                                 )
-                                played = True
                             else:
                                 logger.warning(
                                     f"Failed to fetch recording pk={recording_pk}"
                                 )
                         finally:
                             # Nothing was queued, so no BotStoppedSpeakingFrame
-                            # will ever release the mute; release it here.
-                            if not played:
-                                self._engine._queued_speech_mute_state = "idle"
+                            # will ever release this hold; release it here.
+                            self._engine.release_queued_speech_mute(mute_token)
                 elif custom_message:
                     logger.info(
                         f"Playing custom message before HTTP tool: {custom_message}"
                     )
-                    self._engine._queued_speech_mute_state = "waiting"
+                    self._engine.mute_until_speech_playback_ends()
                     await self._engine.task.queue_frame(
                         TTSSpeakFrame(
                             custom_message,
