@@ -14,6 +14,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    TTSSpeakFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -266,17 +271,44 @@ def _function_call_params(engine: PipecatEngine, name: str) -> FunctionCallParam
     )
 
 
-class TestQueuedSpeechMuteResetWithoutAudio:
-    """The queued-speech mute must be released when no audio ever plays.
+def _mute_holds(engine: PipecatEngine) -> set[int]:
+    """Every queued-speech hold currently keeping the user muted."""
+    return engine._queued_speech_mute_pending | engine._queued_speech_mute_playing
 
-    ``_queued_speech_mute_state`` is set to ``"waiting"`` before the recording
-    is fetched. If the fetch fails nothing is queued, so the
-    ``BotStoppedSpeakingFrame`` that normally returns the state to ``"idle"``
-    never arrives and the user would stay muted for the rest of the call.
+
+async def _run_transition_with_audio(engine: PipecatEngine) -> FunctionCallParams:
+    """Run a transition that plays recording 42 as its transition speech."""
+    transition = await engine._create_transition_func(
+        "end_call",
+        "end",
+        transition_speech_type="audio",
+        transition_speech_recording_id="42",
+    )
+    params = _function_call_params(engine, "end_call")
+
+    with (
+        patch.object(
+            engine, "_perform_variable_extraction_if_needed", new_callable=AsyncMock
+        ),
+        patch.object(engine, "set_node", new_callable=AsyncMock),
+    ):
+        await transition(params)
+
+    return params
+
+
+class TestQueuedSpeechMuteOwnership:
+    """Queued speech mutes the user, and each operation releases only its own.
+
+    A hold is taken before the recording is fetched. If the fetch yields no
+    audio nothing is queued, so the ``BotStoppedSpeakingFrame`` that normally
+    ends the hold never arrives and the user would stay muted for the rest of
+    the call. Releasing it must not unmute speech that a parallel function
+    call (pipecat runs them concurrently) is still playing.
     """
 
     @pytest.mark.asyncio
-    async def test_transition_audio_fetch_failure_resets_mute_state(
+    async def test_transition_audio_fetch_failure_releases_mute(
         self, simple_workflow: WorkflowGraph
     ):
         llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
@@ -285,27 +317,32 @@ class TestQueuedSpeechMuteResetWithoutAudio:
         )
         engine.set_fetch_recording_audio(AsyncMock(return_value=None))
 
-        transition = await engine._create_transition_func(
-            "end_call",
-            "end",
-            transition_speech_type="audio",
-            transition_speech_recording_id="42",
-        )
-        params = _function_call_params(engine, "end_call")
+        params = await _run_transition_with_audio(engine)
 
-        with (
-            patch.object(
-                engine, "_perform_variable_extraction_if_needed", new_callable=AsyncMock
-            ),
-            patch.object(engine, "set_node", new_callable=AsyncMock),
-        ):
-            await transition(params)
-
-        assert engine._queued_speech_mute_state == "idle"
+        assert _mute_holds(engine) == set()
         params.result_callback.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_http_tool_audio_fetch_failure_resets_mute_state(
+    async def test_transition_audio_fetch_exception_releases_mute(
+        self, simple_workflow: WorkflowGraph
+    ):
+        llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
+        engine, _transport, _task, _strategy, _agg = await _build_engine_and_pipeline(
+            simple_workflow, llm
+        )
+        engine.set_fetch_recording_audio(
+            AsyncMock(side_effect=RuntimeError("recording service down"))
+        )
+
+        params = await _run_transition_with_audio(engine)
+
+        assert _mute_holds(engine) == set()
+        params.result_callback.assert_awaited_once_with(
+            {"status": "error", "error": "recording service down"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_http_tool_audio_fetch_failure_releases_mute(
         self, simple_workflow: WorkflowGraph
     ):
         llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
@@ -338,21 +375,137 @@ class TestQueuedSpeechMuteResetWithoutAudio:
         ):
             await handler(params)
 
-        assert engine._queued_speech_mute_state == "idle"
+        assert _mute_holds(engine) == set()
         params.result_callback.assert_awaited_once_with({"status": "ok"})
 
     @pytest.mark.asyncio
-    async def test_wait_for_speech_playback_timeout_resets_mute_state(
+    async def test_http_tool_audio_fetch_exception_releases_mute(
         self, simple_workflow: WorkflowGraph
     ):
         llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
         engine, _transport, _task, _strategy, _agg = await _build_engine_and_pipeline(
             simple_workflow, llm
         )
+        engine.set_fetch_recording_audio(
+            AsyncMock(side_effect=RuntimeError("recording service down"))
+        )
+
+        manager = CustomToolManager(engine)
+        tool = SimpleNamespace(
+            definition={
+                "config": {
+                    "customMessageType": "audio",
+                    "customMessageRecordingId": "42",
+                }
+            }
+        )
+        handler = manager._create_http_tool_handler(tool, "lookup_order")
+        params = _function_call_params(engine, "lookup_order")
+
+        with patch.object(
+            manager, "get_organization_id", new_callable=AsyncMock, return_value=1
+        ):
+            await handler(params)
+
+        assert _mute_holds(engine) == set()
+        params.result_callback.assert_awaited_once_with(
+            {"status": "error", "error": "recording service down"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_fetch_failure_keeps_parallel_playback_muted(
+        self, simple_workflow: WorkflowGraph
+    ):
+        """A failed operation must not unmute another one's speech.
+
+        Function calls run in parallel, so a transition whose recording never
+        arrives can finish while a second one is still being played out.
+        """
+        llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
+        engine, _transport, _task, _strategy, _agg = await _build_engine_and_pipeline(
+            simple_workflow, llm
+        )
+        engine.set_fetch_recording_audio(AsyncMock(return_value=None))
+
+        # Another function call already queued its speech.
+        engine.mute_until_speech_playback_ends()
+
+        await _run_transition_with_audio(engine)
+
+        assert await engine.should_mute_user(TTSSpeakFrame("anything")) is True
+
+        # The speech that is playing releases its own hold when it ends.
+        await engine.should_mute_user(BotStoppedSpeakingFrame())
+
+        assert _mute_holds(engine) == set()
+        assert await engine.should_mute_user(TTSSpeakFrame("anything")) is False
+
+    @pytest.mark.asyncio
+    async def test_partial_playback_queue_keeps_user_muted(
+        self, simple_workflow: WorkflowGraph
+    ):
+        """A frame failing mid-utterance must not unmute the queued audio.
+
+        ``play_audio`` pushes several frames. Once the first has reached the
+        transport the utterance is on its way to the caller, so the hold
+        belongs to playback even though the call raised.
+        """
+        llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
+        engine, _transport, _task, _strategy, _agg = await _build_engine_and_pipeline(
+            simple_workflow, llm
+        )
+        engine.set_fetch_recording_audio(
+            AsyncMock(
+                return_value=SimpleNamespace(audio=b"\x00\x00", transcript="hello")
+            )
+        )
+        engine.set_transport_output(
+            SimpleNamespace(
+                queue_frame=AsyncMock(
+                    side_effect=[None, RuntimeError("transport gone")]
+                )
+            )
+        )
+
+        await _run_transition_with_audio(engine)
+
+        assert engine._queued_speech_mute_pending == set()
+        assert len(engine._queued_speech_mute_playing) == 1
+        assert await engine.should_mute_user(TTSSpeakFrame("anything")) is True
+
+    @pytest.mark.asyncio
+    async def test_wait_for_speech_playback_start_timeout_keeps_other_holds(
+        self, simple_workflow: WorkflowGraph
+    ):
+        """The transfer path arms playback without taking a hold of its own."""
+        llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
+        engine, _transport, _task, _strategy, _agg = await _build_engine_and_pipeline(
+            simple_workflow, llm
+        )
+        engine.mute_until_speech_playback_ends()
         engine.arm_speech_playback()
-        engine._queued_speech_mute_state = "waiting"
 
         played = await engine.wait_for_speech_playback(start_timeout=0.01)
 
         assert played is False
-        assert engine._queued_speech_mute_state == "idle"
+        assert await engine.should_mute_user(TTSSpeakFrame("anything")) is True
+
+    @pytest.mark.asyncio
+    async def test_wait_for_speech_playback_finish_timeout_keeps_other_holds(
+        self, simple_workflow: WorkflowGraph
+    ):
+        """Playback started but never finished: the hold still belongs to it."""
+        llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
+        engine, _transport, _task, _strategy, _agg = await _build_engine_and_pipeline(
+            simple_workflow, llm
+        )
+        engine.mute_until_speech_playback_ends()
+        engine.arm_speech_playback()
+        await engine.should_mute_user(BotStartedSpeakingFrame())
+
+        played = await engine.wait_for_speech_playback(
+            start_timeout=1.0, playback_timeout=0.01
+        )
+
+        assert played is False
+        assert await engine.should_mute_user(TTSSpeakFrame("anything")) is True
