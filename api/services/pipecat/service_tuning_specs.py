@@ -7,11 +7,12 @@ no-op. ``settings_allowed`` must be a subset of the real dataclass fields
 (guarded by test_service_tuning_schema.py); identity fields owned by the
 model registry (model/voice/language/api_key) are never tunable here.
 
-Four build gates below name a knob that this build cannot honour rather than
+Five build gates below name a knob that this build cannot honour rather than
 letting it through as a silent no-op or a broken run (§1.2):
 ``RESPONSES_API_AVAILABLE``, ``OPENAI_REALTIME_STT_AVAILABLE``,
-``PROVIDER_TURN_DETECTION_AVAILABLE`` and ``TTS_SILENCE_AFTER_STOP_AVAILABLE``.
-Each is a constant the PR that wires the feature flips.
+``PROVIDER_TURN_DETECTION_AVAILABLE``, ``TTS_SILENCE_AFTER_STOP_AVAILABLE`` and
+``FILLER_ROLE_AVAILABLE``. Each is a constant the PR that wires the feature
+flips.
 """
 
 from __future__ import annotations
@@ -232,8 +233,17 @@ SPECS[("stt", "deepgram")] = TuningSpec(
     # exposed: it removes Nova's end-of-speech signal, which is who-owns-the-
     # turn territory (spec §6, same posture as _PROVIDER_TURN_KNOBS), and it
     # is indistinguishable at this seam from the ``true`` this check exists to
-    # reject. Milliseconds only.
-    settings_types={"endpointing": int},
+    # reject. Milliseconds only. The biasing/redaction knobs are ``Any`` on
+    # Nova too (deepgram/stt.py:215-222) while the wire takes a string or a
+    # list of strings (query params, :572-574); ``redact`` also takes ``true``.
+    settings_types={
+        "endpointing": int,
+        "keyterm": (str, list),
+        "keywords": (str, list),
+        "replace": (str, list),
+        "search": (str, list),
+        "redact": (bool, str, list),
+    },
     # "keyterm" deliberately excluded: test_null_only_on_nullable_fields
     # requires stt.deepgram.settings.keyterm=None to be rejected even though
     # DeepgramSTTService (Nova) itself defaults keyterm=None at connect time
@@ -344,11 +354,19 @@ SPECS[("stt", "gladia")] = TuningSpec(
         "messages_config": dict,
     },
 )
+# ``use_separate_recognition_per_channel`` is excluded: ``_connect`` hard-codes
+# ``audio_channel_count=1`` (google/stt.py:846) and reads every other field of
+# the row into the recognition features (:851-861) but never this one.
 SPECS[("stt", "google")] = TuningSpec(
     "stt",
     "google",
     GoogleSTTSettings,
-    _fields(GoogleSTTSettings, "languages", "language_codes"),
+    _fields(
+        GoogleSTTSettings,
+        "languages",
+        "language_codes",
+        "use_separate_recognition_per_channel",
+    ),
 )
 SPECS[("stt", "azure_speech")] = TuningSpec(
     "stt", "azure_speech", AzureSTTSettings, _fields(AzureSTTSettings)
@@ -474,11 +492,23 @@ _TURN_COMPLETION = ("filter_incomplete_user_turns", "user_turn_completion_config
 # it there would be a knob that silently does nothing — the one failure this
 # table exists to prevent.
 _LLM_EXCLUDED = _TURN_COMPLETION + ("top_k",)
+# Declared on every OpenAI-shaped Settings class but read by only one wire:
+# openai/base_llm.py:353-355 sends them, so the OpenAI-compatible rows keep
+# them; Google's ``_build_generation_params`` (google/llm.py:385-397, inherited
+# by Vertex) and Bedrock's ``_build_inference_config`` (aws/llm.py:265-271)
+# never look at them.
+_PENALTIES_AND_SEED = ("frequency_penalty", "presence_penalty", "seed")
 
 
-def _llm_row(provider: str, settings_cls: type, **kwargs: Any) -> TuningSpec:
+def _llm_row(
+    provider: str, settings_cls: type, *exclude: str, **kwargs: Any
+) -> TuningSpec:
     return TuningSpec(
-        "llm", provider, settings_cls, _fields(settings_cls, *_LLM_EXCLUDED), **kwargs
+        "llm",
+        provider,
+        settings_cls,
+        _fields(settings_cls, *_LLM_EXCLUDED, *exclude),
+        **kwargs,
     )
 
 
@@ -502,14 +532,14 @@ SPECS[("llm", "google")] = TuningSpec(
     "llm",
     "google",
     GoogleLLMSettings,
-    _fields(GoogleLLMSettings, *_TURN_COMPLETION),
+    _fields(GoogleLLMSettings, *_TURN_COMPLETION, *_PENALTIES_AND_SEED),
     settings_types=_GOOGLE_LLM_TYPES,
 )
 SPECS[("llm", "google_vertex")] = TuningSpec(
     "llm",
     "google_vertex",
     GoogleVertexLLMSettings,
-    _fields(GoogleVertexLLMSettings, *_TURN_COMPLETION),
+    _fields(GoogleVertexLLMSettings, *_TURN_COMPLETION, *_PENALTIES_AND_SEED),
     settings_types=_GOOGLE_LLM_TYPES,
 )
 SPECS[("llm", "groq")] = _llm_row("groq", GroqLLMSettings)
@@ -518,11 +548,16 @@ SPECS[("llm", "azure")] = _llm_row("azure", AzureLLMSettings)
 SPECS[("llm", "huggingface")] = _llm_row("huggingface", HuggingFaceLLMSettings)
 SPECS[("llm", "speaches")] = _llm_row("speaches", SpeachesLLMSettings)
 SPECS[("llm", "minimax")] = _llm_row("minimax", MiniMaxLLMSettings)
-SPECS[("llm", "sarvam")] = _llm_row("sarvam", SarvamLLMSettings)
+# Sarvam's payload builder pops ``max_completion_tokens`` (sarvam/llm.py:137).
+SPECS[("llm", "sarvam")] = _llm_row(
+    "sarvam", SarvamLLMSettings, "max_completion_tokens"
+)
 # DograhLLMService declares no Settings class of its own: it inherits
 # OpenAILLMService's (dograh/llm.py:47,62).
 SPECS[("llm", "dograh")] = _llm_row("dograh", OpenAILLMSettings)
-SPECS[("llm", "aws_bedrock")] = _llm_row("aws_bedrock", AWSBedrockLLMSettings)
+SPECS[("llm", "aws_bedrock")] = _llm_row(
+    "aws_bedrock", AWSBedrockLLMSettings, *_PENALTIES_AND_SEED
+)
 
 # ---------------------------------------------------------------------------
 # realtime (speech-to-speech)
@@ -788,10 +823,14 @@ The services below hand turns over by broadcasting their own
 ``UserStarted/StoppedSpeakingFrame`` and asking the aggregator for
 ``ExternalUserTurnStrategies``. That request is a no-op here:
 ``run_pipeline.py:968-979`` always passes its own ``user_turn_strategies``,
-which wins (llm_response_universal.py:966-974), so the pipeline would keep
-running local VAD while the provider endpoints server-side. Turn handling
-belongs to the turn PR (spec §6); until then the *values* that flip it over
-are a named 422, while the fields stay declared so the knobs keep one name.
+which wins (llm_response_universal.py:966-974). The provider's frames are
+*not* discarded, though: the aggregator forwards them
+(llm_response_universal.py:1567-1572) while the local strategies keep
+emitting their own, so the pipeline would see two turn signals for one
+utterance. Turn handling belongs to the turn PR (spec §6); until then the
+*values* that flip it over are a named 422, and so are the *fields* that
+only tune the provider's own turn detection (``_PROVIDER_TURN_FIELDS``),
+while everything stays declared so the knobs keep one name.
 """
 
 _TURN_HANDOVER = "hands turn detection to the provider"
@@ -811,6 +850,23 @@ _PROVIDER_TURN_KNOBS: dict[tuple[str, str, str, str], Callable[[Any], bool]] = {
     # only in AssemblyAI's own turn-detection mode.
     ("stt", "assemblyai", "ctor", "vad_force_turn_endpoint"): lambda v: v is False,
 }
+# Whole fields, any value: they tune the provider's own turn detection, and
+# the one mode the gate above lets through overwrites them.
+_PROVIDER_TURN_FIELDS: frozenset[tuple[str, str, str, str]] = frozenset(
+    {
+        # assemblyai/stt.py:601-645 (_configure_pipecat_turn_mode) rewrites
+        # all three under vad_force_turn_endpoint=True.
+        ("stt", "assemblyai", "settings", "end_of_turn_confidence_threshold"),
+        ("stt", "assemblyai", "settings", "min_turn_silence"),
+        ("stt", "assemblyai", "settings", "max_turn_silence"),
+        # turn_detection_mode=external loads a preset with
+        # end_of_utterance_mode=EXTERNAL (speechmatics voice/_presets.py:
+        # 165-176), under which the SDK's end-of-utterance timers
+        # (voice/_client.py:1463,1553-1560) never run.
+        ("stt", "speechmatics", "settings", "end_of_utterance_silence_trigger"),
+        ("stt", "speechmatics", "settings", "end_of_utterance_max_delay"),
+    }
+)
 
 
 def _provider_turn_error(
@@ -818,13 +874,35 @@ def _provider_turn_error(
 ) -> str | None:
     if PROVIDER_TURN_DETECTION_AVAILABLE:
         return None
+    path = f"{kind}.{provider}.{section}.{name}"
+    if (kind, provider, section, name) in _PROVIDER_TURN_FIELDS:
+        return (
+            f"{path}: only read when the provider owns turn detection "
+            "(PROVIDER_TURN_DETECTION_AVAILABLE), not wired in this build (turn PR)"
+        )
     hands_over = _PROVIDER_TURN_KNOBS.get((kind, provider, section, name))
     if hands_over is None or not hands_over(value):
         return None
-    return (
-        f"{kind}.{provider}.{section}.{name}: {value} {_TURN_HANDOVER}, "
-        "not wired in this build (turn PR)"
-    )
+    return f"{path}: {value} {_TURN_HANDOVER}, not wired in this build (turn PR)"
+
+
+FILLER_ROLE_AVAILABLE = False
+"""Whether this build builds a filler LLM that ``scope.filler`` can reach.
+
+The flag is declared on ``LLMScope`` so the document keeps one name, but no
+factory call passes ``role="filler"`` yet: the role arrives with the tools PR
+(spec §8.1). Until then ``scope.filler: true`` is a named 422, not a stored
+placebo; ``false`` and absent are the same "no such role" and pass.
+"""
+
+
+def _scope_error(document: dict[str, Any]) -> list[str]:
+    if FILLER_ROLE_AVAILABLE or not (document.get("scope") or {}).get("filler"):
+        return []
+    return [
+        "scope.filler: no filler LLM role in this build (FILLER_ROLE_AVAILABLE), "
+        "it lands with the tools PR"
+    ]
 
 
 TTS_SILENCE_AFTER_STOP_AVAILABLE = False
@@ -1078,4 +1156,5 @@ def validate_service_tuning(document: dict[str, Any]) -> list[str]:
                 errors.extend(_validate_openai_stt(tuning))
             if kind == "realtime" and provider == "ultravox_realtime":
                 errors.extend(_validate_ultravox_extra(tuning.get("settings") or {}))
+    errors.extend(_scope_error(document))
     return errors

@@ -15,6 +15,7 @@ import pytest
 from pydantic import ValidationError
 
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
+from api.services.pipecat import service_tuning_specs as specs
 from api.services.pipecat.service_factory import create_stt_service
 from api.tests.service_tuning._transport import audio_config, user_config_stt
 
@@ -119,6 +120,40 @@ def test_provider_turn_handover_is_a_named_422(
         ),
     ):
         validate(handover)
+
+
+# provider, field, a well-typed value. Whole fields, not values: these tune the
+# provider's own turn detection, which this build's forced mode overwrites.
+FORCED_MODE_FIELDS = [
+    # assemblyai/stt.py:601-645 (_configure_pipecat_turn_mode) rewrites all
+    # three under vad_force_turn_endpoint=True, the only value the gate lets in.
+    ("assemblyai", "end_of_turn_confidence_threshold", 0.6),
+    ("assemblyai", "min_turn_silence", 200),
+    ("assemblyai", "max_turn_silence", 1500),
+    # speechmatics: turn_detection_mode=external is the only mode the gate lets
+    # in, and its preset sets end_of_utterance_mode=EXTERNAL (speechmatics
+    # voice/_presets.py:165-176), under which the SDK's end-of-utterance timers
+    # (voice/_client.py:1463,1553-1560) never run.
+    ("speechmatics", "end_of_utterance_silence_trigger", 0.5),
+    ("speechmatics", "end_of_utterance_max_delay", 2.0),
+]
+
+
+@pytest.mark.parametrize("provider,field,value", FORCED_MODE_FIELDS)
+def test_forced_mode_turn_fields_are_a_named_422_until_the_turn_pr(
+    provider, field, value, monkeypatch
+):
+    doc = {"service_tuning": {"stt": {provider: {"settings": {field: value}}}}}
+    with pytest.raises(
+        ValidationError,
+        match=(
+            f"stt.{provider}.settings.{field}: .*PROVIDER_TURN_DETECTION_AVAILABLE"
+            ".*turn PR"
+        ),
+    ):
+        WorkflowConfigurationDefaults.model_validate(doc)
+    monkeypatch.setattr(specs, "PROVIDER_TURN_DETECTION_AVAILABLE", True)
+    WorkflowConfigurationDefaults.model_validate(doc)
 
 
 @pytest.mark.parametrize("value", [0, None, "", []])

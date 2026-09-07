@@ -564,3 +564,80 @@ def test_specs_ctor_allow_lists_exist_on_constructors():
         for cls in spec.service_classes:
             union |= _ctor_params(cls)
         assert spec.ctor_allowed <= union, (kind, provider, spec.ctor_allowed - union)
+
+
+@pytest.mark.parametrize(
+    "provider,name",
+    [
+        # google/llm.py:385-397 (_build_generation_params) reads temperature,
+        # top_p, top_k, max_tokens, safety_settings and thinking only; Vertex
+        # inherits it.
+        ("google", "frequency_penalty"),
+        ("google", "presence_penalty"),
+        ("google", "seed"),
+        ("google_vertex", "frequency_penalty"),
+        ("google_vertex", "presence_penalty"),
+        ("google_vertex", "seed"),
+        # aws/llm.py:265-271 (_build_inference_config) reads max_tokens,
+        # temperature, top_p and stop_sequences only.
+        ("aws_bedrock", "frequency_penalty"),
+        ("aws_bedrock", "presence_penalty"),
+        ("aws_bedrock", "seed"),
+        # sarvam/llm.py:137 pops it off the chat-completions payload.
+        ("sarvam", "max_completion_tokens"),
+    ],
+)
+def test_llm_knobs_the_serializer_never_reads_are_rejected_by_name(provider, name):
+    with pytest.raises(
+        ValidationError, match=f"llm.{provider}.settings.{name}: unknown setting"
+    ):
+        _validate({"llm": {provider: {"settings": {name: 1}}}})
+
+
+def test_google_stt_separate_recognition_per_channel_is_rejected_by_name():
+    # google/stt.py:846 hard-codes audio_channel_count=1 and _connect
+    # (:849-861) never reads the field.
+    with pytest.raises(
+        ValidationError,
+        match="stt.google.settings.use_separate_recognition_per_channel: unknown setting",
+    ):
+        _validate(
+            {
+                "stt": {
+                    "google": {
+                        "settings": {"use_separate_recognition_per_channel": True}
+                    }
+                }
+            }
+        )
+
+
+def test_scope_filler_is_gated_until_the_filler_role_exists(monkeypatch):
+    _validate({"scope": {"filler": False}})
+    with pytest.raises(ValidationError, match="scope.filler: .*FILLER_ROLE_AVAILABLE"):
+        _validate({"scope": {"filler": True}})
+    monkeypatch.setattr(specs, "FILLER_ROLE_AVAILABLE", True)
+    assert _validate({"scope": {"filler": True}}).service_tuning.scope.filler is True
+
+
+@pytest.mark.parametrize("name", ["keyterm", "keywords", "replace", "search"])
+@pytest.mark.parametrize("value", [7, {"a": True}, True])
+def test_deepgram_list_or_string_knobs_reject_other_shapes(name, value):
+    # Nova declares these as ``Any`` (deepgram/stt.py:215-222), so nothing on
+    # the field constrains the value; the wire takes a string or a list.
+    with pytest.raises(
+        ValidationError, match=f"stt.deepgram.settings.{name}: wrong type"
+    ):
+        _validate({"stt": {"deepgram": {"settings": {name: value}}}})
+
+
+def test_deepgram_list_or_string_knobs_take_both_shapes():
+    _validate({"stt": {"deepgram": {"settings": {"keyterm": "Marbella"}}}})
+    _validate({"stt": {"deepgram": {"settings": {"keyterm": ["Marbella"]}}}})
+    _validate({"stt": {"deepgram": {"settings": {"redact": True}}}})
+    _validate({"stt": {"deepgram": {"settings": {"redact": "pci"}}}})
+    _validate({"stt": {"deepgram": {"settings": {"redact": ["pci", "ssn"]}}}})
+    with pytest.raises(
+        ValidationError, match="stt.deepgram.settings.redact: wrong type"
+    ):
+        _validate({"stt": {"deepgram": {"settings": {"redact": 3}}}})

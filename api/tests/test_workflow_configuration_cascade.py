@@ -455,3 +455,36 @@ def test_elevenlabs_ws_speed_clamped_to_supported_range():
         resolved.effective["service_tuning"]["tts"]["elevenlabs"]["settings"]["speed"]
         == 1.2
     )
+
+
+@pytest.mark.parametrize(
+    "kind,provider,name,written,used",
+    [
+        # Ultravox call-creation body: temperature 0-1, maxDuration in seconds
+        # (ultravox/llm.py:348 renders the timedelta as "<seconds>s").
+        ("realtime", "ultravox_realtime", "temperature", 1.7, 1.0),
+        ("realtime", "ultravox_realtime", "max_duration", 5, 10),
+        ("realtime", "ultravox_realtime", "max_duration", 7200, 3600),
+        # elevenlabs/stt.py:196-197 documents both ranges on the field.
+        ("stt", "elevenlabs", "vad_threshold", 0.95, 0.9),
+        ("stt", "elevenlabs", "vad_silence_threshold_secs", 0.1, 0.3),
+    ],
+)
+def test_ultravox_and_elevenlabs_vad_knobs_are_clamped(
+    kind, provider, name, written, used
+):
+    resolved = resolve_effective_workflow_configurations(
+        organization_defaults={},
+        definition_configurations={
+            "service_tuning": {kind: {provider: {"settings": {name: written}}}}
+        },
+    )
+    assert (
+        resolved.effective["service_tuning"][kind][provider]["settings"][name] == used
+    )
+    assert any(
+        w.startswith(
+            f"service_tuning.{kind}.{provider}.settings.{name}: {written} clamped to {used}"
+        )
+        for w in resolved.warnings
+    )

@@ -3,7 +3,12 @@
 Sources: Deepgram Flux docs (R4 §3, spec V16): eot_threshold 0.5-1.0,
 eager_eot_threshold 0.3-0.9 and ≤ eot_threshold, eot_timeout_ms 500-60000;
 ElevenLabs websocket speed 0.7-1.2 (pass2/service-factory.md B9). LLM
-temperature 0-2 is the widest range any provider accepts.
+temperature 0-2 is the widest range any provider accepts. ElevenLabs realtime
+STT documents its VAD ranges on the field (elevenlabs/stt.py:196-197):
+vad_threshold 0.1-0.9, vad_silence_threshold_secs 0.3-3.0. Ultravox call
+creation takes temperature 0-1 and maxDuration 10-3600 s; the row also accepts
+an ISO-8601 duration string for max_duration, which the clamp leaves alone
+(it only touches numbers).
 """
 
 from __future__ import annotations
@@ -54,6 +59,44 @@ SERVICE_TUNING_NUMERIC_BOUNDS: tuple[tuple[tuple[str, ...], float, float], ...] 
             1.0,
         ),
         (("service_tuning", "tts", "elevenlabs", "settings", "style"), 0.0, 1.0),
+        (
+            ("service_tuning", "stt", "elevenlabs", "settings", "vad_threshold"),
+            0.1,
+            0.9,
+        ),
+        (
+            (
+                "service_tuning",
+                "stt",
+                "elevenlabs",
+                "settings",
+                "vad_silence_threshold_secs",
+            ),
+            0.3,
+            3.0,
+        ),
+        (
+            (
+                "service_tuning",
+                "realtime",
+                "ultravox_realtime",
+                "settings",
+                "temperature",
+            ),
+            0.0,
+            1.0,
+        ),
+        (
+            (
+                "service_tuning",
+                "realtime",
+                "ultravox_realtime",
+                "settings",
+                "max_duration",
+            ),
+            10,
+            3600,
+        ),
     ]
     + [
         (("service_tuning", "llm", p, "settings", "temperature"), 0.0, 2.0)
