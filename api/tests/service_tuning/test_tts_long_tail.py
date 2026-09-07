@@ -74,7 +74,8 @@ TTS_CASES = [
     ),
     ("smallest", "lightning-v2", {"speed": 1.1}, {}, "SmallestTTSService"),
     ("google", "chirp_3_hd", {"speaking_rate": 1.4}, {}, "GoogleTTSService"),
-]
+    ("speaches", "kokoro", {"instructions": "calm", "speed": 1.2}, {}, "SpeachesTTSService"),
+]  # fmt: skip
 
 
 @pytest.mark.parametrize("provider,model,settings,ctor,cls", TTS_CASES)
@@ -135,15 +136,43 @@ def test_xai_registry_speed_reaches_the_service():
 
 
 def test_camb_timeout_ctor_reaches_the_service():
-    # Camb is the one TTS branch that keeps building by direct kwargs (it has
-    # no ``settings=`` today), so its row exposes the ctor timeout only.
-    with patch("pipecat.services.camb.tts.CambTTSService") as mock:
+    with patch("api.services.pipecat.service_factory.CambTTSService") as mock:
         create_tts_service(
             user_config_tts("camb", model="mars-flash", voice="147320"),
             audio_config(),
             tuning={"tts": {"camb": {"ctor": {"timeout": 30.0}}}},
         )
     assert mock.call_args.kwargs["timeout"] == 30.0
+
+
+def test_camb_user_instructions_reach_the_settings():
+    # Camb used to be built by the deprecated constructor kwargs (#10), so
+    # nothing under ``settings`` could reach it; it goes through
+    # ``settings=`` like every other branch now.
+    with patch("api.services.pipecat.service_factory.CambTTSService") as mock:
+        create_tts_service(
+            user_config_tts("camb", model="mars-instruct", voice="147320"),
+            audio_config(),
+            tuning={"tts": {"camb": {"settings": {"user_instructions": "warm"}}}},
+        )
+    settings = mock.call_args.kwargs["settings"]
+    assert settings.user_instructions == "warm"
+    assert settings.model == "mars-instruct" and settings.voice == 147320
+
+
+def test_control_camb_untuned_matches_the_deprecated_kwargs_construction():
+    # §1.3: the effective settings of an untuned build are the ones the
+    # deprecated ``voice_id=`` / ``model=`` construction produced, language
+    # written after construction included, and the timeout is the default.
+    from pipecat.services.camb.tts import CambTTSService
+
+    expected = CambTTSService(api_key="test-key", voice_id=147320, model="mars-flash")
+    expected._settings.language = "en-us"
+    service = create_tts_service(
+        user_config_tts("camb", model="mars-flash", voice="147320"), audio_config()
+    )
+    assert service._settings == expected._settings
+    assert service._timeout == expected._timeout == 60.0
 
 
 def test_camb_timeout_accepts_a_json_int():
@@ -176,7 +205,7 @@ def test_all_section_silence_time_is_not_splatted_into_the_provider_ctor():
     kwargs = mock.call_args.kwargs
     assert kwargs["silence_time_s"] == 0.4 and kwargs["max_buffer_delay_ms"] == 200
 
-    with patch("pipecat.services.camb.tts.CambTTSService") as mock:
+    with patch("api.services.pipecat.service_factory.CambTTSService") as mock:
         create_tts_service(
             user_config_tts("camb", model="mars-flash", voice="147320"),
             audio_config(),
@@ -197,7 +226,7 @@ def test_all_section_silence_time_enables_push_silence_after_stop():
     kwargs = mock.call_args.kwargs
     assert kwargs["push_silence_after_stop"] is True and kwargs["silence_time_s"] == 0.4
     # Camb stays the one branch built without either (C8).
-    with patch("pipecat.services.camb.tts.CambTTSService") as mock:
+    with patch("api.services.pipecat.service_factory.CambTTSService") as mock:
         create_tts_service(
             user_config_tts("camb", model="mars-flash", voice="147320"),
             audio_config(),

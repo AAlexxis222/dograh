@@ -60,6 +60,7 @@ from pipecat.services.azure.llm import AzureLLMService, AzureLLMSettings
 from pipecat.services.azure.realtime.llm import AzureRealtimeLLMSettings
 from pipecat.services.azure.stt import AzureSTTService, AzureSTTSettings
 from pipecat.services.azure.tts import AzureTTSService, AzureTTSSettings
+from pipecat.services.camb.tts import CambTTSService, CambTTSSettings
 from pipecat.services.cartesia.stt import CartesiaSTTService, CartesiaSTTSettings
 from pipecat.services.cartesia.tts import (
     CartesiaTTSService,
@@ -1170,15 +1171,19 @@ def create_tts_service(
             **silence,
         )
     elif user_config.tts.provider == ServiceProviders.CAMB.value:
-        from pipecat.services.camb.tts import CambTTSService
-
         voice_id = int(getattr(user_config.tts, "voice", None) or "147320")
         language = getattr(user_config.tts, "language", None) or "en-us"
         plan = tuning_for(tuning, "tts", ServiceProviders.CAMB.value)
+        # The same values the deprecated ``voice_id=`` / ``model=`` kwargs
+        # carried, as a settings delta (#10): the constructor applied a given
+        # model only, so a missing one stays the constructor's default here
+        # too rather than becoming an explicit None.
+        settings_kwargs: dict = {"voice": voice_id}
+        if user_config.tts.model is not None:
+            settings_kwargs["model"] = user_config.tts.model
         tts = CambTTSService(
             api_key=user_config.tts.api_key,
-            voice_id=voice_id,
-            model=user_config.tts.model,
+            settings=build_settings(CambTTSSettings, settings_kwargs, plan),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
             **_tts_provider_ctor(plan),
@@ -1188,13 +1193,18 @@ def create_tts_service(
         return tts
     elif user_config.tts.provider == ServiceProviders.SPEACHES.value:
         _validate_runtime_service_url(user_config.tts.base_url, "base_url")
+        plan = tuning_for(tuning, "tts", ServiceProviders.SPEACHES.value)
         return SpeachesTTSService(
             base_url=user_config.tts.base_url,
             api_key=user_config.tts.api_key or "none",
-            settings=SpeachesTTSSettings(
-                model=user_config.tts.model,
-                voice=user_config.tts.voice,
-                speed=user_config.tts.speed,
+            settings=build_settings(
+                SpeachesTTSSettings,
+                {
+                    "model": user_config.tts.model,
+                    "voice": user_config.tts.voice,
+                    "speed": user_config.tts.speed,
+                },
+                plan,
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],

@@ -34,7 +34,7 @@ from pipecat.services.aws.llm import AWSBedrockLLMSettings
 from pipecat.services.azure.llm import AzureLLMSettings
 from pipecat.services.azure.stt import AzureSTTSettings
 from pipecat.services.azure.tts import AzureTTSSettings
-from pipecat.services.camb.tts import CambTTSService
+from pipecat.services.camb.tts import CambTTSService, CambTTSSettings
 from pipecat.services.cartesia.stt import CartesiaSTTService, CartesiaSTTSettings
 from pipecat.services.cartesia.tts import (
     CartesiaTTSService,
@@ -90,6 +90,7 @@ from pipecat.services.smallest.stt import SmallestSTTSettings
 from pipecat.services.smallest.tts import SmallestTTSSettings
 from pipecat.services.speaches.llm import SpeachesLLMSettings
 from pipecat.services.speaches.stt import SpeachesSTTSettings
+from pipecat.services.speaches.tts import SpeachesTTSSettings
 from pipecat.services.speechmatics.stt import (
     AdditionalVocabEntry,
     SpeakerIdentifier,
@@ -511,17 +512,22 @@ SPECS[("tts", "deepgram")] = TuningSpec(
 SPECS[("tts", "lmnt")] = TuningSpec(
     "tts", "lmnt", LmntTTSSettings, _fields(LmntTTSSettings)
 )
-# Camb is the one TTS branch that still builds by direct constructor kwargs
-# (service_factory.py:927-943 passes no ``settings=``), so nothing under
-# ``settings`` could reach the service: only the request timeout is tunable.
+# ``user_instructions`` is the one field Camb declares beyond the identity
+# ones (camb/tts.py:142-153); the request timeout is a constructor argument.
 SPECS[("tts", "camb")] = TuningSpec(
     "tts",
     "camb",
-    None,
-    frozenset(),
+    CambTTSSettings,
+    _fields(CambTTSSettings),
     service_classes=(CambTTSService,),
     ctor_allowed=frozenset({"timeout"}),
     ctor_types={"timeout": float},
+)
+# Speaches speaks OpenAI's audio API and inherits its Settings unchanged
+# (speaches/tts.py:14-18); ``run_tts`` reads ``instructions`` and ``speed``
+# off them (:62-68).
+SPECS[("tts", "speaches")] = TuningSpec(
+    "tts", "speaches", SpeachesTTSSettings, _fields(SpeachesTTSSettings)
 )
 SPECS[("tts", ALL)] = TuningSpec(
     "tts",
