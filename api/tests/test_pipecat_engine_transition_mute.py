@@ -506,6 +506,56 @@ class TestQueuedSpeechMuteOwnership:
         assert await engine.should_mute_user(TTSSpeakFrame("anything")) is True
 
     @pytest.mark.asyncio
+    async def test_silent_tts_releases_the_hold_it_took(
+        self, simple_workflow: WorkflowGraph
+    ):
+        """Speech that never plays must not mute the caller for the whole call.
+
+        A TTSSpeakFrame whose TTS yields no audio produces no
+        BotStartedSpeakingFrame and no BotStoppedSpeakingFrame, so the hold it
+        took has only its own deadline to release it.
+        """
+        llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
+        engine, _transport, _task, _strategy, _agg = await _build_engine_and_pipeline(
+            simple_workflow, llm
+        )
+
+        with patch(
+            "api.services.workflow.pipecat_engine._QUEUED_SPEECH_PLAYBACK_START_TIMEOUT_SECONDS",
+            0.01,
+        ):
+            engine.mute_until_speech_playback_ends()
+            assert await engine.should_mute_user(TTSSpeakFrame("anything")) is True
+            await asyncio.sleep(0.05)
+
+        assert _mute_holds(engine) == set()
+        assert await engine.should_mute_user(TTSSpeakFrame("anything")) is False
+
+    @pytest.mark.asyncio
+    async def test_playback_start_keeps_the_hold_past_the_deadline(
+        self, simple_workflow: WorkflowGraph
+    ):
+        """Once the speech is playing, only its end releases the hold."""
+        llm = MockLLMService(mock_steps=[], chunk_delay=0.001)
+        engine, _transport, _task, _strategy, _agg = await _build_engine_and_pipeline(
+            simple_workflow, llm
+        )
+
+        with patch(
+            "api.services.workflow.pipecat_engine._QUEUED_SPEECH_PLAYBACK_START_TIMEOUT_SECONDS",
+            0.01,
+        ):
+            engine.mute_until_speech_playback_ends()
+            await engine.should_mute_user(BotStartedSpeakingFrame())
+            await asyncio.sleep(0.05)
+
+        assert await engine.should_mute_user(TTSSpeakFrame("anything")) is True
+
+        await engine.should_mute_user(BotStoppedSpeakingFrame())
+
+        assert _mute_holds(engine) == set()
+
+    @pytest.mark.asyncio
     async def test_playback_end_releases_the_hold_it_was_armed_with(
         self, simple_workflow: WorkflowGraph
     ):
