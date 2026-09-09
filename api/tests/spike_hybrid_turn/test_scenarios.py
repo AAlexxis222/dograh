@@ -28,8 +28,15 @@ def _bot_started(r):
     return [t for t, k in r.events if k.endswith("BotStartedSpeakingFrame")]
 
 
-def _row(results, sc_id, mode, wait, r):
-    ghost = any(t > 6000 for t, _ in r.messages)
+def _row(results, sc_id, mode, wait, r, *, ghost_window_ms: int | None = 6000):
+    """Record one cell of the results table.
+
+    ``ghost_window_ms`` is the instant past which a message can only be a ghost turn: every
+    single-turn scenario ends its speech long before 6000, so anything later is text pushed
+    into a turn nobody opened. ``None`` disables the flag for scenarios that legitimately speak
+    past that instant (S9's second turn), where a late message proves nothing either way.
+    """
+    ghost = ghost_window_ms is not None and any(t > ghost_window_ms for t, _ in r.messages)
     results.add(
         scenario=sc_id, mode=mode or "none", wait_ms=wait, offset=r.offset_ms,
         messages=len(r.messages),
@@ -236,6 +243,56 @@ async def test_s11_interruption_overlapping_eager_keeps_text(results, mode, wait
     assert any(S.TEXT in m for _, m in r.messages), r.events
 
 
+def _instants(r, key_prefix):
+    """Scenario instants of every tapped event whose key starts with ``key_prefix``."""
+    return [t for t, k in r.events if k.startswith(key_prefix)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,wait", MODES)
+async def test_s9_mute_then_normal_turn(results, mode, wait):
+    """MEASURED 2026-09-10, NOT the brief's expectation of one message from the second turn.
+
+    ``MuteUntilFirstBotComplete`` mutes from the first non-lifecycle frame and only unmutes on
+    ``BotStoppedSpeakingFrame``. The bot's TTS is queued at 3000, starts at ~3020 and its 3000 ms
+    of mock audio finishes draining at ~6540 — about 130-160 ms AFTER the second turn's final at
+    ~6405. So BOTH turns are muted end to end and the context stays empty: the aggregator
+    suppresses every user frame while muted (agg:1085-1097), including the two finals the
+    absorber forwarded, which is what the ``lost == 2`` cell of this row means (suppression, not
+    queue loss). The scenario measures the reset table under mute, not a post-mute turn.
+
+    The absorber's own behaviour is exactly spec §3's reset table:
+
+    * It stops promoting (``promoted == 0``) — ``_on_local_vad_stop`` returns early while muted,
+      so neither the F1 promotion nor any F2 timer fires at either VAD stop. Mutation-checked
+      2026-09-10: this cell is over-determined. Removing the mute gate from the promotion path
+      still yields ``promoted == 0``, because the aggregator broadcasts no upstream
+      ``UserStartedSpeakingFrame`` while muted and the local-turn-open gate alone blocks it. So
+      S9 pins the outcome but does NOT exercise the mute branch of ``_promote``; the branch
+      that IS discriminating here is the swallow one (see the next bullet, which does fall when
+      mutated: ``passthrough_muted_signal`` 3 -> 0).
+    * It stops swallowing: 3 of Flux's 4 turn signals are FORWARDED
+      (``passthrough_muted_signal``). The 4th is the very first StartOfTurn, swallowed because
+      it is itself the frame whose arrival at the aggregator flips the mute on — the upstream
+      ``UserMuteStartedFrame`` cannot reach the absorber before the absorber has already handled
+      the frame that caused it. Structural, not racy: measured at 0.3 ms vs 1.1 ms.
+    """
+    r = await run_scenario(S.S9, absorber_mode=mode, hybrid_wait_ms=wait)
+    _row(results, "S9", mode, wait, r, ghost_window_ms=None)
+    assert r.counts["UP:UserMuteStartedFrame"] == 1 and r.counts["UP:UserMuteStoppedFrame"] == 1, r.counts
+    # The mute really outlives the whole scenario's speech — without this the empty context
+    # below would prove nothing about mute (margin measured at 126-160 ms across 5 runs).
+    mute_stopped = _instants(r, "UP:UserMuteStoppedFrame")
+    assert mute_stopped[0] > _instants(r, "DOWN:TranscriptionFrame")[-1], r.events
+    assert r.messages == [], r.messages
+    # Reset table: no promotion while muted, and every one of Flux's 4 turn signals accounted
+    # for — 3 forwarded, 1 swallowed before the mute could be known (see docstring).
+    assert r.absorber_stats["promoted"] == 0, dict(r.absorber_stats)
+    assert r.absorber_stats["passthrough_muted_signal"] == 3, dict(r.absorber_stats)
+    assert r.absorber_stats["swallowed_UserStartedSpeakingFrame"] == 1, dict(r.absorber_stats)
+    assert r.transcripts_emitted - r.transcripts_to_aggregator == 2, r.events
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sc", [S.S5, S.S5B, S.S6, S.S7, S.S11], ids=lambda s: s.id)
 async def test_mutation_without_absorber_fails_r2_r3(results, sc):
@@ -246,6 +303,27 @@ async def test_mutation_without_absorber_fails_r2_r3(results, sc):
     _row(results, sc.id, None, 0, r)
     ok = len(r.messages) == 1 and r.messages[0][1].strip() == S.TEXT and r.counts["DOWN:UserStartedSpeakingFrame"] == 0
     assert not ok, "absorber is not load-bearing for this scenario"
+
+
+@pytest.mark.asyncio
+async def test_mutation_without_absorber_s9_is_mute_governed(results):
+    """MEASURED: S9 is the one scenario where the absorber is NOT load-bearing for the context.
+
+    The mute governs the message axis, so removing the absorber changes nothing there — the
+    context is empty either way. What the mutation does change is Flux's downstream turn
+    signals: with the absorber only 1 of the 2 StartOfTurn frames reaches the aggregator (the
+    pre-mute one, see ``test_s9_mute_then_normal_turn``), without it both do. That difference is
+    the whole of the absorber's contribution under mute, and it is what R5's reset table asks
+    for: while muted the absorber steps aside and lets the aggregator do the suppressing.
+    """
+    r = await run_scenario(S.S9, absorber_mode=None)
+    _row(results, "S9", None, 0, r, ghost_window_ms=None)
+    late = [m for t, m in r.messages if t > 5000]
+    # Predicate of the mutation: without the absorber, either Flux's DOWN starts reach the
+    # aggregator or the late turn fails to deliver its one message. Measured: both.
+    assert r.counts["DOWN:UserStartedSpeakingFrame"] != 0 or len(late) != 1, r.counts
+    assert r.counts["DOWN:UserStartedSpeakingFrame"] == 2, r.counts  # absorbed cells: 1
+    assert r.messages == [], r.messages  # identical to every absorbed cell
 
 
 @pytest.mark.asyncio

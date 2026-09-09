@@ -96,6 +96,20 @@ S7 = Scenario(
     bot_speaking_at=-500,
 )  # MinWords over sparse interims: late start and aggregation reset
 
+# --- R5 mute: MuteUntilFirstBotComplete over a muted turn, then a normal one ----------------
+# Turn 1 (0-1400) happens while the user is muted; the bot speaks at 3000 (3000 ms of mock
+# audio) and its completion lifts the mute; turn 2 (5000-6400) must behave like S0.
+S9 = Scenario(
+    id="S9",
+    flux=[(0, "start", ""), (800, "eager", TEXT), (1400, "end", TEXT),
+          (5000, "start", ""), (5800, "eager", TEXT), (6400, "end", TEXT)],
+    speaking=[(0, 1000), (5000, 6000)],
+    verdicts=[E.COMPLETE, E.COMPLETE],
+    end_at=13000,
+    mute_until_bot=True,
+    bot_speaking_at=3000,
+)
+
 S11 = Scenario(
     id="S11",
     flux=[(0, "start", ""), (800, "eager", TEXT), (1400, "end", TEXT)],
