@@ -8,10 +8,11 @@ from api.tests.spike_hybrid_turn.harness import run_scenario
 def _clusters(times, tol_ms=30.0):
     """Group instants that belong to one logical event.
 
-    One ``InterruptionFrame`` is seen twice at the tap (the aggregator broadcasts it upstream
-    and queues a copy downstream), a few ms apart. Fixed 10 ms buckets would split a pair that
-    straddles a boundary, so events are clustered by distance instead: the count stays "how many
-    interruptions happened", which is the R5 measurement.
+    The tap sits before the aggregator, so it records only the UPSTREAM copy of an interruption
+    (measured: one instant per interruption). This guards the case where a frame is seen more
+    than once a few ms apart: fixed 10 ms buckets would split a pair that straddles a boundary,
+    so events are clustered by distance instead and the count stays "how many interruptions
+    happened", which is the R5 measurement.
     """
     out = []
     for t in sorted(times):
@@ -22,10 +23,16 @@ def _clusters(times, tol_ms=30.0):
     return out
 
 
+def _bot_started(r):
+    """Instants the bot was heard starting to speak, in scenario time (empty if it never did)."""
+    return [t for t, k in r.events if k.endswith("BotStartedSpeakingFrame")]
+
+
 def _row(results, sc_id, mode, wait, r):
     ghost = any(t > 6000 for t, _ in r.messages)
     results.add(
-        scenario=sc_id, mode=mode or "none", wait_ms=wait, messages=len(r.messages),
+        scenario=sc_id, mode=mode or "none", wait_ms=wait, offset=r.offset_ms,
+        messages=len(r.messages),
         texts=[m for _, m in r.messages], down_started=r.counts["DOWN:UserStartedSpeakingFrame"],
         down_stopped=r.counts["DOWN:UserStoppedSpeakingFrame"],
         interruptions=r.counts["DOWN:InterruptionFrame"] + r.counts["UP:InterruptionFrame"],
@@ -151,9 +158,14 @@ async def test_s5b_detector_fails_measures_damage(results, mode, wait):
     r = await run_scenario(S.S5B, absorber_mode=mode, hybrid_wait_ms=wait)
     _row(results, "S5b", mode, wait, r)
     joined = " ".join(m for _, m in r.messages).strip()
-    # Content assertion (spec §11 B8): what reaches the context is a prefix of the sentence, in
-    # order — either all of it (promoted part + delta) or the part alone. Nothing else passes.
-    assert joined in (S.TEXT, S.PART), r.messages
+    # Content assertion (spec §11 B8), pinned per cell to the measured outcome instead of the
+    # disjunction: only f2/300 is racy, so only it may land on either side.
+    if mode == "f1":
+        assert joined == S.TEXT, r.messages  # promote at ~930 → close on the partial, then delta
+    elif wait >= 600:
+        assert joined == S.PART, r.messages  # promote lands mid-resumed-speech → tail orphaned
+    else:
+        assert joined in (S.TEXT, S.PART), r.messages  # f2/300: timer ~1208 vs speech ~1200
     assert r.transcripts_emitted - r.transcripts_to_aggregator == 0, r.events
 
 
@@ -171,8 +183,12 @@ async def test_s6_bargein_one_interruption_from_local_vad(results, mode, wait):
     r = await run_scenario(S.S6, absorber_mode=mode, hybrid_wait_ms=wait)
     _row(results, "S6", mode, wait, r)
     ints = [t for t, k in r.events if k.endswith("InterruptionFrame")]
-    assert len(_clusters(ints)) == 1, r.events  # one interruption event (both directions)
-    assert min(ints) < 500 + 300, "interruption must come from the local VAD start, not wait for the interim"
+    bot = _bot_started(r)
+    # There IS a bot to barge in on: an interruption is broadcast on every user-turn start
+    # (agg:1240-1241), so without this the scenario would prove nothing about barge-in.
+    assert bot and min(bot) < min(ints), (bot, ints)
+    assert len(_clusters(ints)) == 1, r.events  # one interruption event
+    assert min(ints) < 300, "interruption must come from the local VAD start, not wait for the interim"
     assert r.transcripts_emitted - r.transcripts_to_aggregator == 0, "text lost in interruption flush"
 
 
@@ -190,6 +206,9 @@ async def test_s7_min_words_measures_late_start_and_reset(results, mode, wait):
     """
     r = await run_scenario(S.S7, absorber_mode=mode, hybrid_wait_ms=wait)
     _row(results, "S7", mode, wait, r)
+    ints = [t for t, k in r.events if k.endswith("InterruptionFrame")]
+    bot = _bot_started(r)
+    assert bot and min(bot) < min(ints), (bot, ints)  # the bot really was talking (min_words=3 armed)
     assert len(r.messages) >= 1
     assert r.messages[-1][1].strip().endswith("sábado"), r.messages  # reset by 1-word interim must not lose the tail
 
@@ -208,15 +227,21 @@ async def test_s11_interruption_overlapping_eager_keeps_text(results, mode, wait
     """
     r = await run_scenario(S.S11, absorber_mode=mode, hybrid_wait_ms=wait)
     _row(results, "S11", mode, wait, r)
+    ints = [t for t, k in r.events if k.endswith("InterruptionFrame")]
+    bot = _bot_started(r)
+    assert bot and min(bot) < min(ints), (bot, ints)  # the flush is a real barge-in flush
+    # The flush window itself, not just the text: at wait >= 600 the final passes through and
+    # would carry the sentence even if the re-emit had found nothing to re-emit.
+    assert r.absorber_stats["reemitted_interim"] == 1, dict(r.absorber_stats)
     assert any(S.TEXT in m for _, m in r.messages), r.events
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("sc", [S.S5, S.S6, S.S11], ids=lambda s: s.id)
+@pytest.mark.parametrize("sc", [S.S5, S.S5B, S.S6, S.S7, S.S11], ids=lambda s: s.id)
 async def test_mutation_without_absorber_fails_r2_r3(results, sc):
-    """The absorber is load-bearing for S5/S6/S11: without it Flux's DOWN turn signals reach the
-    aggregator in every one of them (S5 additionally shows the absorber's own cost — the
-    no-absorber run keeps the tail this scenario's absorbed runs drop)."""
+    """The absorber is load-bearing for every R2/R3 scenario: without it Flux's DOWN turn signals
+    reach the aggregator in all five (S5/S5b additionally show the absorber's own cost — the
+    no-absorber run keeps the tail those scenarios' absorbed runs drop)."""
     r = await run_scenario(sc, absorber_mode=None)
     _row(results, sc.id, None, 0, r)
     ok = len(r.messages) == 1 and r.messages[0][1].strip() == S.TEXT and r.counts["DOWN:UserStartedSpeakingFrame"] == 0

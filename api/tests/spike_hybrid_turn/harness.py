@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
     Frame,
     InterruptionFrame,
     TranscriptionFrame,
@@ -58,6 +59,10 @@ WATCHED = (
     UserMuteStartedFrame,
     UserMuteStoppedFrame,
     TranscriptionFrame,
+    # The output transport pushes a downstream AND an upstream copy (base_output.py:763-773).
+    # This tap sits before the aggregator and after nothing that emits it, so only the UPSTREAM
+    # copy crosses it: a barge-in scenario can prove the bot really was talking.
+    BotStartedSpeakingFrame,
 )
 
 
