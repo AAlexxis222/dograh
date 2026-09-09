@@ -1,0 +1,219 @@
+"""Scenario runner: MockTransport + FluxStub + [Absorber] + real user aggregator (VAD stub
+inside) + mock LLM/TTS. One monotonic clock, absolute deadlines, clean shutdown (spec §4)."""
+import asyncio
+from collections import Counter
+from dataclasses import dataclass, field
+
+from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState
+from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import (
+    Frame,
+    InterruptionFrame,
+    TranscriptionFrame,
+    TTSSpeakFrame,
+    UserMuteStartedFrame,
+    UserMuteStoppedFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
+)
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.runner import PipelineRunner
+from pipecat.pipeline.task import PipelineTask
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import (
+    LLMAssistantAggregatorParams,
+    LLMContextAggregatorPair,
+    LLMUserAggregator,
+    LLMUserAggregatorParams,
+)
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.tests import ContextCapturingMockLLM, MockTTSService
+from pipecat.tests.mock_transport import MockTransport
+from pipecat.transports.base_transport import TransportParams
+from pipecat.turns.user_mute import (
+    FunctionCallUserMuteStrategy,
+    MuteUntilFirstBotCompleteUserMuteStrategy,
+)
+from pipecat.turns.user_start import (
+    MinWordsUserTurnStartStrategy,
+    TranscriptionUserTurnStartStrategy,
+    VADUserTurnStartStrategy,
+)
+from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
+
+from api.tests.spike_hybrid_turn.analyzer_stub import ScriptedAnalyzer
+from api.tests.spike_hybrid_turn.flux_stub import FluxStub
+from api.tests.spike_hybrid_turn.timeline import Timeline
+from api.tests.spike_hybrid_turn.vad_stub import ScriptedVAD
+
+WATCHED = (
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+    InterruptionFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
+    UserMuteStartedFrame,
+    UserMuteStoppedFrame,
+    TranscriptionFrame,
+)
+
+
+@dataclass
+class Scenario:
+    id: str
+    flux: list[tuple[int, str, str]]  # (t_ms, "start"|"eager"|"resumed"|"end", text)
+    speaking: list[tuple[int, int]]  # VAD speech windows [a, b) in ms
+    verdicts: list[EndOfTurnState]
+    end_at: int  # when to stop the pipeline (>= last event + 6500 for ghost-turn window)
+    start: str = "default"  # "default" | "min_words"
+    mute_until_bot: bool = False
+    bot_speaking_at: int | None = None
+    end_kwargs: dict = field(default_factory=dict)  # passed to emit_end_of_turn
+
+
+@dataclass
+class Result:
+    messages: list[tuple[float, str]]
+    counts: Counter
+    absorber_stats: Counter
+    transcripts_emitted: int
+    transcripts_to_aggregator: int
+    dangling_tasks: int
+    events: list[tuple[float, str]]
+    aggregator: LLMUserAggregator  # live user aggregator, for post-run strategy inspection
+
+
+class Tap(FrameProcessor):
+    """Counts watched frames by direction and records them on the timeline."""
+
+    def __init__(self, timeline: Timeline, counts: Counter, events: list, **kwargs):
+        super().__init__(**kwargs)
+        self._timeline, self._counts, self._events = timeline, counts, events
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, WATCHED):
+            key = f"{'DOWN' if direction == FrameDirection.DOWNSTREAM else 'UP'}:{frame.__class__.__name__}"
+            self._counts[key] += 1
+            t = self._timeline.now_ms() if self._timeline.t0 is not None else -1.0
+            self._events.append((t, key + (f" '{frame.text}'" if isinstance(frame, TranscriptionFrame) else "")))
+        await self.push_frame(frame, direction)
+
+
+def _start_strategies(kind: str):
+    if kind == "min_words":
+        return [MinWordsUserTurnStartStrategy(min_words=3), VADUserTurnStartStrategy()]
+    return [TranscriptionUserTurnStartStrategy(), VADUserTurnStartStrategy()]  # rp:189
+
+
+def _stub_transcripts_pushed(stub: FluxStub, sc: Scenario) -> int:
+    """TranscriptionFrames the stub actually pushed downstream.
+
+    Only ``EndOfTurn`` pushes a final, and only when the scenario didn't ask the stub to
+    suppress it (min_confidence drop). Counting the pushes — not the events — is what makes
+    ``transcripts_emitted - transcripts_to_aggregator`` measure queue loss and nothing else.
+    """
+    if sc.end_kwargs.get("suppress_transcript"):
+        return 0
+    return sum(1 for _, kind, _ in stub.emitted if kind == "EndOfTurn")
+
+
+async def run_scenario(sc: Scenario, *, absorber_mode: str | None, hybrid_wait_ms: int = 0) -> Result:
+    timeline = Timeline()
+    counts: Counter = Counter()
+    events: list[tuple[float, str]] = []
+    messages: list[tuple[float, str]] = []
+
+    transport = MockTransport(
+        params=TransportParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            audio_in_sample_rate=16000,
+            audio_out_sample_rate=16000,
+            audio_out_end_silence_secs=0,
+        ),
+        generate_audio=True,
+    )
+    stub = FluxStub(timeline)
+    analyzer = ScriptedAnalyzer(sc.verdicts)
+    strategies = UserTurnStrategies(
+        start=_start_strategies(sc.start),
+        stop=[TurnAnalyzerUserTurnStopStrategy(turn_analyzer=analyzer)],
+    )
+    mute = [FunctionCallUserMuteStrategy()]
+    if sc.mute_until_bot:
+        mute.insert(0, MuteUntilFirstBotCompleteUserMuteStrategy())
+    user_params = LLMUserAggregatorParams(
+        user_turn_strategies=strategies,  # explicit: survives Flux's STTMetadataFrame (agg:957-977)
+        user_mute_strategies=mute,
+        user_turn_stop_timeout=5.0,  # rp:127 local value
+        vad_analyzer=ScriptedVAD(timeline, sc.speaking, VADParams(stop_secs=0.2)),
+    )
+    context = LLMContext(messages=[{"role": "system", "content": "spike"}])
+    pair = LLMContextAggregatorPair(
+        context, assistant_params=LLMAssistantAggregatorParams(), user_params=user_params
+    )
+    user_agg, assistant_agg = pair.user(), pair.assistant()
+
+    @user_agg.event_handler("on_user_turn_message_added")
+    async def _on_msg(aggregator, message):
+        messages.append((timeline.now_ms(), message.content))
+
+    # Count what actually reaches the aggregator's transcription path (loss detector, §11 A6/B6).
+    reached = Counter()
+    original = user_agg._handle_transcription
+
+    async def _counting(frame):
+        reached["n"] += 1
+        await original(frame)
+
+    user_agg._handle_transcription = _counting  # throwaway spike: monkeypatch is acceptable
+
+    llm = ContextCapturingMockLLM()
+    tts = MockTTSService(mock_audio_duration_ms=3000, frame_delay=0)
+    processors = [transport.input(), stub]
+    absorber = None
+    if absorber_mode is not None:
+        from api.tests.spike_hybrid_turn.absorber import Absorber
+
+        absorber = Absorber(mode=absorber_mode, hybrid_wait_ms=hybrid_wait_ms)
+        processors.append(absorber)
+    processors += [Tap(timeline, counts, events), user_agg, llm, tts, transport.output(), assistant_agg]
+    task = PipelineTask(Pipeline(processors))
+
+    for t_ms, kind, text in sc.flux:
+        if kind == "start":
+            timeline.at(t_ms, stub.emit_start_of_turn)
+        elif kind == "eager":
+            timeline.at(t_ms, lambda text=text: stub.emit_eager(text))
+        elif kind == "resumed":
+            timeline.at(t_ms, stub.emit_turn_resumed)
+        elif kind == "end":
+            timeline.at(t_ms, lambda text=text: stub.emit_end_of_turn(text, **sc.end_kwargs))
+    if sc.bot_speaking_at is not None:
+        timeline.at(sc.bot_speaking_at, lambda: task.queue_frame(TTSSpeakFrame("bot is talking for a while")))
+    timeline.at(sc.end_at, task.stop_when_done)
+
+    before = {t for t in asyncio.all_tasks()}
+    runner = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
+    await asyncio.wait_for(asyncio.gather(timeline.run(), runner), timeout=sc.end_at / 1000 + 20)
+    await asyncio.sleep(0.05)
+    dangling = [t for t in asyncio.all_tasks() if t not in before and t is not asyncio.current_task() and not t.done()]
+
+    return Result(
+        messages=messages,
+        counts=counts,
+        absorber_stats=Counter(absorber.stats) if absorber else Counter(),
+        # Transcripts that left the STT/absorber stage toward the aggregator. With an absorber
+        # that is every TranscriptionFrame it forwarded (promotions and deltas included).
+        transcripts_emitted=(
+            absorber.stats["forwarded"] if absorber else _stub_transcripts_pushed(stub, sc)
+        ),
+        transcripts_to_aggregator=reached["n"],
+        dangling_tasks=len(dangling),
+        events=events,
+        aggregator=user_agg,
+    )
