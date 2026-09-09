@@ -84,6 +84,9 @@ class Result:
     dangling_tasks: int
     events: list[tuple[float, str]]
     aggregator: LLMUserAggregator  # live user aggregator, for post-run strategy inspection
+    # Wall-clock shift applied to this run (see Timeline). Every t_ms above is already back in
+    # scenario coordinates; this is here so a row can say the run was shifted at all.
+    offset_ms: int = 0
 
 
 class Tap(FrameProcessor):
@@ -121,8 +124,21 @@ def _stub_transcripts_pushed(stub: FluxStub, sc: Scenario) -> int:
     return sum(1 for _, kind, _ in stub.emitted if kind == "EndOfTurn")
 
 
+def _timeline_offset(sc: Scenario) -> int:
+    """Wall-clock shift that keeps every scheduled instant of ``sc`` at or after the start.
+
+    Only scheduled instants take part: the VAD windows are read through ``Timeline.now_ms()``,
+    which already reports scenario time, so they follow the shift on their own.
+    """
+    times = [t for t, _, _ in sc.flux] + [sc.end_at]
+    if sc.bot_speaking_at is not None:
+        times.append(sc.bot_speaking_at)
+    return max(0, -min(times))
+
+
 async def run_scenario(sc: Scenario, *, absorber_mode: str | None, hybrid_wait_ms: int = 0) -> Result:
-    timeline = Timeline()
+    offset = _timeline_offset(sc)
+    timeline = Timeline(offset_ms=offset)
     counts: Counter = Counter()
     events: list[tuple[float, str]] = []
     messages: list[tuple[float, str]] = []
@@ -200,7 +216,9 @@ async def run_scenario(sc: Scenario, *, absorber_mode: str | None, hybrid_wait_m
     before = {t for t in asyncio.all_tasks()}
     runner = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
     try:
-        await asyncio.wait_for(asyncio.gather(timeline.run(), runner), timeout=sc.end_at / 1000 + 20)
+        await asyncio.wait_for(
+            asyncio.gather(timeline.run(), runner), timeout=(sc.end_at + offset) / 1000 + 20
+        )
     finally:
         # gather() does not cancel its siblings when one raises, so a failing timeline would
         # leave this runner alive and it would show up in the NEXT scenario's `before` snapshot.
@@ -223,4 +241,5 @@ async def run_scenario(sc: Scenario, *, absorber_mode: str | None, hybrid_wait_m
         dangling_tasks=len(dangling),
         events=events,
         aggregator=user_agg,
+        offset_ms=offset,
     )

@@ -5,6 +5,23 @@ from api.tests.spike_hybrid_turn import scenarios as S
 from api.tests.spike_hybrid_turn.harness import run_scenario
 
 
+def _clusters(times, tol_ms=30.0):
+    """Group instants that belong to one logical event.
+
+    One ``InterruptionFrame`` is seen twice at the tap (the aggregator broadcasts it upstream
+    and queues a copy downstream), a few ms apart. Fixed 10 ms buckets would split a pair that
+    straddles a boundary, so events are clustered by distance instead: the count stays "how many
+    interruptions happened", which is the R5 measurement.
+    """
+    out = []
+    for t in sorted(times):
+        if not out or t - out[-1][-1] > tol_ms:
+            out.append([t])
+        else:
+            out[-1].append(t)
+    return out
+
+
 def _row(results, sc_id, mode, wait, r):
     ghost = any(t > 6000 for t, _ in r.messages)
     results.add(
@@ -86,6 +103,124 @@ async def test_s4_no_interim_records_who_closes(results, mode, wait):
     # its arrival time tells whether ta:281 or the 5 s watchdog closed the turn.
     assert len(r.messages) == 1, r.events
     assert r.messages[0][1].strip() == S.TEXT
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,wait", MODES)
+async def test_s5_pause_mid_sentence_measures_dropped_tail(results, mode, wait):
+    """MEASURED 2026-09-09, NOT the brief's expectation of one message with the full sentence.
+
+    The local detector holds the turn open across the pause (INCOMPLETE at the first VAD stop),
+    so the only text the absorber can promote is Flux's stale partial — Flux sends no second
+    interim after TurnResumed. The second VAD stop closes the local turn at ~2220, ~180 ms
+    BEFORE Flux's final arrives at 2400, and the orphan rule (spec §3) then drops the tail
+    rather than push text into no open turn: one message with PART and
+    ``orphan_text_dropped == 1``, identically in F1 and in all three F2 waits.
+
+    R2's answer for this shape is therefore neither "delta" nor "rewrite" but "dropped". The
+    no-absorber row of the same scenario delivers the whole sentence at ~2410, so the loss is
+    the absorber's ghost-turn trade-off, not Flux's or the aggregator's.
+    """
+    r = await run_scenario(S.S5, absorber_mode=mode, hybrid_wait_ms=wait)
+    _row(results, "S5", mode, wait, r)
+    assert len(r.messages) == 1, r.events
+    text = r.messages[0][1].strip()
+    assert text == S.PART, r.messages  # a prefix of the sentence: never duplicated, never rewritten
+    assert r.absorber_stats["orphan_text_dropped"] == 1, dict(r.absorber_stats)
+    assert r.transcripts_emitted - r.transcripts_to_aggregator == 0, r.events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,wait", MODES)
+async def test_s5b_detector_fails_measures_damage(results, mode, wait):
+    """MEASURED 2026-09-09: the damage depends on the F2 wait, so the brief's content assertion
+    (the whole sentence always reaches the context) is relaxed to the two outcomes observed.
+
+    The detector closes the turn at the pause, and the turn analyzer finalizes ~1 ms after a
+    transcript reaches the aggregator — so the promotion instant decides:
+
+    * F1 (promote at ~930) and F2 wait=300 (promote at ~1220): the turn closes on the partial,
+      a second local turn opens with the resumed speech, and Flux's final is delivered as the
+      ``sábado`` delta. Two messages, whole sentence, in order.
+    * F2 wait=600/900 (promote at ~1510/~1810): the user is speaking again by then, so the stop
+      is deferred (ctl:355) and the turn now closes at ~2220 — before the final at 2400, which
+      the orphan rule drops. One message, tail lost, exactly as in S5.
+
+    F2 wait=300 is the racy cell: the timer fires at ~1208 and the resumed speech at ~1200.
+    """
+    r = await run_scenario(S.S5B, absorber_mode=mode, hybrid_wait_ms=wait)
+    _row(results, "S5b", mode, wait, r)
+    joined = " ".join(m for _, m in r.messages).strip()
+    # Content assertion (spec §11 B8): what reaches the context is a prefix of the sentence, in
+    # order — either all of it (promoted part + delta) or the part alone. Nothing else passes.
+    assert joined in (S.TEXT, S.PART), r.messages
+    assert r.transcripts_emitted - r.transcripts_to_aggregator == 0, r.events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,wait", MODES)
+async def test_s6_bargein_one_interruption_from_local_vad(results, mode, wait):
+    """Barge-in: the user talks over a bot that started 500 ms earlier (R3/R5).
+
+    Measured 2026-09-09: exactly one interruption per run, raised by the local VAD start at
+    62-89 ms — Flux's own StartOfTurn is swallowed and its interim at 800 never gets to raise
+    one, so barge-in latency is the VAD's, not the STT's. Only the aggregator's UPSTREAM
+    broadcast crosses this tap (the downstream copy is queued inside the aggregator, which sits
+    after it), hence one recorded instant per interruption. No text is lost in the flush.
+    """
+    r = await run_scenario(S.S6, absorber_mode=mode, hybrid_wait_ms=wait)
+    _row(results, "S6", mode, wait, r)
+    ints = [t for t, k in r.events if k.endswith("InterruptionFrame")]
+    assert len(_clusters(ints)) == 1, r.events  # one interruption event (both directions)
+    assert min(ints) < 500 + 300, "interruption must come from the local VAD start, not wait for the interim"
+    assert r.transcripts_emitted - r.transcripts_to_aggregator == 0, "text lost in interruption flush"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,wait", MODES)
+async def test_s7_min_words_measures_late_start_and_reset(results, mode, wait):
+    """MinWords(3) over sparse interims, bot speaking (R3).
+
+    Measured 2026-09-09: the aggregation reset never fires and S7 is indistinguishable from S6
+    in all four modes. ``VADUserTurnStartStrategy`` opens the turn at ~62-89 ms, and turn start
+    calls ``handle_user_turn_started`` on EVERY start strategy (ctl:322-326), which clears
+    MinWords' ``_bot_speaking``; from then on its threshold is 1 word, so the 1-word interim at
+    300 triggers (a no-op on an open turn) instead of calling ``trigger_reset_aggregation``.
+    MinWords only erases aggregated text where no VAD start strategy runs beside it.
+    """
+    r = await run_scenario(S.S7, absorber_mode=mode, hybrid_wait_ms=wait)
+    _row(results, "S7", mode, wait, r)
+    assert len(r.messages) >= 1
+    assert r.messages[-1][1].strip().endswith("sábado"), r.messages  # reset by 1-word interim must not lose the tail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,wait", MODES)
+async def test_s11_interruption_overlapping_eager_keeps_text(results, mode, wait):
+    """Eager interim and the interruption on the same deadline (R3, queue flush).
+
+    Measured 2026-09-09: the text survives in all four modes. The absorber registers the interim
+    ~5-10 ms before the InterruptionFrame comes back upstream, so ``interim_frame`` is set and
+    the re-emission fires (``reemitted_interim == 1`` everywhere). The architectural window the
+    Task 3 review predicted — the interim still in the absorber's OWN input queue when
+    ``_start_interruption`` flushes it (fp:871-890), leaving nothing to re-emit — does not
+    reproduce at this timing; the flush arrives after the interim was processed.
+    """
+    r = await run_scenario(S.S11, absorber_mode=mode, hybrid_wait_ms=wait)
+    _row(results, "S11", mode, wait, r)
+    assert any(S.TEXT in m for _, m in r.messages), r.events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sc", [S.S5, S.S6, S.S11], ids=lambda s: s.id)
+async def test_mutation_without_absorber_fails_r2_r3(results, sc):
+    """The absorber is load-bearing for S5/S6/S11: without it Flux's DOWN turn signals reach the
+    aggregator in every one of them (S5 additionally shows the absorber's own cost — the
+    no-absorber run keeps the tail this scenario's absorbed runs drop)."""
+    r = await run_scenario(sc, absorber_mode=None)
+    _row(results, sc.id, None, 0, r)
+    ok = len(r.messages) == 1 and r.messages[0][1].strip() == S.TEXT and r.counts["DOWN:UserStartedSpeakingFrame"] == 0
+    assert not ok, "absorber is not load-bearing for this scenario"
 
 
 @pytest.mark.asyncio
