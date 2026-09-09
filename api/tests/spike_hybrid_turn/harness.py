@@ -199,7 +199,14 @@ async def run_scenario(sc: Scenario, *, absorber_mode: str | None, hybrid_wait_m
 
     before = {t for t in asyncio.all_tasks()}
     runner = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
-    await asyncio.wait_for(asyncio.gather(timeline.run(), runner), timeout=sc.end_at / 1000 + 20)
+    try:
+        await asyncio.wait_for(asyncio.gather(timeline.run(), runner), timeout=sc.end_at / 1000 + 20)
+    finally:
+        # gather() does not cancel its siblings when one raises, so a failing timeline would
+        # leave this runner alive and it would show up in the NEXT scenario's `before` snapshot.
+        if not runner.done():
+            runner.cancel()
+            await asyncio.gather(runner, return_exceptions=True)
     await asyncio.sleep(0.05)
     dangling = [t for t in asyncio.all_tasks() if t not in before and t is not asyncio.current_task() and not t.done()]
 

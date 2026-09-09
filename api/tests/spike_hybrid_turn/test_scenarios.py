@@ -33,7 +33,11 @@ async def test_s0_control_records_baseline(results):
     """
     r = await run_scenario(S.S0, absorber_mode=None)
     _row(results, "S0", None, 0, r)
-    assert len(r.messages) >= 1, (r.counts, r.events)
+    # Floor pinned to the measured baseline: none of these forces the predicted pathology, they
+    # only fail if the aligned no-absorber case regresses away from what was measured.
+    assert len(r.messages) == 1, (r.counts, r.events)
+    assert r.messages[0][1].strip() == S.TEXT, r.messages
+    assert r.transcripts_emitted - r.transcripts_to_aggregator == 0, r.events
     assert r.dangling_tasks == 0
 
 
@@ -56,3 +60,38 @@ async def test_local_strategies_survive_stt_metadata():
     assert stop_names == ["TurnAnalyzerUserTurnStopStrategy"], stop_names
     assert start_names == ["TranscriptionUserTurnStartStrategy", "VADUserTurnStartStrategy"], start_names
     assert r.dangling_tasks == 0
+
+
+MODES = [("f1", 0), ("f2", 300), ("f2", 600), ("f2", 900)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,wait", MODES)
+@pytest.mark.parametrize("sc", [S.S1, S.S2, S.S3, S.S8], ids=lambda s: s.id)
+async def test_one_message_no_ghost(results, sc, mode, wait):
+    r = await run_scenario(sc, absorber_mode=mode, hybrid_wait_ms=wait)
+    ghost = _row(results, sc.id, mode, wait, r)
+    assert len(r.messages) == 1, r.events
+    assert r.messages[0][1].strip() == S.TEXT, r.messages
+    assert not ghost
+    assert r.counts["DOWN:UserStartedSpeakingFrame"] == 0  # Flux's signals swallowed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,wait", MODES)
+async def test_s4_no_interim_records_who_closes(results, mode, wait):
+    r = await run_scenario(S.S4, absorber_mode=mode, hybrid_wait_ms=wait)
+    _row(results, "S4", mode, wait, r)
+    # Measured, not prescribed: exactly one message (Flux's final passes through, spec §3) and
+    # its arrival time tells whether ta:281 or the 5 s watchdog closed the turn.
+    assert len(r.messages) == 1, r.events
+    assert r.messages[0][1].strip() == S.TEXT
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sc", [S.S1, S.S8], ids=lambda s: s.id)
+async def test_mutation_without_absorber_fails_r1(results, sc):
+    r = await run_scenario(sc, absorber_mode=None)
+    _row(results, sc.id, None, 0, r)
+    assert not (len(r.messages) == 1 and not any(t > 6000 for t, _ in r.messages)
+                and r.counts["DOWN:UserStartedSpeakingFrame"] == 0), "absorber is not load-bearing"
