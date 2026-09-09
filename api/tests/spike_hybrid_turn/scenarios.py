@@ -110,6 +110,20 @@ S9 = Scenario(
     bot_speaking_at=3000,
 )
 
+# S9 measures the reset table while muted; S9B is the other half of spec §4's S9 ("after the
+# mute, S1 holds"): same shape, but the second turn is scheduled well after the bot's 3000 ms of
+# audio has drained (unmute at ~6540), so it runs unmuted and must behave like S1.
+S9B = Scenario(
+    id="S9b",
+    flux=[(0, "start", ""), (800, "eager", TEXT), (1400, "end", TEXT),
+          (9000, "start", ""), (9800, "eager", TEXT), (10400, "end", TEXT)],
+    speaking=[(0, 1000), (9000, 10000)],
+    verdicts=[E.COMPLETE, E.COMPLETE],
+    end_at=17000,
+    mute_until_bot=True,
+    bot_speaking_at=3000,
+)
+
 S11 = Scenario(
     id="S11",
     flux=[(0, "start", ""), (800, "eager", TEXT), (1400, "end", TEXT)],

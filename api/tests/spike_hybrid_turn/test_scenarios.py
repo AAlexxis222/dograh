@@ -294,6 +294,45 @@ async def test_s9_mute_then_normal_turn(results, mode, wait):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode,wait", MODES)
+async def test_s9b_post_mute_turn_behaves_like_s1(results, mode, wait):
+    """Spec §4's other half of S9: after the mute lifts, S1 holds.
+
+    The second turn is scheduled at 9000, ~2.5 s after the unmute at ~6530, so it runs fully
+    unmuted. Measured 2026-09-10: it reproduces S1 cell for cell — one message with the whole
+    sentence in all four modes, F1 and F2/300 promoting the interim and then dropping the
+    final's duplicate (``promoted: 1`` + ``orphan_avoided: 1``), F2/600 and F2/900 letting the
+    final through instead (``passthrough_final``). Message lands at ~10014 (f1), ~10341
+    (f2/300), ~10406 (f2/600), ~10412 (f2/900).
+
+    Two cells differ from the brief's prediction and are pinned to the measurement:
+
+    * ``down_started == 0``, not 1. The mute window covers only turn 1's UserStopped; turn 1's
+      StartOfTurn precedes the mute (structural, see ``test_s9_mute_then_normal_turn``) and
+      turn 2's arrives long after it lifted, so BOTH starts are swallowed normally and only one
+      signal is forwarded (``passthrough_muted_signal: 1``).
+    * ``lost == 1``, not 0. The second turn loses nothing; the 1 is turn 1's muted final, which
+      the absorber forwarded and the aggregator suppressed. Identical in the no-absorber run,
+      so it measures the mute, not the absorber.
+    """
+    r = await run_scenario(S.S9B, absorber_mode=mode, hybrid_wait_ms=wait)
+    _row(results, "S9b", mode, wait, r, ghost_window_ms=None)
+    assert r.counts["UP:UserMuteStartedFrame"] >= 1 and r.counts["UP:UserMuteStoppedFrame"] >= 1, r.counts
+    # The second turn really is post-mute: the unmute precedes every event it produced (~2.5 s
+    # of margin). Without this the S1-like result below would not be attributable to the unmute.
+    mute_stopped = _instants(r, "UP:UserMuteStoppedFrame")
+    assert mute_stopped[0] < min(t for t, _ in r.events if t > 8000), r.events
+    late = [m for t, m in r.messages if t > 8000]
+    assert len(r.messages) == 1 and len(late) == 1, r.messages
+    assert late[0].strip() == S.TEXT, r.messages
+    assert r.absorber_stats["promoted"] <= 1, dict(r.absorber_stats)
+    # Turn 2 loses nothing; the 1 is turn 1's muted final (see docstring).
+    assert r.transcripts_emitted - r.transcripts_to_aggregator == 1, r.events
+    assert r.counts["DOWN:UserStartedSpeakingFrame"] == 0, r.counts
+    assert r.absorber_stats["passthrough_muted_signal"] == 1, dict(r.absorber_stats)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("sc", [S.S5, S.S5B, S.S6, S.S7, S.S11], ids=lambda s: s.id)
 async def test_mutation_without_absorber_fails_r2_r3(results, sc):
     """The absorber is load-bearing for every R2/R3 scenario: without it Flux's DOWN turn signals
@@ -318,12 +357,27 @@ async def test_mutation_without_absorber_s9_is_mute_governed(results):
     """
     r = await run_scenario(S.S9, absorber_mode=None)
     _row(results, "S9", None, 0, r, ghost_window_ms=None)
-    late = [m for t, m in r.messages if t > 5000]
-    # Predicate of the mutation: without the absorber, either Flux's DOWN starts reach the
-    # aggregator or the late turn fails to deliver its one message. Measured: both.
-    assert r.counts["DOWN:UserStartedSpeakingFrame"] != 0 or len(late) != 1, r.counts
     assert r.counts["DOWN:UserStartedSpeakingFrame"] == 2, r.counts  # absorbed cells: 1
     assert r.messages == [], r.messages  # identical to every absorbed cell
+
+
+@pytest.mark.asyncio
+async def test_mutation_without_absorber_fails_s9b(results):
+    """S9B's post-mute turn IS absorber-governed on the turn-signal axis, not on the text axis.
+
+    Without the absorber both of Flux's StartOfTurn frames reach the aggregator (2 vs 0 in every
+    absorbed cell). The message is delivered either way — the aggregator's own path handles this
+    aligned turn — so S9B pins where the absorber earns its place after the mute lifts: it is
+    back to swallowing, exactly as in S1.
+    """
+    r = await run_scenario(S.S9B, absorber_mode=None)
+    _row(results, "S9b", None, 0, r, ghost_window_ms=None)
+    late = [m for t, m in r.messages if t > 8000]
+    ok = (r.counts["DOWN:UserStartedSpeakingFrame"] == 0 and len(late) == 1
+          and late[0].strip() == S.TEXT)
+    assert not ok, "absorber is not load-bearing for S9B"
+    assert r.counts["DOWN:UserStartedSpeakingFrame"] == 2, r.counts  # absorbed cells: 0
+    assert len(late) == 1 and late[0].strip() == S.TEXT, r.messages  # text axis: unchanged
 
 
 @pytest.mark.asyncio
