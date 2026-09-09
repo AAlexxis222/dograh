@@ -35,6 +35,9 @@ class FluxTurn:
 class Absorber(FrameProcessor):
     def __init__(self, *, mode: Literal["f1", "f2"], hybrid_wait_ms: int = 0, **kwargs):
         super().__init__(**kwargs)
+        if mode not in ("f1", "f2"):
+            # A typo would silently run F2 and be labelled F1 in the results table.
+            raise ValueError(f"Absorber mode must be 'f1' or 'f2', got {mode!r}")
         self._mode = mode
         self._wait_s = hybrid_wait_ms / 1000.0
         self._turn: FluxTurn | None = None
@@ -60,18 +63,53 @@ class Absorber(FrameProcessor):
         self.stats["forwarded"] += 1
         await self.push_frame(frame, direction)
 
+    @staticmethod
+    def _delta_beyond(emitted: str, text: str) -> str | None:
+        """What ``text`` adds beyond the already-emitted ``emitted``.
+
+        ``""`` means it adds nothing; ``None`` marks a rewrite (``text`` does not extend
+        ``emitted``). Shared by the promotion path and the Flux-final path so both read the
+        same relationship the same way.
+        """
+        return text[len(emitted):].strip() if text.startswith(emitted) else None
+
     async def _promote(self) -> None:
         turn = self._turn
         if turn is None or turn.final_seen or self._muted or not turn.last_interim:
             return
-        if turn.emitted == turn.last_interim:
-            return
-        turn.emitted = turn.last_interim
+        text = turn.last_interim
+        if turn.emitted is None:
+            payload = text
+        else:
+            # A second local turn inside the same Flux turn sees a longer interim; sending it
+            # whole would re-deliver what turn 1 already got (spec §3 B9).
+            delta = self._delta_beyond(turn.emitted, text)
+            if delta == "":
+                return
+            if delta is None:
+                self.stats["rewrite"] += 1  # not an extension: re-send whole, same as the final
+                payload = text
+            else:
+                payload = delta
+        turn.emitted = text
         self.stats["promoted"] += 1
         await self._forward(
-            TranscriptionFrame(turn.last_interim, "", time_now_iso8601(), finalized=False),
+            TranscriptionFrame(payload, "", time_now_iso8601(), finalized=False),
             FrameDirection.DOWNSTREAM,
         )
+
+    async def _swallow_turn_signal(self, frame: Frame, direction: FrameDirection, key: str) -> None:
+        """Swallow one of Flux's downstream turn signals — unless muted.
+
+        Reset table (spec §3): under mute the absorber stops promoting AND stops swallowing.
+        The aggregator suppresses these signals itself while muted (agg:1085-1094), so letting
+        them through keeps the mute path observable instead of hiding it here.
+        """
+        if self._muted:
+            self.stats["passthrough_muted_signal"] += 1
+            await self.push_frame(frame, direction)
+            return
+        self.stats[key] += 1
 
     async def _wait_then_promote(self) -> None:
         try:
@@ -82,7 +120,10 @@ class Absorber(FrameProcessor):
         await self._promote()
 
     async def _on_local_vad_stop(self) -> None:
-        if self._muted or self._turn is None or self._turn.final_seen:
+        # Spec §3: promote (F1) or arm the timer (F2) only with a local turn OPEN and no Flux
+        # final for this turn. Without the open-turn check a VAD stop after the local turn
+        # closed would push text into no turn at all, i.e. open a ghost turn.
+        if self._muted or not self._local_open or self._turn is None or self._turn.final_seen:
             return
         if self._mode == "f1":
             await self._promote()
@@ -101,8 +142,7 @@ class Absorber(FrameProcessor):
                 self.stats["passthrough_final"] += 1
                 await self._forward(frame, direction)
                 return
-            # ``None`` marks a rewrite: the final does not extend what we already emitted.
-            delta = text[len(emitted):].strip() if text.startswith(emitted) else None
+            delta = self._delta_beyond(emitted, text)
             if not self._local_open:
                 # Orphan rule (spec §3): text already went out for this Flux turn and no local
                 # turn is open, so anything pushed here would open a ghost turn. Takes priority
@@ -161,10 +201,10 @@ class Absorber(FrameProcessor):
         # DOWNSTREAM: STT-originated frames.
         if isinstance(frame, UserStartedSpeakingFrame):
             self._turn_or_new()
-            self.stats["swallowed_UserStartedSpeakingFrame"] += 1
+            await self._swallow_turn_signal(frame, direction, "swallowed_UserStartedSpeakingFrame")
             return
-        if isinstance(frame, UserStoppedSpeakingFrame):
-            self.stats["swallowed_UserStoppedSpeakingFrame"] += 1  # never a barrier (spec §1.1)
+        if isinstance(frame, UserStoppedSpeakingFrame):  # never a barrier (spec §1.1)
+            await self._swallow_turn_signal(frame, direction, "swallowed_UserStoppedSpeakingFrame")
             return
         if isinstance(frame, InterimTranscriptionFrame):
             turn = self._turn_or_new()

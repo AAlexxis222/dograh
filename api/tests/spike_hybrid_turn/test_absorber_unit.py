@@ -87,7 +87,7 @@ async def test_f1_swallows_flux_signals_and_promotes_on_vad_stop():
 
 @pytest.mark.asyncio
 async def test_f1_final_extending_promoted_emits_delta_while_turn_open():
-    _, rec = await _run("f1", [
+    absorber, rec = await _run("f1", [
         ("down", UserStartedSpeakingFrame()),
         ("up", UserStartedSpeakingFrame()),
         ("down", InterimTranscriptionFrame("hola quiero", "", "t")),
@@ -97,6 +97,41 @@ async def test_f1_final_extending_promoted_emits_delta_while_turn_open():
     ])
     finals = [d for d in rec.down if d[0] == "TranscriptionFrame"]
     assert finals == [("TranscriptionFrame", "hola quiero", False), ("TranscriptionFrame", "reservar", True)]
+    assert absorber.stats["forwarded"] == 2  # promoted interim + delta (harness loss detector)
+
+
+@pytest.mark.asyncio
+async def test_f1_vad_stop_without_local_turn_open_does_not_promote():
+    """Spec §3: promotion needs a local turn OPEN; otherwise it would open a ghost turn."""
+    absorber, rec = await _run("f1", [
+        ("down", UserStartedSpeakingFrame()),
+        ("up", UserStartedSpeakingFrame()),
+        ("down", InterimTranscriptionFrame("hola", "", "t")),
+        ("up", UserStoppedSpeakingFrame()),  # local turn closed, Flux turn still open
+        ("down", InterimTranscriptionFrame("hola quiero", "", "t")),
+        ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
+    ])
+    assert absorber.stats["promoted"] == 0
+    assert not [d for d in rec.down if d[0] == "TranscriptionFrame"]
+
+
+@pytest.mark.asyncio
+async def test_f1_second_local_turn_promotes_only_the_delta():
+    """A growing interim across two local turns of one Flux turn must not re-send emitted text."""
+    absorber, rec = await _run("f1", [
+        ("down", UserStartedSpeakingFrame()),
+        ("up", UserStartedSpeakingFrame()),
+        ("down", InterimTranscriptionFrame("hola quiero", "", "t")),
+        ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
+        ("up", UserStoppedSpeakingFrame()),
+        ("up", UserStartedSpeakingFrame()),  # second local turn, same Flux turn
+        ("down", InterimTranscriptionFrame("hola quiero reservar", "", "t")),
+        ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
+    ])
+    finals = [d for d in rec.down if d[0] == "TranscriptionFrame"]
+    assert finals == [("TranscriptionFrame", "hola quiero", False), ("TranscriptionFrame", "reservar", False)]
+    assert absorber.stats["promoted"] == 2
+    assert absorber.stats["forwarded"] == 2
 
 
 @pytest.mark.asyncio
@@ -153,6 +188,7 @@ async def test_f2_final_before_expiry_cancels_promotion():
     finals = [d for d in rec.down if d[0] == "TranscriptionFrame"]
     assert finals == [("TranscriptionFrame", "hola quiero reservar", True)]
     assert absorber.stats["promoted"] == 0
+    assert absorber.stats["forwarded"] == 1  # passthrough final only
 
 
 @pytest.mark.asyncio
@@ -166,6 +202,10 @@ async def test_mute_disables_promotion_until_unmuted():
     ])
     assert absorber.stats["promoted"] == 0
     assert not [d for d in rec.down if d[0] == "TranscriptionFrame"]
+    # Reset table (spec §3): under mute the absorber stops swallowing Flux's turn signals too.
+    assert ("UserStartedSpeakingFrame", "", None) in rec.down
+    assert absorber.stats["passthrough_muted_signal"] == 1
+    assert absorber.stats["swallowed_UserStartedSpeakingFrame"] == 0
 
 
 @pytest.mark.asyncio
