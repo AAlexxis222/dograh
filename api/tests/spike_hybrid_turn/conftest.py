@@ -1,11 +1,24 @@
 """Session-scoped results table for the scenario runs (spec §4)."""
+
 from pathlib import Path
 
 import pytest
 
 OUT = Path(__file__).parent / "out"
-COLUMNS = ["scenario", "mode", "wait_ms", "offset", "messages", "texts", "down_started",
-           "down_stopped", "interruptions", "lost", "ghost", "stats"]
+COLUMNS = [
+    "scenario",
+    "mode",
+    "wait_ms",
+    "offset",
+    "messages",
+    "texts",
+    "down_started",
+    "down_stopped",
+    "interruptions",
+    "lost",
+    "ghost",
+    "stats",
+]
 
 
 class Results:

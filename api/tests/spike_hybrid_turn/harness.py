@@ -1,5 +1,6 @@
 """Scenario runner: MockTransport + FluxStub + [Absorber] + real user aggregator (VAD stub
 inside) + mock LLM/TTS. One monotonic clock, absolute deadlines, clean shutdown (spec §4)."""
+
 import asyncio
 from collections import Counter
 from dataclasses import dataclass, field
@@ -72,7 +73,9 @@ class Scenario:
     flux: list[tuple[int, str, str]]  # (t_ms, "start"|"eager"|"resumed"|"end", text)
     speaking: list[tuple[int, int]]  # VAD speech windows [a, b) in ms
     verdicts: list[EndOfTurnState]
-    end_at: int  # when to stop the pipeline (>= last event + 6500 for ghost-turn window)
+    end_at: (
+        int  # when to stop the pipeline (>= last event + 6500 for ghost-turn window)
+    )
     start: str = "default"  # "default" | "min_words"
     mute_until_bot: bool = False
     bot_speaking_at: int | None = None
@@ -88,7 +91,9 @@ class Result:
     transcripts_to_aggregator: int
     dangling_tasks: int
     events: list[tuple[float, str]]
-    aggregator: LLMUserAggregator  # live user aggregator, for post-run strategy inspection
+    aggregator: (
+        LLMUserAggregator  # live user aggregator, for post-run strategy inspection
+    )
     # Wall-clock shift applied to this run (see Timeline). Every t_ms above is already back in
     # scenario coordinates; this is here so a row can say the run was shifted at all.
     offset_ms: int = 0
@@ -107,7 +112,17 @@ class Tap(FrameProcessor):
             key = f"{'DOWN' if direction == FrameDirection.DOWNSTREAM else 'UP'}:{frame.__class__.__name__}"
             self._counts[key] += 1
             t = self._timeline.now_ms() if self._timeline.t0 is not None else -1.0
-            self._events.append((t, key + (f" '{frame.text}'" if isinstance(frame, TranscriptionFrame) else "")))
+            self._events.append(
+                (
+                    t,
+                    key
+                    + (
+                        f" '{frame.text}'"
+                        if isinstance(frame, TranscriptionFrame)
+                        else ""
+                    ),
+                )
+            )
         await self.push_frame(frame, direction)
 
 
@@ -141,7 +156,9 @@ def _timeline_offset(sc: Scenario) -> int:
     return max(0, -min(times))
 
 
-async def run_scenario(sc: Scenario, *, absorber_mode: str | None, hybrid_wait_ms: int = 0) -> Result:
+async def run_scenario(
+    sc: Scenario, *, absorber_mode: str | None, hybrid_wait_ms: int = 0
+) -> Result:
     offset = _timeline_offset(sc)
     timeline = Timeline(offset_ms=offset)
     counts: Counter = Counter()
@@ -175,7 +192,9 @@ async def run_scenario(sc: Scenario, *, absorber_mode: str | None, hybrid_wait_m
     )
     context = LLMContext(messages=[{"role": "system", "content": "spike"}])
     pair = LLMContextAggregatorPair(
-        context, assistant_params=LLMAssistantAggregatorParams(), user_params=user_params
+        context,
+        assistant_params=LLMAssistantAggregatorParams(),
+        user_params=user_params,
     )
     user_agg, assistant_agg = pair.user(), pair.assistant()
 
@@ -191,7 +210,9 @@ async def run_scenario(sc: Scenario, *, absorber_mode: str | None, hybrid_wait_m
         reached["n"] += 1
         await original(frame)
 
-    user_agg._handle_transcription = _counting  # throwaway spike: monkeypatch is acceptable
+    user_agg._handle_transcription = (
+        _counting  # throwaway spike: monkeypatch is acceptable
+    )
 
     llm = ContextCapturingMockLLM()
     tts = MockTTSService(mock_audio_duration_ms=3000, frame_delay=0)
@@ -202,7 +223,14 @@ async def run_scenario(sc: Scenario, *, absorber_mode: str | None, hybrid_wait_m
 
         absorber = Absorber(mode=absorber_mode, hybrid_wait_ms=hybrid_wait_ms)
         processors.append(absorber)
-    processors += [Tap(timeline, counts, events), user_agg, llm, tts, transport.output(), assistant_agg]
+    processors += [
+        Tap(timeline, counts, events),
+        user_agg,
+        llm,
+        tts,
+        transport.output(),
+        assistant_agg,
+    ]
     task = PipelineTask(Pipeline(processors))
 
     for t_ms, kind, text in sc.flux:
@@ -213,16 +241,22 @@ async def run_scenario(sc: Scenario, *, absorber_mode: str | None, hybrid_wait_m
         elif kind == "resumed":
             timeline.at(t_ms, stub.emit_turn_resumed)
         elif kind == "end":
-            timeline.at(t_ms, lambda text=text: stub.emit_end_of_turn(text, **sc.end_kwargs))
+            timeline.at(
+                t_ms, lambda text=text: stub.emit_end_of_turn(text, **sc.end_kwargs)
+            )
     if sc.bot_speaking_at is not None:
-        timeline.at(sc.bot_speaking_at, lambda: task.queue_frame(TTSSpeakFrame("bot is talking for a while")))
+        timeline.at(
+            sc.bot_speaking_at,
+            lambda: task.queue_frame(TTSSpeakFrame("bot is talking for a while")),
+        )
     timeline.at(sc.end_at, task.stop_when_done)
 
     before = {t for t in asyncio.all_tasks()}
     runner = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
     try:
         await asyncio.wait_for(
-            asyncio.gather(timeline.run(), runner), timeout=(sc.end_at + offset) / 1000 + 20
+            asyncio.gather(timeline.run(), runner),
+            timeout=(sc.end_at + offset) / 1000 + 20,
         )
     finally:
         # gather() does not cancel its siblings when one raises, so a failing timeline would
@@ -231,7 +265,11 @@ async def run_scenario(sc: Scenario, *, absorber_mode: str | None, hybrid_wait_m
             runner.cancel()
             await asyncio.gather(runner, return_exceptions=True)
     await asyncio.sleep(0.05)
-    dangling = [t for t in asyncio.all_tasks() if t not in before and t is not asyncio.current_task() and not t.done()]
+    dangling = [
+        t
+        for t in asyncio.all_tasks()
+        if t not in before and t is not asyncio.current_task() and not t.done()
+    ]
 
     return Result(
         messages=messages,
@@ -240,7 +278,9 @@ async def run_scenario(sc: Scenario, *, absorber_mode: str | None, hybrid_wait_m
         # Transcripts that left the STT/absorber stage toward the aggregator. With an absorber
         # that is every TranscriptionFrame it forwarded (promotions and deltas included).
         transcripts_emitted=(
-            absorber.stats["forwarded"] if absorber else _stub_transcripts_pushed(stub, sc)
+            absorber.stats["forwarded"]
+            if absorber
+            else _stub_transcripts_pushed(stub, sc)
         ),
         transcripts_to_aggregator=reached["n"],
         dangling_tasks=len(dangling),

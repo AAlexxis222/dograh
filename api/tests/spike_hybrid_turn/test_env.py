@@ -10,7 +10,12 @@ from pipecat.tests.mock_transport import MockTransport  # noqa: F401
 
 def test_flux_declares_no_ttfs():
     # Spec §1.1: Flux announces ttfs_p99_latency=0.0 because supports_ttfs is False.
-    assert DeepgramFluxSTTService.supports_ttfs.fget(object.__new__(DeepgramFluxSTTService)) is False
+    assert (
+        DeepgramFluxSTTService.supports_ttfs.fget(
+            object.__new__(DeepgramFluxSTTService)
+        )
+        is False
+    )
 
 
 @pytest.mark.skipif(

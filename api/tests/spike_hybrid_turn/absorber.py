@@ -1,5 +1,6 @@
 """Candidate TurnSignalAbsorberProcessor forms F1/F2 (spec §3). Throwaway. Sits right after
 the STT. Tracks state per Flux turn using the aggregator's UPSTREAM broadcasts (spec §1.2)."""
+
 import asyncio
 from collections import Counter
 from dataclasses import dataclass, field
@@ -57,7 +58,9 @@ class Absorber(FrameProcessor):
             self._wait_task.cancel()
         self._wait_task = None
 
-    async def _forward(self, frame: TranscriptionFrame, direction: FrameDirection) -> None:
+    async def _forward(
+        self, frame: TranscriptionFrame, direction: FrameDirection
+    ) -> None:
         """Single exit for transcripts. ``forwarded`` is the harness' loss detector, so every
         TranscriptionFrame that leaves toward the aggregator must be counted exactly once."""
         self.stats["forwarded"] += 1
@@ -71,7 +74,7 @@ class Absorber(FrameProcessor):
         ``emitted``). Shared by the promotion path and the Flux-final path so both read the
         same relationship the same way.
         """
-        return text[len(emitted):].strip() if text.startswith(emitted) else None
+        return text[len(emitted) :].strip() if text.startswith(emitted) else None
 
     async def _promote(self) -> None:
         turn = self._turn
@@ -87,7 +90,9 @@ class Absorber(FrameProcessor):
             if delta == "":
                 return
             if delta is None:
-                self.stats["rewrite"] += 1  # not an extension: re-send whole, same as the final
+                self.stats["rewrite"] += (
+                    1  # not an extension: re-send whole, same as the final
+                )
                 payload = text
             else:
                 payload = delta
@@ -98,7 +103,9 @@ class Absorber(FrameProcessor):
             FrameDirection.DOWNSTREAM,
         )
 
-    async def _swallow_turn_signal(self, frame: Frame, direction: FrameDirection, key: str) -> None:
+    async def _swallow_turn_signal(
+        self, frame: Frame, direction: FrameDirection, key: str
+    ) -> None:
         """Swallow one of Flux's downstream turn signals — unless muted.
 
         Reset table (spec §3): under mute the absorber stops promoting AND stops swallowing.
@@ -123,7 +130,12 @@ class Absorber(FrameProcessor):
         # Spec §3: promote (F1) or arm the timer (F2) only with a local turn OPEN and no Flux
         # final for this turn. Without the open-turn check a VAD stop after the local turn
         # closed would push text into no turn at all, i.e. open a ghost turn.
-        if self._muted or not self._local_open or self._turn is None or self._turn.final_seen:
+        if (
+            self._muted
+            or not self._local_open
+            or self._turn is None
+            or self._turn.final_seen
+        ):
             return
         if self._mode == "f1":
             await self._promote()
@@ -131,7 +143,9 @@ class Absorber(FrameProcessor):
             self._cancel_wait()
             self._wait_task = asyncio.create_task(self._wait_then_promote())
 
-    async def _on_flux_final(self, frame: TranscriptionFrame, direction: FrameDirection) -> None:
+    async def _on_flux_final(
+        self, frame: TranscriptionFrame, direction: FrameDirection
+    ) -> None:
         turn = self._turn_or_new()
         self._cancel_wait()
         turn.final_seen = True
@@ -159,7 +173,9 @@ class Absorber(FrameProcessor):
             elif delta:
                 self.stats["delta_emitted"] += 1
                 await self._forward(
-                    TranscriptionFrame(delta, frame.user_id, frame.timestamp, finalized=True),
+                    TranscriptionFrame(
+                        delta, frame.user_id, frame.timestamp, finalized=True
+                    ),
                     direction,
                 )
             else:
@@ -194,17 +210,23 @@ class Absorber(FrameProcessor):
                 if self._turn is not None and self._turn.interim_frame is not None:
                     self.stats["reemitted_interim"] += 1
                     f = self._turn.interim_frame
-                    await self.push_frame(InterimTranscriptionFrame(f.text, f.user_id, f.timestamp))
+                    await self.push_frame(
+                        InterimTranscriptionFrame(f.text, f.user_id, f.timestamp)
+                    )
             await self.push_frame(frame, direction)
             return
 
         # DOWNSTREAM: STT-originated frames.
         if isinstance(frame, UserStartedSpeakingFrame):
             self._turn_or_new()
-            await self._swallow_turn_signal(frame, direction, "swallowed_UserStartedSpeakingFrame")
+            await self._swallow_turn_signal(
+                frame, direction, "swallowed_UserStartedSpeakingFrame"
+            )
             return
         if isinstance(frame, UserStoppedSpeakingFrame):  # never a barrier (spec §1.1)
-            await self._swallow_turn_signal(frame, direction, "swallowed_UserStoppedSpeakingFrame")
+            await self._swallow_turn_signal(
+                frame, direction, "swallowed_UserStoppedSpeakingFrame"
+            )
             return
         if isinstance(frame, InterimTranscriptionFrame):
             turn = self._turn_or_new()

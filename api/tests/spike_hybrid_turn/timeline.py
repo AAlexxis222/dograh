@@ -1,4 +1,5 @@
 """Single monotonic clock per scenario with absolute deadlines (spec §4 'Reloj')."""
+
 import asyncio
 import time
 from collections.abc import Awaitable, Callable

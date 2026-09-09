@@ -1,5 +1,6 @@
 """Scenario catalogue (spec §4). Times in ms from speech start. VAD windows end at the
 instant the local VAD reports stop (stop_secs=0.2 already elapsed)."""
+
 from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState as E
 
 from api.tests.spike_hybrid_turn.harness import Scenario
@@ -62,7 +63,12 @@ PART = "quiero reservar para el"
 
 S5 = Scenario(
     id="S5",
-    flux=[(0, "start", ""), (700, "eager", PART), (1200, "resumed", ""), (2400, "end", TEXT)],
+    flux=[
+        (0, "start", ""),
+        (700, "eager", PART),
+        (1200, "resumed", ""),
+        (2400, "end", TEXT),
+    ],
     speaking=[(0, 900), (1200, 2200)],
     verdicts=[E.INCOMPLETE, E.COMPLETE],
     end_at=9000,
@@ -70,7 +76,12 @@ S5 = Scenario(
 
 S5B = Scenario(
     id="S5b",
-    flux=[(0, "start", ""), (700, "eager", PART), (1200, "resumed", ""), (2400, "end", TEXT)],
+    flux=[
+        (0, "start", ""),
+        (700, "eager", PART),
+        (1200, "resumed", ""),
+        (2400, "end", TEXT),
+    ],
     speaking=[(0, 900), (1200, 2200)],
     verdicts=[E.COMPLETE, E.COMPLETE],
     end_at=9000,
@@ -88,7 +99,12 @@ S6 = Scenario(
 
 S7 = Scenario(
     id="S7",
-    flux=[(0, "start", ""), (300, "eager", "quiero"), (800, "eager", TEXT), (1400, "end", TEXT)],
+    flux=[
+        (0, "start", ""),
+        (300, "eager", "quiero"),
+        (800, "eager", TEXT),
+        (1400, "end", TEXT),
+    ],
     speaking=[(60, 1000)],
     verdicts=[E.COMPLETE],
     end_at=8000,
@@ -101,8 +117,14 @@ S7 = Scenario(
 # audio) and its completion lifts the mute; turn 2 (5000-6400) must behave like S0.
 S9 = Scenario(
     id="S9",
-    flux=[(0, "start", ""), (800, "eager", TEXT), (1400, "end", TEXT),
-          (5000, "start", ""), (5800, "eager", TEXT), (6400, "end", TEXT)],
+    flux=[
+        (0, "start", ""),
+        (800, "eager", TEXT),
+        (1400, "end", TEXT),
+        (5000, "start", ""),
+        (5800, "eager", TEXT),
+        (6400, "end", TEXT),
+    ],
     speaking=[(0, 1000), (5000, 6000)],
     verdicts=[E.COMPLETE, E.COMPLETE],
     end_at=13000,
@@ -115,8 +137,14 @@ S9 = Scenario(
 # audio has drained (unmute at ~6540), so it runs unmuted and must behave like S1.
 S9B = Scenario(
     id="S9b",
-    flux=[(0, "start", ""), (800, "eager", TEXT), (1400, "end", TEXT),
-          (9000, "start", ""), (9800, "eager", TEXT), (10400, "end", TEXT)],
+    flux=[
+        (0, "start", ""),
+        (800, "eager", TEXT),
+        (1400, "end", TEXT),
+        (9000, "start", ""),
+        (9800, "eager", TEXT),
+        (10400, "end", TEXT),
+    ],
     speaking=[(0, 1000), (9000, 10000)],
     verdicts=[E.COMPLETE, E.COMPLETE],
     end_at=17000,

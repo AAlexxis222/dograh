@@ -1,6 +1,7 @@
 """S10: a consumer observes Flux's UserStoppedSpeakingFrame BEFORE the interim and the final
 (spec §1.1, measured 2026-09-09). The stub must reproduce the service's call pattern so the
 real pipecat queues yield that order."""
+
 import asyncio
 
 import pytest
@@ -28,7 +29,8 @@ class Sink(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if direction == FrameDirection.DOWNSTREAM and isinstance(
-            frame, (InterimTranscriptionFrame, TranscriptionFrame, UserStoppedSpeakingFrame)
+            frame,
+            (InterimTranscriptionFrame, TranscriptionFrame, UserStoppedSpeakingFrame),
         ):
             self.seen.append(frame.__class__.__name__)
         await self.push_frame(frame, direction)
@@ -57,8 +59,14 @@ async def test_user_stopped_overtakes_transcripts():
     seen = await _run(yield_between=False)
     # Invariant (spec §1.1): the final is always overtaken by UserStopped. Where the interim
     # lands depends on the Eager->End gap (burst here => UserStopped first; measured 2026-09-09).
-    assert seen.index("UserStoppedSpeakingFrame") < seen.index("TranscriptionFrame"), seen
-    assert seen == ["UserStoppedSpeakingFrame", "InterimTranscriptionFrame", "TranscriptionFrame"], seen
+    assert seen.index("UserStoppedSpeakingFrame") < seen.index("TranscriptionFrame"), (
+        seen
+    )
+    assert seen == [
+        "UserStoppedSpeakingFrame",
+        "InterimTranscriptionFrame",
+        "TranscriptionFrame",
+    ], seen
 
 
 @pytest.mark.asyncio
@@ -66,4 +74,6 @@ async def test_mutation_yielding_between_changes_order():
     # Mutation control: if the stub yields the loop between final and UserStopped, the
     # observed order is no longer the production one (spec §4 mutation rule for S10).
     seen = await _run(yield_between=True)
-    assert seen.index("TranscriptionFrame") < seen.index("UserStoppedSpeakingFrame"), seen
+    assert seen.index("TranscriptionFrame") < seen.index("UserStoppedSpeakingFrame"), (
+        seen
+    )

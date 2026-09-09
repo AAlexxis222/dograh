@@ -1,4 +1,5 @@
 """S0-S11 (spec §4). S0 is the control run WITHOUT absorber and is not mutation-tested."""
+
 import pytest
 
 from api.tests.spike_hybrid_turn import scenarios as S
@@ -36,14 +37,23 @@ def _row(results, sc_id, mode, wait, r, *, ghost_window_ms: int | None = 6000):
     into a turn nobody opened. ``None`` disables the flag for scenarios that legitimately speak
     past that instant (S9's second turn), where a late message proves nothing either way.
     """
-    ghost = ghost_window_ms is not None and any(t > ghost_window_ms for t, _ in r.messages)
+    ghost = ghost_window_ms is not None and any(
+        t > ghost_window_ms for t, _ in r.messages
+    )
     results.add(
-        scenario=sc_id, mode=mode or "none", wait_ms=wait, offset=r.offset_ms,
+        scenario=sc_id,
+        mode=mode or "none",
+        wait_ms=wait,
+        offset=r.offset_ms,
         messages=len(r.messages),
-        texts=[m for _, m in r.messages], down_started=r.counts["DOWN:UserStartedSpeakingFrame"],
+        texts=[m for _, m in r.messages],
+        down_started=r.counts["DOWN:UserStartedSpeakingFrame"],
         down_stopped=r.counts["DOWN:UserStoppedSpeakingFrame"],
-        interruptions=r.counts["DOWN:InterruptionFrame"] + r.counts["UP:InterruptionFrame"],
-        lost=r.transcripts_emitted - r.transcripts_to_aggregator, ghost=ghost, stats=dict(r.absorber_stats),
+        interruptions=r.counts["DOWN:InterruptionFrame"]
+        + r.counts["UP:InterruptionFrame"],
+        lost=r.transcripts_emitted - r.transcripts_to_aggregator,
+        ghost=ghost,
+        stats=dict(r.absorber_stats),
     )
     assert r.dangling_tasks == 0, f"dangling tasks after {sc_id}: {r.dangling_tasks}"
     return ghost
@@ -89,7 +99,10 @@ async def test_local_strategies_survive_stt_metadata():
     start_names = [type(s).__name__ for s in live.start]
     stop_names = [type(s).__name__ for s in live.stop]
     assert stop_names == ["TurnAnalyzerUserTurnStopStrategy"], stop_names
-    assert start_names == ["TranscriptionUserTurnStartStrategy", "VADUserTurnStartStrategy"], start_names
+    assert start_names == [
+        "TranscriptionUserTurnStartStrategy",
+        "VADUserTurnStartStrategy",
+    ], start_names
     assert r.dangling_tasks == 0
 
 
@@ -139,7 +152,9 @@ async def test_s5_pause_mid_sentence_measures_dropped_tail(results, mode, wait):
     _row(results, "S5", mode, wait, r)
     assert len(r.messages) == 1, r.events
     text = r.messages[0][1].strip()
-    assert text == S.PART, r.messages  # a prefix of the sentence: never duplicated, never rewritten
+    assert text == S.PART, (
+        r.messages
+    )  # a prefix of the sentence: never duplicated, never rewritten
     assert r.absorber_stats["orphan_text_dropped"] == 1, dict(r.absorber_stats)
     assert r.transcripts_emitted - r.transcripts_to_aggregator == 0, r.events
 
@@ -168,11 +183,17 @@ async def test_s5b_detector_fails_measures_damage(results, mode, wait):
     # Content assertion (spec §11 B8), pinned per cell to the measured outcome instead of the
     # disjunction: only f2/300 is racy, so only it may land on either side.
     if mode == "f1":
-        assert joined == S.TEXT, r.messages  # promote at ~930 → close on the partial, then delta
+        assert joined == S.TEXT, (
+            r.messages
+        )  # promote at ~930 → close on the partial, then delta
     elif wait >= 600:
-        assert joined == S.PART, r.messages  # promote lands mid-resumed-speech → tail orphaned
+        assert joined == S.PART, (
+            r.messages
+        )  # promote lands mid-resumed-speech → tail orphaned
     else:
-        assert joined in (S.TEXT, S.PART), r.messages  # f2/300: timer ~1208 vs speech ~1200
+        assert joined in (S.TEXT, S.PART), (
+            r.messages
+        )  # f2/300: timer ~1208 vs speech ~1200
     assert r.transcripts_emitted - r.transcripts_to_aggregator == 0, r.events
 
 
@@ -195,8 +216,12 @@ async def test_s6_bargein_one_interruption_from_local_vad(results, mode, wait):
     # (agg:1240-1241), so without this the scenario would prove nothing about barge-in.
     assert bot and min(bot) < min(ints), (bot, ints)
     assert len(_clusters(ints)) == 1, r.events  # one interruption event
-    assert min(ints) < 300, "interruption must come from the local VAD start, not wait for the interim"
-    assert r.transcripts_emitted - r.transcripts_to_aggregator == 0, "text lost in interruption flush"
+    assert min(ints) < 300, (
+        "interruption must come from the local VAD start, not wait for the interim"
+    )
+    assert r.transcripts_emitted - r.transcripts_to_aggregator == 0, (
+        "text lost in interruption flush"
+    )
 
 
 @pytest.mark.asyncio
@@ -215,9 +240,14 @@ async def test_s7_min_words_measures_late_start_and_reset(results, mode, wait):
     _row(results, "S7", mode, wait, r)
     ints = [t for t, k in r.events if k.endswith("InterruptionFrame")]
     bot = _bot_started(r)
-    assert bot and min(bot) < min(ints), (bot, ints)  # the bot really was talking (min_words=3 armed)
+    assert bot and min(bot) < min(ints), (
+        bot,
+        ints,
+    )  # the bot really was talking (min_words=3 armed)
     assert len(r.messages) >= 1
-    assert r.messages[-1][1].strip().endswith("sábado"), r.messages  # reset by 1-word interim must not lose the tail
+    assert r.messages[-1][1].strip().endswith("sábado"), (
+        r.messages
+    )  # reset by 1-word interim must not lose the tail
 
 
 @pytest.mark.asyncio
@@ -236,7 +266,10 @@ async def test_s11_interruption_overlapping_eager_keeps_text(results, mode, wait
     _row(results, "S11", mode, wait, r)
     ints = [t for t, k in r.events if k.endswith("InterruptionFrame")]
     bot = _bot_started(r)
-    assert bot and min(bot) < min(ints), (bot, ints)  # the flush is a real barge-in flush
+    assert bot and min(bot) < min(ints), (
+        bot,
+        ints,
+    )  # the flush is a real barge-in flush
     # The flush window itself, not just the text: at wait >= 600 the final passes through and
     # would carry the sentence even if the re-emit had found nothing to re-emit.
     assert r.absorber_stats["reemitted_interim"] == 1, dict(r.absorber_stats)
@@ -279,7 +312,10 @@ async def test_s9_mute_then_normal_turn(results, mode, wait):
     """
     r = await run_scenario(S.S9, absorber_mode=mode, hybrid_wait_ms=wait)
     _row(results, "S9", mode, wait, r, ghost_window_ms=None)
-    assert r.counts["UP:UserMuteStartedFrame"] == 1 and r.counts["UP:UserMuteStoppedFrame"] == 1, r.counts
+    assert (
+        r.counts["UP:UserMuteStartedFrame"] == 1
+        and r.counts["UP:UserMuteStoppedFrame"] == 1
+    ), r.counts
     # The mute really outlives the whole scenario's speech — without this the empty context
     # below would prove nothing about mute (margin measured at 126-160 ms across 5 runs).
     mute_stopped = _instants(r, "UP:UserMuteStoppedFrame")
@@ -289,7 +325,9 @@ async def test_s9_mute_then_normal_turn(results, mode, wait):
     # for — 3 forwarded, 1 swallowed before the mute could be known (see docstring).
     assert r.absorber_stats["promoted"] == 0, dict(r.absorber_stats)
     assert r.absorber_stats["passthrough_muted_signal"] == 3, dict(r.absorber_stats)
-    assert r.absorber_stats["swallowed_UserStartedSpeakingFrame"] == 1, dict(r.absorber_stats)
+    assert r.absorber_stats["swallowed_UserStartedSpeakingFrame"] == 1, dict(
+        r.absorber_stats
+    )
     assert r.transcripts_emitted - r.transcripts_to_aggregator == 2, r.events
 
 
@@ -317,7 +355,10 @@ async def test_s9b_post_mute_turn_behaves_like_s1(results, mode, wait):
     """
     r = await run_scenario(S.S9B, absorber_mode=mode, hybrid_wait_ms=wait)
     _row(results, "S9b", mode, wait, r, ghost_window_ms=None)
-    assert r.counts["UP:UserMuteStartedFrame"] >= 1 and r.counts["UP:UserMuteStoppedFrame"] >= 1, r.counts
+    assert (
+        r.counts["UP:UserMuteStartedFrame"] >= 1
+        and r.counts["UP:UserMuteStoppedFrame"] >= 1
+    ), r.counts
     # The second turn really is post-mute: the unmute precedes every event it produced (~2.5 s
     # of margin). Without this the S1-like result below would not be attributable to the unmute.
     mute_stopped = _instants(r, "UP:UserMuteStoppedFrame")
@@ -340,7 +381,11 @@ async def test_mutation_without_absorber_fails_r2_r3(results, sc):
     no-absorber run keeps the tail those scenarios' absorbed runs drop)."""
     r = await run_scenario(sc, absorber_mode=None)
     _row(results, sc.id, None, 0, r)
-    ok = len(r.messages) == 1 and r.messages[0][1].strip() == S.TEXT and r.counts["DOWN:UserStartedSpeakingFrame"] == 0
+    ok = (
+        len(r.messages) == 1
+        and r.messages[0][1].strip() == S.TEXT
+        and r.counts["DOWN:UserStartedSpeakingFrame"] == 0
+    )
     assert not ok, "absorber is not load-bearing for this scenario"
 
 
@@ -373,11 +418,16 @@ async def test_mutation_without_absorber_fails_s9b(results):
     r = await run_scenario(S.S9B, absorber_mode=None)
     _row(results, "S9b", None, 0, r, ghost_window_ms=None)
     late = [m for t, m in r.messages if t > 8000]
-    ok = (r.counts["DOWN:UserStartedSpeakingFrame"] == 0 and len(late) == 1
-          and late[0].strip() == S.TEXT)
+    ok = (
+        r.counts["DOWN:UserStartedSpeakingFrame"] == 0
+        and len(late) == 1
+        and late[0].strip() == S.TEXT
+    )
     assert not ok, "absorber is not load-bearing for S9B"
     assert r.counts["DOWN:UserStartedSpeakingFrame"] == 2, r.counts  # absorbed cells: 0
-    assert len(late) == 1 and late[0].strip() == S.TEXT, r.messages  # text axis: unchanged
+    assert len(late) == 1 and late[0].strip() == S.TEXT, (
+        r.messages
+    )  # text axis: unchanged
 
 
 @pytest.mark.asyncio
@@ -385,5 +435,8 @@ async def test_mutation_without_absorber_fails_s9b(results):
 async def test_mutation_without_absorber_fails_r1(results, sc):
     r = await run_scenario(sc, absorber_mode=None)
     _row(results, sc.id, None, 0, r)
-    assert not (len(r.messages) == 1 and not any(t > 6000 for t, _ in r.messages)
-                and r.counts["DOWN:UserStartedSpeakingFrame"] == 0), "absorber is not load-bearing"
+    assert not (
+        len(r.messages) == 1
+        and not any(t > 6000 for t, _ in r.messages)
+        and r.counts["DOWN:UserStartedSpeakingFrame"] == 0
+    ), "absorber is not load-bearing"

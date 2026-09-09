@@ -1,8 +1,8 @@
 """STT stub reproducing Deepgram Flux's frame-emission CALL PATTERN (spec §1.1), not a
 pre-ordered frame list. Metadata frame identical to Flux: ttfs 0.0 + External strategies."""
-from collections.abc import AsyncGenerator
 
 import asyncio
+from collections.abc import AsyncGenerator
 
 from pipecat.frames.frames import (
     Frame,
@@ -31,8 +31,12 @@ class FluxStub(STTService):
         return False  # flux/stt.py:243-247
 
     def service_metadata_frame(self) -> STTMetadataFrame:
-        frame = super().service_metadata_frame()  # ttfs_p99_latency == 0.0 (stt_service.py:554-561)
-        frame.user_turn_strategies = ExternalUserTurnStrategies()  # flux/base.py:237-247
+        frame = (
+            super().service_metadata_frame()
+        )  # ttfs_p99_latency == 0.0 (stt_service.py:554-561)
+        frame.user_turn_strategies = (
+            ExternalUserTurnStrategies()
+        )  # flux/base.py:237-247
         return frame
 
     async def start(self, frame: StartFrame):
@@ -61,13 +65,19 @@ class FluxStub(STTService):
         self._log("TurnResumed")  # flux/base.py:698-709 — nothing reaches the pipeline
 
     async def emit_end_of_turn(
-        self, text: str, *, yield_between: bool = False, suppress_transcript: bool = False
+        self,
+        text: str,
+        *,
+        yield_between: bool = False,
+        suppress_transcript: bool = False,
     ) -> None:
         # flux/base.py:766-794 — final (unless min_confidence drops it) then UserStopped,
         # without yielding the loop in between.
         self._log("EndOfTurn", text)
         if not suppress_transcript:
-            await self.push_frame(TranscriptionFrame(text, "", time_now_iso8601(), finalized=True))
+            await self.push_frame(
+                TranscriptionFrame(text, "", time_now_iso8601(), finalized=True)
+            )
         if yield_between:
             await asyncio.sleep(0)
         await self.broadcast_frame(UserStoppedSpeakingFrame)

@@ -1,5 +1,6 @@
 """Turn analyzer stub with a scripted verdict sequence and the full surface `ta` uses
 (spec §3, §11 A13): append_audio, analyze_end_of_turn, update_vad_start_secs, clear, params."""
+
 from pipecat.audio.turn.base_turn_analyzer import BaseTurnAnalyzer, EndOfTurnState
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.metrics.metrics import MetricsData
