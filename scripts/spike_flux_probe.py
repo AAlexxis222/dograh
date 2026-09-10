@@ -8,16 +8,19 @@ Usage:
     DEEPGRAM_API_KEY=... python scripts/spike_flux_probe.py clip.wav out.jsonl [--eager 0.5]
 
 Exit codes:
-    0  connected and Flux sent at least one StartOfTurn
+    0  connected, Flux sent at least one StartOfTurn and at least one EagerEndOfTurn
     1  bad input (unreadable WAV, wrong audio format) or an unexpected crash
-    2  connection failed
+    2  connection failed, or DEEPGRAM_API_KEY absent (gate; nothing is attempted)
     3  connected, but Flux never sent StartOfTurn
     4  Flux's watchdog fired: our pacing broke, so the timings cannot be trusted
     5  the pipeline did not drain after the audio ended
+    6  turn seen, but no EagerEndOfTurn: the eager threshold never fired, so the run says
+       nothing about the interim the spike depends on
 
-argparse also exits 2 on a usage error. The two are told apart by the output file: a connection
-failure always leaves a JSONL carrying `connection_error` or `CONNECT_FAILED`, a usage error
-never creates one.
+argparse also exits 2 on a usage error, and so does the missing-key gate. The three are told
+apart by the output file and stderr: a connection failure always leaves a JSONL carrying
+`connection_error` or `CONNECT_FAILED`; a usage error or a missing key never creates one (the
+gate prints "DEEPGRAM_API_KEY missing" to stderr).
 """
 
 import argparse
@@ -270,6 +273,8 @@ async def probe(args: argparse.Namespace, api_key: str, pcm: bytes) -> int:
             return 4
         if out.n.get("on_start_of_turn", 0) == 0:
             return 3
+        if out.n.get("on_eager_end_of_turn", 0) == 0:
+            return 6
         print(json.dumps(out.n, ensure_ascii=False))
         return 0
     finally:

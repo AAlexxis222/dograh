@@ -387,6 +387,13 @@ async def test_mutation_without_absorber_fails_r2_r3(results, sc):
         and r.counts["DOWN:UserStartedSpeakingFrame"] == 0
     )
     assert not ok, "absorber is not load-bearing for this scenario"
+    # Falsifiable form of the same claim: Flux's StartOfTurn really reaches the aggregator.
+    assert r.counts["DOWN:UserStartedSpeakingFrame"] >= 1, r.counts
+    if sc in (S.S5, S.S5B):
+        # The load-bearing R2 measurement: without the absorber the "sábado" tail is NOT
+        # dropped — the whole sentence lands in one message (results-A `S5|none`, `S5b|none`).
+        assert len(r.messages) == 1, r.messages
+        assert r.messages[0][1].strip() == S.TEXT, r.messages
 
 
 @pytest.mark.asyncio
@@ -431,7 +438,7 @@ async def test_mutation_without_absorber_fails_s9b(results):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("sc", [S.S1, S.S8], ids=lambda s: s.id)
+@pytest.mark.parametrize("sc", [S.S1, S.S2, S.S3, S.S4, S.S8], ids=lambda s: s.id)
 async def test_mutation_without_absorber_fails_r1(results, sc):
     r = await run_scenario(sc, absorber_mode=None)
     _row(results, sc.id, None, 0, r)
@@ -440,3 +447,5 @@ async def test_mutation_without_absorber_fails_r1(results, sc):
         and not any(t > 6000 for t, _ in r.messages)
         and r.counts["DOWN:UserStartedSpeakingFrame"] == 0
     ), "absorber is not load-bearing"
+    # Falsifiable form of the same claim: Flux's StartOfTurn really reaches the aggregator.
+    assert r.counts["DOWN:UserStartedSpeakingFrame"] >= 1, r.counts
