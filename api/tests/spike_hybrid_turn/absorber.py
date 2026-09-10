@@ -28,6 +28,7 @@ class FluxTurn:
     last_interim: str | None = None
     emitted: str | None = None  # text already sent downstream as TranscriptionFrame(s)
     final_seen: bool = False
+    stop_seen: bool = False  # Flux's own UserStopped seen (it overtakes the final, S10)
     local_turns_closed: int = 0
     local_turns_opened: int = 0
     interim_frame: InterimTranscriptionFrame | None = field(default=None, repr=False)
@@ -90,18 +91,22 @@ class Absorber(FrameProcessor):
             if delta == "":
                 return
             if delta is None:
-                self.stats["rewrite"] += (
-                    1  # not an extension: re-send whole, same as the final
-                )
+                # Not an extension: re-send whole, same as the final. Counted apart from
+                # the final-path ``rewrite`` so the harness' ``dropped_by_absorber``
+                # balance only sums final-path outcomes.
+                self.stats["promoted_rewrite"] += 1
                 payload = text
             else:
                 payload = delta
-        turn.emitted = text
-        self.stats["promoted"] += 1
         await self._forward(
             TranscriptionFrame(payload, "", time_now_iso8601(), finalized=False),
             FrameDirection.DOWNSTREAM,
         )
+        # Only after the push succeeded (red team break §7): the F2 timer task can be
+        # cancelled by Flux's final while inside the push, and ``emitted`` set beforehand
+        # would make that final a ``dup_avoided`` of text that never left.
+        turn.emitted = text
+        self.stats["promoted"] += 1
 
     async def _swallow_turn_signal(
         self, frame: Frame, direction: FrameDirection, key: str
@@ -146,6 +151,9 @@ class Absorber(FrameProcessor):
     async def _on_flux_final(
         self, frame: TranscriptionFrame, direction: FrameDirection
     ) -> None:
+        self.stats["finals_received"] += (
+            1  # harness balance: every outcome below counts once
+        )
         turn = self._turn_or_new()
         self._cancel_wait()
         turn.final_seen = True
@@ -171,13 +179,13 @@ class Absorber(FrameProcessor):
                 self.stats["rewrite"] += 1
                 await self._forward(frame, direction)
             elif delta:
-                self.stats["delta_emitted"] += 1
                 await self._forward(
                     TranscriptionFrame(
                         delta, frame.user_id, frame.timestamp, finalized=True
                     ),
                     direction,
                 )
+                self.stats["delta_emitted"] += 1  # after the push, as in _promote
             else:
                 self.stats["dup_avoided"] += 1
         finally:
@@ -218,12 +226,28 @@ class Absorber(FrameProcessor):
 
         # DOWNSTREAM: STT-originated frames.
         if isinstance(frame, UserStartedSpeakingFrame):
+            # Flux's turn boundary. A turn Flux closed (its UserStopped seen) without a final
+            # (min_confidence drop, flux/base.py:766-794) would otherwise leak into this one:
+            # its ``emitted`` turns the new final into an orphan drop, its ``last_interim``
+            # gets promoted as the new turn's text (red team break §1). The reset cannot
+            # live in the UserStopped handler: Flux's UserStopped overtakes its own final
+            # (S10, test_stub_order.py), so at that instant the final is still on its way.
+            if (
+                self._turn is not None
+                and self._turn.stop_seen
+                and not self._turn.final_seen
+            ):
+                self.stats["turn_closed_without_final"] += 1
+                self._cancel_wait()
+                self._turn = None
             self._turn_or_new()
             await self._swallow_turn_signal(
                 frame, direction, "swallowed_UserStartedSpeakingFrame"
             )
             return
         if isinstance(frame, UserStoppedSpeakingFrame):  # never a barrier (spec §1.1)
+            if self._turn is not None and not self._turn.final_seen:
+                self._turn.stop_seen = True
             await self._swallow_turn_signal(
                 frame, direction, "swallowed_UserStoppedSpeakingFrame"
             )

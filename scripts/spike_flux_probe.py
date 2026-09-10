@@ -30,6 +30,7 @@ import os
 import sys
 import time
 import wave
+from typing import Self
 
 from loguru import logger
 from pipecat.frames.frames import (
@@ -94,20 +95,30 @@ def now_ms() -> float:
 
 
 class Jsonl:
-    """Append-only JSONL sink. Flushes per record so a crash still leaves the evidence."""
+    """Append-only JSONL sink, used as a context manager for the whole run. Flushes per
+    record so a crash still leaves the evidence. Record shape (read by
+    ``spike_flux_probe_metrics.py``): ``{"t_ms": float, "kind": str, ...data}``."""
 
     def __init__(self, path: str):
-        self._f = open(path, "w", encoding="utf-8")
+        self._path = path
+        self._f = None
         self.n: dict[str, int] = {}
 
+    def __enter__(self) -> Self:
+        self._f = open(self._path, "w", encoding="utf-8")
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self._f is not None:
+            self._f.close()
+            self._f = None
+
     def write(self, kind: str, **data) -> None:
+        assert self._f is not None, "Jsonl used outside its `with` block"
         self.n[kind] = self.n.get(kind, 0) + 1
         record = {"t_ms": round(now_ms(), 1), "kind": kind, **data}
         self._f.write(json.dumps(record, ensure_ascii=False) + "\n")
         self._f.flush()
-
-    def close(self) -> None:
-        self._f.close()
 
 
 class FrameTap(FrameProcessor):
@@ -213,8 +224,7 @@ async def shutdown(task: PipelineWorker, runner: asyncio.Task) -> None:
 
 
 async def probe(args: argparse.Namespace, api_key: str, pcm: bytes) -> int:
-    out = Jsonl(args.out)
-    try:
+    with Jsonl(args.out) as out:
         guard = WatchdogGuard()
         # `reconnect_on_error` is not passed: the service already hardcodes it False
         # (flux/stt.py:237), and an unknown kwarg is swallowed in silence by
@@ -277,8 +287,6 @@ async def probe(args: argparse.Namespace, api_key: str, pcm: bytes) -> int:
             return 6
         print(json.dumps(out.n, ensure_ascii=False))
         return 0
-    finally:
-        out.close()
 
 
 def parse_args() -> argparse.Namespace:

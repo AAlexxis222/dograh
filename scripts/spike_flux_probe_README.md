@@ -21,3 +21,22 @@ one that leaves a JSONL behind, carrying `connection_error` or `CONNECT_FAILED`.
 The spike runs 6 clips against `--eager 0.5` and `--eager 0.3` (12 JSONL). Neither the WAV clips
 nor the JSONL belong in this repo: they live in the docs repo under
 `docs/2026-09-09-8a-hybrid-turn-viability/`.
+
+## Per-clip metrics: `spike_flux_probe_metrics.py`
+
+Reads the probe's JSONL (one per clip run) and prints, per Flux turn: the gap from the last
+`EagerEndOfTurn` to `EndOfTurn` in ms, whether the final is a prefix `extension` of the last
+eager text or a `rewrite` (or `no_eager`), the number of `Update` events and of `TurnResumed`.
+No network, no pipecat import.
+
+```bash
+PYTHONUTF8=1 python scripts/spike_flux_probe_metrics.py out/clip-a-0.5.jsonl out/clip-a-0.3.jsonl
+PYTHONUTF8=1 python scripts/spike_flux_probe_metrics.py --selftest   # synthetic clips, exit 0
+```
+
+Example output (selftest):
+
+```
+selftest/extension: 1 turn(s)
+  turn 1 start=10.0ms gap_ms=1700.0 relation=extension eagers=1 updates=1 resumed=1
+```

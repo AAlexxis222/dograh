@@ -10,6 +10,7 @@ from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     Frame,
+    InterimTranscriptionFrame,
     InterruptionFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
@@ -60,6 +61,7 @@ WATCHED = (
     UserMuteStartedFrame,
     UserMuteStoppedFrame,
     TranscriptionFrame,
+    InterimTranscriptionFrame,  # register M2: which interims reach the aggregator, and when
     # The output transport pushes a downstream AND an upstream copy (base_output.py:763-773).
     # This tap sits before the aggregator and after nothing that emits it, so only the UPSTREAM
     # copy crosses it: a barge-in scenario can prove the bot really was talking.
@@ -97,6 +99,21 @@ class Result:
     # Wall-clock shift applied to this run (see Timeline). Every t_ms above is already back in
     # scenario coordinates; this is here so a row can say the run was shifted at all.
     offset_ms: int = 0
+    # Register M2: DOWN InterimTranscriptionFrames that crossed the tap (i.e. reached the
+    # aggregator's input) before / after the first InterruptionFrame crossed it.
+    interim_reached_before_interrupt: int = 0
+    interim_reached_after_interrupt: int = 0
+    # Register M7 / §5.3-16: Flux finals that entered the absorber and left through none of
+    # its counted exits (must be 0 unless a frame was flushed inside the absorber).
+    dropped_by_absorber: int = 0
+    # §5.3-15: COMPLETE decisions the scripted analyzer returned (local turns it closed).
+    local_turns_completed: int = 0
+    # Stub log (t_ms, kind, text), scenario coordinates: the instant of Flux's final even when
+    # the absorber swallowed it (register M1).
+    stub_events: list[tuple[float, str, str]] = field(default_factory=list)
+    vad_windows: list[tuple[int, int]] = field(
+        default_factory=list
+    )  # after jitter (M6)
 
 
 class Tap(FrameProcessor):
@@ -105,12 +122,24 @@ class Tap(FrameProcessor):
     def __init__(self, timeline: Timeline, counts: Counter, events: list, **kwargs):
         super().__init__(**kwargs)
         self._timeline, self._counts, self._events = timeline, counts, events
+        self._interrupted = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, WATCHED):
             key = f"{'DOWN' if direction == FrameDirection.DOWNSTREAM else 'UP'}:{frame.__class__.__name__}"
             self._counts[key] += 1
+            if isinstance(frame, InterruptionFrame):
+                self._interrupted = True
+            elif (
+                isinstance(frame, InterimTranscriptionFrame)
+                and direction == FrameDirection.DOWNSTREAM
+            ):
+                self._counts[
+                    "interim_after_interrupt"
+                    if self._interrupted
+                    else "interim_before_interrupt"
+                ] += 1
             t = self._timeline.now_ms() if self._timeline.t0 is not None else -1.0
             self._events.append(
                 (
@@ -118,7 +147,9 @@ class Tap(FrameProcessor):
                     key
                     + (
                         f" '{frame.text}'"
-                        if isinstance(frame, TranscriptionFrame)
+                        if isinstance(
+                            frame, (TranscriptionFrame, InterimTranscriptionFrame)
+                        )
                         else ""
                     ),
                 )
@@ -156,8 +187,26 @@ def _timeline_offset(sc: Scenario) -> int:
     return max(0, -min(times))
 
 
+FINAL_OUTCOMES = (
+    "passthrough_final",
+    "rewrite",
+    "delta_emitted",
+    "dup_avoided",
+    "orphan_avoided",
+)
+
+
+def _dropped_by_absorber(stats: Counter) -> int:
+    """Finals that entered ``_on_flux_final`` minus the ones that took a counted exit."""
+    return stats["finals_received"] - sum(stats[k] for k in FINAL_OUTCOMES)
+
+
 async def run_scenario(
-    sc: Scenario, *, absorber_mode: str | None, hybrid_wait_ms: int = 0
+    sc: Scenario,
+    *,
+    absorber_mode: str | None,
+    hybrid_wait_ms: int = 0,
+    vad_jitter_ms: int = 0,
 ) -> Result:
     offset = _timeline_offset(sc)
     timeline = Timeline(offset_ms=offset)
@@ -184,11 +233,18 @@ async def run_scenario(
     mute = [FunctionCallUserMuteStrategy()]
     if sc.mute_until_bot:
         mute.insert(0, MuteUntilFirstBotCompleteUserMuteStrategy())
+    vad = ScriptedVAD(
+        timeline,
+        sc.speaking,
+        VADParams(stop_secs=0.2),
+        jitter_ms=vad_jitter_ms,
+        seed=sc.id,
+    )
     user_params = LLMUserAggregatorParams(
         user_turn_strategies=strategies,  # explicit: survives Flux's STTMetadataFrame (agg:957-977)
         user_mute_strategies=mute,
         user_turn_stop_timeout=5.0,  # rp:127 local value
-        vad_analyzer=ScriptedVAD(timeline, sc.speaking, VADParams(stop_secs=0.2)),
+        vad_analyzer=vad,
     )
     context = LLMContext(messages=[{"role": "system", "content": "spike"}])
     pair = LLMContextAggregatorPair(
@@ -287,4 +343,10 @@ async def run_scenario(
         events=events,
         aggregator=user_agg,
         offset_ms=offset,
+        interim_reached_before_interrupt=counts["interim_before_interrupt"],
+        interim_reached_after_interrupt=counts["interim_after_interrupt"],
+        dropped_by_absorber=_dropped_by_absorber(absorber.stats) if absorber else 0,
+        local_turns_completed=analyzer.complete_count,
+        stub_events=list(stub.emitted),
+        vad_windows=vad.windows,
     )

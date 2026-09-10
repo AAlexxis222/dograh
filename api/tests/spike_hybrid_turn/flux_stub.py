@@ -68,16 +68,19 @@ class FluxStub(STTService):
         self,
         text: str,
         *,
-        yield_between: bool = False,
+        yield_between_final_and_stop: bool = False,
         suppress_transcript: bool = False,
     ) -> None:
-        # flux/base.py:766-794 — final (unless min_confidence drops it) then UserStopped,
-        # without yielding the loop in between.
+        # flux/base.py:766-794 — final (unless min_confidence drops it) then UserStopped.
+        # Default (False): nothing between the two, the spec §1.1 idealisation. True mimics
+        # the real service's `await self._handle_transcription(...)` (flux/base.py:792) and
+        # `await self.stop_processing_metrics()` (:793) that sit before the broadcast (:794),
+        # with one loop yield (red team F15 / register M5).
         self._log("EndOfTurn", text)
         if not suppress_transcript:
             await self.push_frame(
                 TranscriptionFrame(text, "", time_now_iso8601(), finalized=True)
             )
-        if yield_between:
+        if yield_between_final_and_stop:
             await asyncio.sleep(0)
         await self.broadcast_frame(UserStoppedSpeakingFrame)

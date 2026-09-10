@@ -29,17 +29,32 @@ def _bot_started(r):
     return [t for t, k in r.events if k.endswith("BotStartedSpeakingFrame")]
 
 
-def _row(results, sc_id, mode, wait, r, *, ghost_window_ms: int | None = 6000):
-    """Record one cell of the results table.
+def _ghost(r) -> bool:
+    """A message the local detector never closed a turn for (§5.3-15).
 
-    ``ghost_window_ms`` is the instant past which a message can only be a ghost turn: every
-    single-turn scenario ends its speech long before 6000, so anything later is text pushed
-    into a turn nobody opened. ``None`` disables the flag for scenarios that legitimately speak
-    past that instant (S9's second turn), where a late message proves nothing either way.
+    ``local_turns_completed`` counts the COMPLETE decisions the scripted analyzer returned; a
+    message beyond that count came from a turn opened and closed by something else — a
+    transcript pushed into no local turn (the stop strategy's transcript-only fallback), or
+    the 5 s watchdog. The old "any message after 6000 ms" flag could not fire in this
+    pipeline (red team break §3); this one does (``test_results_b.py``).
     """
-    ghost = ghost_window_ms is not None and any(
-        t > ghost_window_ms for t, _ in r.messages
+    return len(r.messages) > r.local_turns_completed
+
+
+def lost_total(r) -> int:
+    """Every way text can go missing, summed (register M7 / §5.3-16): queue loss between the
+    STT stage and the aggregator (``lost``), tail text the orphan rule discarded, and finals
+    that entered the absorber and left through no counted exit."""
+    return (
+        (r.transcripts_emitted - r.transcripts_to_aggregator)
+        + r.absorber_stats["orphan_text_dropped"]
+        + r.dropped_by_absorber
     )
+
+
+def _row(results, sc_id, mode, wait, r, *, note: str = ""):
+    """Record one cell of the results table; returns the ghost flag."""
+    ghost = _ghost(r)
     results.add(
         scenario=sc_id,
         mode=mode or "none",
@@ -52,10 +67,15 @@ def _row(results, sc_id, mode, wait, r, *, ghost_window_ms: int | None = 6000):
         interruptions=r.counts["DOWN:InterruptionFrame"]
         + r.counts["UP:InterruptionFrame"],
         lost=r.transcripts_emitted - r.transcripts_to_aggregator,
+        lost_total=lost_total(r),
         ghost=ghost,
         stats=dict(r.absorber_stats),
+        note=note,
     )
     assert r.dangling_tasks == 0, f"dangling tasks after {sc_id}: {r.dangling_tasks}"
+    # Every final that entered the absorber took one counted exit (M7): a frame flushed
+    # inside the absorber would show here as a positive balance.
+    assert r.dropped_by_absorber == 0, (sc_id, dict(r.absorber_stats))
     return ghost
 
 
@@ -130,6 +150,7 @@ async def test_s4_no_interim_records_who_closes(results, mode, wait):
     # its arrival time tells whether ta:281 or the 5 s watchdog closed the turn.
     assert len(r.messages) == 1, r.events
     assert r.messages[0][1].strip() == S.TEXT
+    assert r.counts["DOWN:UserStartedSpeakingFrame"] == 0, r.counts  # §5.3-17
 
 
 @pytest.mark.asyncio
@@ -157,6 +178,9 @@ async def test_s5_pause_mid_sentence_measures_dropped_tail(results, mode, wait):
     )  # a prefix of the sentence: never duplicated, never rewritten
     assert r.absorber_stats["orphan_text_dropped"] == 1, dict(r.absorber_stats)
     assert r.transcripts_emitted - r.transcripts_to_aggregator == 0, r.events
+    assert lost_total(r) == 1, dict(
+        r.absorber_stats
+    )  # the dropped tail, and nothing else
 
 
 @pytest.mark.asyncio
@@ -195,11 +219,14 @@ async def test_s5b_detector_fails_measures_damage(results, mode, wait):
             r.messages
         )  # f2/300: timer ~1208 vs speech ~1200
     assert r.transcripts_emitted - r.transcripts_to_aggregator == 0, r.events
+    assert r.counts["DOWN:UserStartedSpeakingFrame"] == 0, r.counts  # §5.3-17
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode,wait", MODES)
-async def test_s6_bargein_one_interruption_from_local_vad(results, mode, wait):
+async def test_s6_bargein_one_interruption_from_local_vad(
+    results, results_b, mode, wait
+):
     """Barge-in: the user talks over a bot that started 500 ms earlier (R3/R5).
 
     Measured 2026-09-09: exactly one interruption per run, raised by the local VAD start at
@@ -216,11 +243,49 @@ async def test_s6_bargein_one_interruption_from_local_vad(results, mode, wait):
     # (agg:1240-1241), so without this the scenario would prove nothing about barge-in.
     assert bot and min(bot) < min(ints), (bot, ints)
     assert len(_clusters(ints)) == 1, r.events  # one interruption event
-    assert min(ints) < 300, (
+    assert min(ints) < S.BARGE_IN_MAX_MS, (
         "interruption must come from the local VAD start, not wait for the interim"
     )
     assert r.transcripts_emitted - r.transcripts_to_aggregator == 0, (
         "text lost in interruption flush"
+    )
+    assert r.counts["DOWN:UserStartedSpeakingFrame"] == 0, r.counts  # §5.3-17
+    # Register M2: the interruption (~62-89 ms) precedes the interim (800), so there is
+    # nothing to re-emit and the interim reaches the aggregator once, after the flush.
+    _record_interim_reach(results_b, "S6", mode, wait, r)
+
+
+def _record_interim_reach(results_b, sc_id, mode, wait, r):
+    """M2 cell: did the re-emitted interim (if any) carry the last interim's text, and did the
+    ORIGINAL interim reach the aggregator's input at all (before or after the
+    InterruptionFrame crossed the tap)? If it did, the re-emission added nothing the
+    context did not already have."""
+    interims = [
+        (t, k.split(" ", 1)[1].strip("'"))
+        for t, k in r.events
+        if k.startswith("DOWN:InterimTranscriptionFrame")
+    ]
+    reemitted = r.absorber_stats["reemitted_interim"]
+    reached = r.interim_reached_before_interrupt + r.interim_reached_after_interrupt
+    if reemitted:
+        # The re-emission is the last interim to cross the tap and must repeat the text of
+        # the last interim the absorber saw (spec §3 reset table).
+        assert interims and interims[-1][1] == S.TEXT, interims
+        assert r.interim_reached_after_interrupt >= 1, r.counts
+    original_reached = reached - reemitted >= 1
+    _row(
+        results_b,
+        sc_id,
+        mode,
+        wait,
+        r,
+        note=(
+            f"M2 interim_before_interrupt={r.interim_reached_before_interrupt} "
+            f"interim_after_interrupt={r.interim_reached_after_interrupt} "
+            f"reemitted={reemitted} original_interim_reached={original_reached} "
+            f"reemission_redundant_for_context={bool(reemitted and original_reached)} "
+            f"interims_at_tap={[(round(t, 1), x) for t, x in interims]}"
+        ),
     )
 
 
@@ -248,11 +313,14 @@ async def test_s7_min_words_measures_late_start_and_reset(results, mode, wait):
     assert r.messages[-1][1].strip().endswith("sábado"), (
         r.messages
     )  # reset by 1-word interim must not lose the tail
+    assert r.counts["DOWN:UserStartedSpeakingFrame"] == 0, r.counts  # §5.3-17
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode,wait", MODES)
-async def test_s11_interruption_overlapping_eager_keeps_text(results, mode, wait):
+async def test_s11_interruption_overlapping_eager_keeps_text(
+    results, results_b, mode, wait
+):
     """Eager interim and the interruption on the same deadline (R3, queue flush).
 
     Measured 2026-09-09: the text survives in all four modes. The absorber registers the interim
@@ -274,6 +342,9 @@ async def test_s11_interruption_overlapping_eager_keeps_text(results, mode, wait
     # would carry the sentence even if the re-emit had found nothing to re-emit.
     assert r.absorber_stats["reemitted_interim"] == 1, dict(r.absorber_stats)
     assert any(S.TEXT in m for _, m in r.messages), r.events
+    assert r.counts["DOWN:UserStartedSpeakingFrame"] == 0, r.counts  # §5.3-17
+    # Register M2: was the re-emission needed? Measured, not prescribed — see results-B.
+    _record_interim_reach(results_b, "S11", mode, wait, r)
 
 
 def _instants(r, key_prefix):
@@ -311,15 +382,18 @@ async def test_s9_mute_then_normal_turn(results, mode, wait):
       the frame that caused it. Structural, not racy: measured at 0.3 ms vs 1.1 ms.
     """
     r = await run_scenario(S.S9, absorber_mode=mode, hybrid_wait_ms=wait)
-    _row(results, "S9", mode, wait, r, ghost_window_ms=None)
+    mute_stopped = _instants(r, "UP:UserMuteStoppedFrame")
+    last_final = _instants(r, "DOWN:TranscriptionFrame")[-1]
+    margin = mute_stopped[0] - last_final
+    _row(results, "S9", mode, wait, r, note=f"mute_margin_ms={margin:.1f}")
     assert (
         r.counts["UP:UserMuteStartedFrame"] == 1
         and r.counts["UP:UserMuteStoppedFrame"] == 1
     ), r.counts
     # The mute really outlives the whole scenario's speech — without this the empty context
-    # below would prove nothing about mute (margin measured at 126-160 ms across 5 runs).
-    mute_stopped = _instants(r, "UP:UserMuteStoppedFrame")
-    assert mute_stopped[0] > _instants(r, "DOWN:TranscriptionFrame")[-1], r.events
+    # below would prove nothing about mute (margin measured at 95-160 ms, see scenarios.py;
+    # demanded through MUTE_MARGIN_MS = lower bound minus tolerance, register M9).
+    assert margin >= S.MUTE_MARGIN_MS, (margin, r.events)
     assert r.messages == [], r.messages
     # Reset table: no promotion while muted, and every one of Flux's 4 turn signals accounted
     # for — 3 forwarded, 1 swallowed before the mute could be known (see docstring).
@@ -354,7 +428,7 @@ async def test_s9b_post_mute_turn_behaves_like_s1(results, mode, wait):
       so it measures the mute, not the absorber.
     """
     r = await run_scenario(S.S9B, absorber_mode=mode, hybrid_wait_ms=wait)
-    _row(results, "S9b", mode, wait, r, ghost_window_ms=None)
+    _row(results, "S9b", mode, wait, r)
     assert (
         r.counts["UP:UserMuteStartedFrame"] >= 1
         and r.counts["UP:UserMuteStoppedFrame"] >= 1
@@ -394,6 +468,7 @@ async def test_mutation_without_absorber_fails_r2_r3(results, sc):
         # dropped — the whole sentence lands in one message (results-A `S5|none`, `S5b|none`).
         assert len(r.messages) == 1, r.messages
         assert r.messages[0][1].strip() == S.TEXT, r.messages
+        assert lost_total(r) == 0, r.events  # nothing missing without the absorber
 
 
 @pytest.mark.asyncio
@@ -408,7 +483,7 @@ async def test_mutation_without_absorber_s9_is_mute_governed(results):
     for: while muted the absorber steps aside and lets the aggregator do the suppressing.
     """
     r = await run_scenario(S.S9, absorber_mode=None)
-    _row(results, "S9", None, 0, r, ghost_window_ms=None)
+    _row(results, "S9", None, 0, r)
     assert r.counts["DOWN:UserStartedSpeakingFrame"] == 2, r.counts  # absorbed cells: 1
     assert r.messages == [], r.messages  # identical to every absorbed cell
 
@@ -423,7 +498,7 @@ async def test_mutation_without_absorber_fails_s9b(results):
     back to swallowing, exactly as in S1.
     """
     r = await run_scenario(S.S9B, absorber_mode=None)
-    _row(results, "S9b", None, 0, r, ghost_window_ms=None)
+    _row(results, "S9b", None, 0, r)
     late = [m for t, m in r.messages if t > 8000]
     ok = (
         r.counts["DOWN:UserStartedSpeakingFrame"] == 0

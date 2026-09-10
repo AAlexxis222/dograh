@@ -45,7 +45,9 @@ async def _run(yield_between: bool) -> list[str]:
     async def script():
         await stub.emit_start_of_turn()
         await stub.emit_eager("hola quiero")
-        await stub.emit_end_of_turn("hola quiero reservar", yield_between=yield_between)
+        await stub.emit_end_of_turn(
+            "hola quiero reservar", yield_between_final_and_stop=yield_between
+        )
 
     timeline.at(50, script)
     timeline.at(400, lambda: task.queue_frame(EndFrame()))
@@ -71,9 +73,19 @@ async def test_user_stopped_overtakes_transcripts():
 
 @pytest.mark.asyncio
 async def test_mutation_yielding_between_changes_order():
-    # Mutation control: if the stub yields the loop between final and UserStopped, the
-    # observed order is no longer the production one (spec §4 mutation rule for S10).
+    """Mutation control and register M5 variant: with ``yield_between_final_and_stop`` the
+    stub mimics the real service's awaits between the final push and the UserStopped
+    broadcast (flux/base.py:792-794), and the observed order is no longer the §1.1 one.
+
+    Measured 2026-09-10 (3/3 runs): one loop yield is enough for BOTH transcripts to overtake
+    UserStopped — the whole order flips, not just the final's position.
+    """
     seen = await _run(yield_between=True)
     assert seen.index("TranscriptionFrame") < seen.index("UserStoppedSpeakingFrame"), (
         seen
     )
+    assert seen == [
+        "InterimTranscriptionFrame",
+        "TranscriptionFrame",
+        "UserStoppedSpeakingFrame",
+    ], seen

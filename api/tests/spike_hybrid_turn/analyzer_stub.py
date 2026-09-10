@@ -24,6 +24,11 @@ class ScriptedAnalyzer(BaseTurnAnalyzer):
     def append_audio(self, buffer: bytes, is_speech: bool) -> EndOfTurnState:
         return EndOfTurnState.INCOMPLETE
 
+    @property
+    def complete_count(self) -> int:
+        """COMPLETE decisions returned so far: the local turns this analyzer closed."""
+        return sum(1 for c in self.calls if c == EndOfTurnState.COMPLETE)
+
     async def analyze_end_of_turn(self) -> tuple[EndOfTurnState, MetricsData | None]:
         state = self._verdicts.pop(0) if self._verdicts else EndOfTurnState.COMPLETE
         self.calls.append(state)
