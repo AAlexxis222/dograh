@@ -58,6 +58,7 @@ from pipecat.workers.runner import WorkerRunner
 from api.services.pipecat.turns.absorber import TurnSignalAbsorberProcessor
 from api.services.pipecat.turns.frames import (
     HeldTranscriptionFrame,
+    PromotedTranscriptionFrame,
     TranscriptionReplaceFrame,
 )
 from api.services.pipecat.turns.hybrid_user_aggregator import build_context_aggregators
@@ -72,6 +73,7 @@ from api.tests.turns.vad_stub import ScriptedVAD
 TEXT_FRAMES = (
     TranscriptionFrame,
     HeldTranscriptionFrame,
+    PromotedTranscriptionFrame,
     InterimTranscriptionFrame,
     TranscriptionReplaceFrame,
 )

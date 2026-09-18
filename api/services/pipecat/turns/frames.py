@@ -45,3 +45,14 @@ class HeldTranscriptionFrame(TranscriptionFrame, UninterruptibleFrame):
     A plain ``TranscriptionFrame`` to everyone else: the aggregator dispatches on
     ``isinstance`` in ``LLMUserAggregator.process_frame``, so nothing else changes.
     """
+
+
+@dataclass
+class PromotedTranscriptionFrame(TranscriptionFrame, UninterruptibleFrame):
+    """The last interim, promoted on the local VAD stop (``finalized=False``).
+
+    Uninterruptible for the same reason as ``HeldTranscriptionFrame``: the absorber books
+    it as delivered the moment it leaves, and the STT's final then only carries what it
+    adds beyond it. A queue flush between the absorber and the aggregator would drop the
+    promoted words for good while the final's delta still goes out.
+    """

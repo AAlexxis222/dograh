@@ -159,6 +159,8 @@ local detector. A processor placed directly behind the speech-to-text stage reco
 two:
 
 - It swallows the service's own turn signals so only the local turns reach the aggregator.
+  While the user is muted they pass through instead, so the mute path stays observable; the
+  aggregator suppresses them itself.
 - When the local detector stops inside an open turn, it promotes the last interim
   transcript, so the local stop strategy has text to close the turn on.
 - When the service's final transcript arrives it emits only what the final adds, as a token
@@ -204,7 +206,21 @@ speech-to-text stage — ignore `turn` entirely.
   turn that rewrites it is promoted whole, so a few words can appear in both messages.
 - A transcript held while the user is muted is not released by the mute lifting: it leaves the
   absorber when the next local turn opens or when the hold expires, and the aggregator's mute
-  rules then apply to it, so it may still be suppressed there.
+  rules then apply to it, so it may still be suppressed there. A final that is forwarded
+  while the user is muted, because a local turn was open or text had already gone out, is
+  suppressed by the aggregator the same way and counts as delivered: a later transcript of
+  that turn only adds what it extends.
+- On Deepgram Flux the promotion needs interim transcripts, which Flux emits on
+  `EagerEndOfTurn`. The hybrid relies on the service's `eager_eot_threshold` (default `0.5`)
+  and does not pin it; raising it under `service_tuning` starves the promotion and every turn
+  closes on the service's final instead.
+- A final of a previous service turn that arrives after the next service turn has started is
+  attributed to the new turn: it is delivered whole into it, so its words can appear twice,
+  once from its own promoted interim and once from the late final.
+- With `turn_start_strategy` set to `min_words` or `provisional_vad`, a transcript shorter
+  than the threshold that arrives while the bot speaks no longer resets the pending
+  aggregation once a turn is open; a delta of an open turn is exactly such a transcript.
+  With no turn open the strategy's rule stands.
 
 ## API clients
 

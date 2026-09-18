@@ -9,7 +9,10 @@ from pipecat.frames.frames import (
     VADUserStoppedSpeakingFrame,
 )
 
-from api.services.pipecat.turns.frames import HeldTranscriptionFrame
+from api.services.pipecat.turns.frames import (
+    HeldTranscriptionFrame,
+    PromotedTranscriptionFrame,
+)
 from api.tests.turns.test_absorber_unit import finals, itf, run_steps, tf
 
 
@@ -19,6 +22,13 @@ def test_a_released_held_final_is_a_transcription_that_survives_an_interruption(
     assert issubclass(HeldTranscriptionFrame, UninterruptibleFrame)
     # ...and the aggregator must still treat it as an ordinary transcription.
     assert issubclass(HeldTranscriptionFrame, TranscriptionFrame)
+
+
+def test_a_promoted_interim_is_a_transcription_that_survives_an_interruption():
+    # The absorber books the promotion as delivered when it leaves; a queue flush between
+    # it and the aggregator would drop the words while the final only carries the delta.
+    assert issubclass(PromotedTranscriptionFrame, UninterruptibleFrame)
+    assert issubclass(PromotedTranscriptionFrame, TranscriptionFrame)
 
 
 @pytest.mark.asyncio
@@ -35,7 +45,7 @@ async def test_rewrite_with_local_turn_open_replaces_instead_of_appending():
         ]
     )
     assert finals(rec) == [
-        ("TranscriptionFrame", "quiero reservar para el", False, "flux"),
+        ("PromotedTranscriptionFrame", "quiero reservar para el", False, "flux"),
         ("TranscriptionReplaceFrame", "Quiero cancelar para el sábado.", None, "flux"),
     ]
     assert absorber.stats["rewrite_replaced"] == 1
@@ -287,7 +297,7 @@ async def test_second_final_that_does_not_extend_is_appended_not_replaced():
         ]
     )
     assert [(d[0], d[1]) for d in finals(rec)] == [
-        ("TranscriptionFrame", "hola quiero reservar"),
+        ("PromotedTranscriptionFrame", "hola quiero reservar"),
         ("TranscriptionFrame", "para dos personas."),
     ]
     assert absorber.stats["second_final_appended"] == 1

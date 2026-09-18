@@ -37,6 +37,16 @@ class HybridUserAggregator(LLMUserAggregator):
             frame = replacement
         await super().process_frame(frame, direction)
 
+    async def _on_reset_aggregation(self, controller, strategy):
+        # A start strategy resets the aggregation when a transcript is too short to open
+        # a turn while the bot speaks (min_words, provisional_vad). The hybrid manufactures
+        # short transcripts on purpose: a token delta of a turn already open would wipe
+        # the promoted text before it. Inside an open turn the text stays; with no turn
+        # open the base's reset stands.
+        if controller._user_turn:
+            return
+        await super()._on_reset_aggregation(controller, strategy)
+
 
 class HybridContextAggregators:
     """The two halves the pipeline needs, built like ``LLMContextAggregatorPair`` does

@@ -50,6 +50,31 @@ def test_hybrid_defaults_when_knobs_absent():
     ) == HybridTurn(0, 1500)
 
 
+def test_stored_document_values_are_bounded_or_defaulted():
+    # A document written straight to the store skips the schema, and the cascade clamps
+    # numbers only: a string, a bad type or a section of the wrong shape must not fail the
+    # call at pipeline construction.
+    def resolve(turn):
+        return resolve_hybrid_turn(
+            {"turn": turn}, uses_external_turns=True, is_realtime=False
+        )
+
+    assert resolve({"source": "local", "hybrid": {"hold_ms": "99999"}}) == HybridTurn(
+        0, 10000
+    )
+    assert resolve({"source": "local", "hybrid": {"wait_ms": -5}}) == HybridTurn(
+        0, 1500
+    )
+    assert resolve({"source": "local", "hybrid": {"hold_ms": "abc"}}) == HybridTurn(
+        0, 1500
+    )
+    assert resolve({"source": "local", "hybrid": {"hold_ms": None}}) == HybridTurn(
+        0, 1500
+    )
+    assert resolve({"source": "local", "hybrid": "nope"}) == HybridTurn(0, 1500)
+    assert resolve(["local"]) is None
+
+
 def test_source_stt_without_server_turns_behaves_like_auto():
     cfg = {"turn": {"source": "stt"}}
     assert (

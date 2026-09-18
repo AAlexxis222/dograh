@@ -34,6 +34,7 @@ from api.schemas.turn_configuration import (
 )
 from api.services.pipecat.turns.frames import (
     HeldTranscriptionFrame,
+    PromotedTranscriptionFrame,
     TranscriptionReplaceFrame,
 )
 from api.services.pipecat.turns.text_delta import token_delta
@@ -125,7 +126,7 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
                 payload = delta
         src = turn.interim_frame
         await self._forward(
-            TranscriptionFrame(
+            PromotedTranscriptionFrame(
                 payload,
                 src.user_id if src else "",
                 time_now_iso8601(),

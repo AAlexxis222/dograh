@@ -112,6 +112,7 @@ def finals(rec):
         in (
             "TranscriptionFrame",
             "HeldTranscriptionFrame",
+            "PromotedTranscriptionFrame",
             "TranscriptionReplaceFrame",
         )
     ]
@@ -129,7 +130,7 @@ async def test_swallows_flux_signals_and_promotes_on_local_vad_stop():
     )
     assert not any(d[0] == "UserStartedSpeakingFrame" for d in rec.down)
     assert (
-        "TranscriptionFrame",
+        "PromotedTranscriptionFrame",
         "hola quiero",
         False,
         "flux",
@@ -169,7 +170,7 @@ async def test_final_extending_promoted_emits_token_delta():
         ]
     )
     assert finals(rec) == [
-        ("TranscriptionFrame", "hola quiero", False, "flux"),
+        ("PromotedTranscriptionFrame", "hola quiero", False, "flux"),
         ("TranscriptionFrame", "reservar.", True, "flux"),
     ]
     assert absorber.stats["delta_emitted"] == 1

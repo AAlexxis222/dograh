@@ -11,6 +11,8 @@ from api.errors.failure import mark_failure_reported
 from api.schemas.turn_configuration import (
     DEFAULT_HYBRID_HOLD_MS,
     DEFAULT_HYBRID_WAIT_MS,
+    MAX_HYBRID_HOLD_MS,
+    MAX_HYBRID_WAIT_MS,
 )
 from api.schemas.workflow_configurations import (
     DEFAULT_MAX_CALL_DURATION_SECONDS,
@@ -150,6 +152,17 @@ class HybridTurn:
     hold_ms: int
 
 
+def _hybrid_knob(hybrid: dict, key: str, default: int, maximum: int) -> int:
+    """A document written straight to the store bypasses the schema, and the cascade
+    clamps numbers only: a value it cannot bound falls back to the default here rather
+    than failing the call at pipeline construction."""
+    try:
+        value = int(hybrid.get(key, default))
+    except (TypeError, ValueError):
+        return default
+    return min(max(value, 0), maximum)
+
+
 def resolve_hybrid_turn(
     run_configs: dict,
     *,
@@ -166,7 +179,9 @@ def resolve_hybrid_turn(
     ``workflow_run_id`` only prefixes that warning, so the line can be read next to the
     other turn decisions of the same run.
     """
-    turn = run_configs.get("turn") or {}
+    turn = run_configs.get("turn")
+    if not isinstance(turn, dict):
+        turn = {}
     source = turn.get("source", "auto")
     if source == "stt" and not uses_external_turns:
         logger.warning(
@@ -176,10 +191,16 @@ def resolve_hybrid_turn(
         return None
     if source != "local" or is_realtime or not uses_external_turns:
         return None
-    hybrid = turn.get("hybrid") or {}
+    hybrid = turn.get("hybrid")
+    if not isinstance(hybrid, dict):
+        hybrid = {}
     return HybridTurn(
-        wait_ms=int(hybrid.get("wait_ms", DEFAULT_HYBRID_WAIT_MS)),
-        hold_ms=int(hybrid.get("hold_ms", DEFAULT_HYBRID_HOLD_MS)),
+        wait_ms=_hybrid_knob(
+            hybrid, "wait_ms", DEFAULT_HYBRID_WAIT_MS, MAX_HYBRID_WAIT_MS
+        ),
+        hold_ms=_hybrid_knob(
+            hybrid, "hold_ms", DEFAULT_HYBRID_HOLD_MS, MAX_HYBRID_HOLD_MS
+        ),
     )
 
 
