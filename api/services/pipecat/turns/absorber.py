@@ -31,6 +31,7 @@ from api.schemas.turn_configuration import (
     DEFAULT_HYBRID_HOLD_MS,
     DEFAULT_HYBRID_WAIT_MS,
 )
+from api.services.pipecat.turns.frames import TranscriptionReplaceFrame
 from api.services.pipecat.turns.text_delta import token_delta
 from pipecat.frames.frames import (
     CancelFrame,
@@ -73,7 +74,7 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
         self._local_open = False
         self._muted = False
         self._wait_task: asyncio.Task | None = None
-        self._held: tuple[TranscriptionFrame, asyncio.Task] | None = None  # Task 5
+        self._held: tuple[TranscriptionFrame, asyncio.Task] | None = None
         self.stats: Counter = Counter()
 
     # ---- helpers -------------------------------------------------------
@@ -165,48 +166,127 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
             self._wait_then_promote(), name="hybrid-wait"
         )
 
+    # ---- the final held for the next local turn (D-13) ------------------
+    async def _hold(self, frame: TranscriptionFrame, direction: FrameDirection) -> None:
+        """Nothing emitted and no local turn open → keep the final for the next local
+        turn; deliver it on its own when ``hold_ms`` expires or the pipeline ends."""
+        self.stats["final_held_no_local_turn"] += 1
+        # Flux's finals for a turn are cumulative, so this one already carries whatever
+        # an older held one said: keeping both would duplicate that text.
+        await self._take_held()
+        if self._hold_s == 0:
+            await self._release_held_as_message(frame, direction)
+            return
+
+        async def expire():
+            await asyncio.sleep(self._hold_s)
+            held = self._held
+            # Cleared by hand instead of through ``_take_held``: this task must never be
+            # the one cancelling itself.
+            self._held = None
+            if held is not None:
+                await self._release_held_as_message(held[0], direction)
+
+        self._held = (frame, self.create_task(expire(), name="hybrid-hold"))
+
+    async def _take_held(self) -> TranscriptionFrame | None:
+        """Pop the held final and stop its timer. Never call it from that timer."""
+        if self._held is None:
+            return None
+        frame, task = self._held
+        self._held = None
+        await self.cancel_task(task)
+        return frame
+
+    async def _release_held_as_message(
+        self, frame: TranscriptionFrame, direction: FrameDirection
+    ) -> None:
+        self.stats["held_released_as_message"] += 1
+        await self._forward(frame, direction)
+
+    async def _release_held_into_turn(self) -> None:
+        """A local turn opened while a final was held: hand the text to that turn."""
+        frame = await self._take_held()
+        if frame is None:
+            return
+        self.stats["held_released_into_turn"] += 1
+        turn = self._turn_or_new()
+        await self._forward(frame, FrameDirection.DOWNSTREAM)
+        # After the push, as in ``_promote``: a final arriving inside it must not see
+        # ``emitted`` set for text that never left.
+        turn.emitted = frame.text
+
     async def _on_flux_final(
         self, frame: TranscriptionFrame, direction: FrameDirection
     ):
+        # The turn is NOT cleared here: it lives on with ``final_seen``/``emitted`` until
+        # Flux's next StartOfTurn, so a second final extends it (§5.3-8/9/13).
         self.stats["finals_received"] += 1
         turn = self._turn_or_new()
         await self._cancel_wait()
+        if turn.final_seen:
+            # §5.3-9: a second final for the same Flux turn extends what already went
+            # out instead of opening a new turn with the whole text.
+            self.stats["second_final_retained"] += 1
         turn.final_seen = True
         emitted, text = turn.emitted, frame.text
-        try:
-            if not text.strip():
-                # A blank final carries no text, so it adds nothing and must never reach
-                # ``token_delta``, which reads "fewer tokens than emitted" as a rewrite.
-                # Dropping it also keeps a blank out of the replace/orphan/hold branches
-                # and out of the aggregator, where it would open a ghost turn.
-                # Logged because it shares ``dup_avoided`` with "the final repeated what
-                # we already sent": the counter alone cannot tell the two apart.
-                logger.debug(f"{self}: blank final dropped, it adds no text")
-                self.stats["dup_avoided"] += 1
-                return
-            if emitted is None:
-                if self._local_open:
-                    self.stats["passthrough_final"] += 1
-                    await self._forward(frame, direction)
-                    return
-                raise NotImplementedError("hold branch: Task 5")
-            delta = token_delta(emitted, text)
-            if not self._local_open:
-                raise NotImplementedError("orphan branch: Task 5")
-            if delta is None:
-                raise NotImplementedError("replace branch: Task 5")
-            if delta:
-                await self._forward(
-                    TranscriptionFrame(
-                        delta, frame.user_id, frame.timestamp, finalized=True
-                    ),
-                    direction,
-                )
-                self.stats["delta_emitted"] += 1
+        if not text.strip():
+            # A blank final carries no text, so it adds nothing and must never reach
+            # ``token_delta``, which reads "fewer tokens than emitted" as a rewrite.
+            # Dropping it also keeps a blank out of the replace/orphan/hold branches
+            # and out of the aggregator, where it would open a ghost turn.
+            # Logged because it shares ``dup_avoided`` with "the final repeated what
+            # we already sent": the counter alone cannot tell the two apart.
+            logger.debug(f"{self}: blank final dropped, it adds no text")
+            self.stats["dup_avoided"] += 1
+            return
+        if emitted is None:
+            if self._local_open:
+                self.stats["passthrough_final"] += 1
+                await self._forward(frame, direction)
+                turn.emitted = text
             else:
-                self.stats["dup_avoided"] += 1
-        finally:
-            self._turn = None
+                await self._hold(frame, direction)
+            return
+        delta = token_delta(emitted, text)
+        if delta == "":
+            self.stats["dup_avoided"] += 1
+            return
+        if not self._local_open:
+            # D-12: the local turn closed before the final, so what the final adds
+            # beyond it is real speech nobody received → deliver it as a message of its
+            # own rather than drop it. A rewrite goes whole: there is no pending
+            # aggregation left to replace.
+            if delta is None:
+                self.stats["orphan_rewrite_emitted"] += 1
+                payload = text
+            else:
+                self.stats["orphan_emitted"] += 1
+                payload = delta
+            await self._forward(
+                TranscriptionFrame(
+                    payload, frame.user_id, frame.timestamp, finalized=True
+                ),
+                direction,
+            )
+            turn.emitted = text
+            return
+        if delta is None:
+            # D-11: the promoted interim is still pending in the open local turn →
+            # replace it, never concatenate.
+            self.stats["rewrite_replaced"] += 1
+            await self._forward(
+                TranscriptionReplaceFrame(text, frame.user_id, frame.timestamp),
+                direction,
+            )
+            turn.emitted = text
+            return
+        await self._forward(
+            TranscriptionFrame(delta, frame.user_id, frame.timestamp, finalized=True),
+            direction,
+        )
+        self.stats["delta_emitted"] += 1
+        turn.emitted = text
 
     # ---- frame routing -------------------------------------------------
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -216,6 +296,7 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
             # Aggregator-originated broadcasts (agg:1186-1199, :1236, :1241, :1290, :1112-1115).
             if isinstance(frame, UserStartedSpeakingFrame):
                 self._local_open = True
+                await self._release_held_into_turn()
             elif isinstance(frame, UserStoppedSpeakingFrame):
                 self._local_open = False
                 await self._cancel_wait()
@@ -230,7 +311,13 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
                 # Queues were flushed (fp:871-890); interims are idempotent for the
                 # aggregator, so re-send the last one to re-arm the start strategies.
                 await self._cancel_wait()
-                if self._turn is not None and self._turn.interim_frame is not None:
+                # ``final_seen``: the turn now outlives its final, and re-arming with an
+                # interim that final already superseded would open a ghost turn.
+                if (
+                    self._turn is not None
+                    and not self._turn.final_seen
+                    and self._turn.interim_frame is not None
+                ):
                     self.stats["reemitted_interim"] += 1
                     f = self._turn.interim_frame
                     await self.push_frame(
@@ -241,18 +328,17 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
 
         # DOWNSTREAM: STT-originated frames.
         if isinstance(frame, UserStartedSpeakingFrame):
-            # Flux's StartOfTurn: reset state carried from a turn Flux closed without a
-            # final (§5.3-8/13). Not in the UserStopped handler: Flux's UserStopped
-            # overtakes its own final (S10).
+            # Flux's StartOfTurn is the single reset point (§5.3-8/13): not the
+            # UserStopped handler, since Flux's UserStopped overtakes its own final
+            # (S10), and not the final either, since a second one may still extend it.
             if (
                 self._turn is not None
                 and self._turn.stop_seen
                 and not self._turn.final_seen
             ):
                 self.stats["turn_closed_without_final"] += 1
-                await self._cancel_wait()
-                self._turn = None
-            self._turn_or_new()
+            await self._cancel_wait()
+            self._turn = FluxTurn()
             await self._swallow_turn_signal(
                 frame, direction, "swallowed_UserStartedSpeakingFrame"
             )
@@ -275,6 +361,11 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
             return
         if isinstance(frame, (EndFrame, CancelFrame)):
             await self._cancel_wait()
+            held = await self._take_held()
+            if held is not None and isinstance(frame, EndFrame):
+                # Last chance to deliver speech the local VAD never claimed. On a
+                # CancelFrame the pipeline is being torn down, so it is dropped instead.
+                await self._release_held_as_message(held, FrameDirection.DOWNSTREAM)
             self._turn = None
             if self.stats:
                 logger.info(f"{self}: hybrid turn stats {dict(self.stats)}")

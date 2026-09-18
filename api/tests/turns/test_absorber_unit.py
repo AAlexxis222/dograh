@@ -86,6 +86,13 @@ async def run_steps(steps, *, wait_ms=0, hold_ms=1500):
     runner = WorkerRunner(handle_sigint=False)
     await runner.add_workers(worker)
     await asyncio.wait_for(asyncio.gather(runner.run(), script()), timeout=15)
+    # The absorber's timers live in the TaskManager and every exit cancels or resolves
+    # them: an outliving one would push a transcript into the next call's pipeline.
+    assert not [
+        t
+        for t in asyncio.all_tasks()
+        if "hybrid-" in (t.get_name() or "") and not t.done()
+    ]
     return absorber, rec
 
 
@@ -289,3 +296,20 @@ async def test_interruption_reemits_last_interim():
     interims = [d for d in rec.down if d[0] == "InterimTranscriptionFrame"]
     assert len(interims) == 2
     assert absorber.stats["reemitted_interim"] == 1
+
+
+@pytest.mark.asyncio
+async def test_interruption_after_a_final_does_not_reemit_the_consumed_interim():
+    # The turn outlives its final (§5.3-9), so the interim it superseded is still there:
+    # re-arming the start strategies with it would open a ghost turn.
+    absorber, _ = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("up", UserStartedSpeakingFrame()),
+            ("down", itf("hola quiero")),
+            ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
+            ("down", tf("hola quiero reservar")),
+            ("up", InterruptionFrame()),
+        ]
+    )
+    assert absorber.stats["reemitted_interim"] == 0
