@@ -151,19 +151,27 @@ class HybridTurn:
 
 
 def resolve_hybrid_turn(
-    run_configs: dict, *, uses_external_turns: bool, is_realtime: bool
+    run_configs: dict,
+    *,
+    uses_external_turns: bool,
+    is_realtime: bool,
+    workflow_run_id: int | None = None,
 ) -> HybridTurn | None:
     """``turn.source=local`` over a server-turn STT enables the hybrid (spec §6.1.1).
 
     Realtime pipelines have no STT stage; ``local`` with an STT that has no server turns
     is already what the local strategies do. ``stt`` is accepted and, until part 2 can
     reject it at PUT time, falls back to today's behaviour with a warning.
+
+    ``workflow_run_id`` only prefixes that warning, so the line can be read next to the
+    other turn decisions of the same run.
     """
     turn = run_configs.get("turn") or {}
     source = turn.get("source", "auto")
     if source == "stt" and not uses_external_turns:
         logger.warning(
-            "turn.source=stt requested but the STT emits no turn signals; using auto"
+            f"[run {workflow_run_id}] turn.source=stt requested but the STT emits no "
+            "turn signals; using auto"
         )
         return None
     if source != "local" or is_realtime or not uses_external_turns:
@@ -987,7 +995,10 @@ async def _run_pipeline_impl(
         # detection.
         uses_external_turns = stt_uses_external_turns(user_config)
         hybrid_turn = resolve_hybrid_turn(
-            run_configs, uses_external_turns=uses_external_turns, is_realtime=False
+            run_configs,
+            uses_external_turns=uses_external_turns,
+            is_realtime=False,
+            workflow_run_id=workflow_run_id,
         )
         if hybrid_turn is not None:
             # The absorber swallows the STT's turn signals; the aggregator runs the local

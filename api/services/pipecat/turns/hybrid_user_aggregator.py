@@ -19,6 +19,8 @@ from pipecat.processors.frame_processor import FrameDirection
 
 
 class HybridUserAggregator(LLMUserAggregator):
+    """The stock user aggregator, plus the replace frame the absorber may send it."""
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         if isinstance(frame, TranscriptionReplaceFrame):
             # Drop what the promoted interim put in the pending aggregation, then let the

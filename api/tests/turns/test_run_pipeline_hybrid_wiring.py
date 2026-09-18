@@ -92,7 +92,17 @@ def _named(name: str) -> FrameProcessor:
     return FrameProcessor(name=name)
 
 
-def _build(absorber):
+class _VoicemailDetector:
+    """The two processors ``build_pipeline`` asks a detector for."""
+
+    def detector(self):
+        return _named("voicemail")
+
+    def llm_gate(self):
+        return _named("llm_gate")
+
+
+def _build(absorber, voicemail_detector=None):
     return build_pipeline(
         _Transport(),
         _named("stt"),
@@ -104,6 +114,7 @@ def _build(absorber):
         _named("callbacks"),
         _named("metrics"),
         _named("funnel"),
+        voicemail_detector=voicemail_detector,
         turn_signal_absorber=absorber,
     )
 
@@ -124,3 +135,10 @@ def test_absorber_sits_right_behind_the_stt():
 
 def test_no_absorber_keeps_todays_order():
     assert _names(_build(None))[:4] == ["in", "funnel", "stt", "user_agg"]
+
+
+def test_absorber_sits_above_the_voicemail_detector():
+    # The detector must classify the text the absorber lets through, not the STT's own
+    # finals: behind it, it would see turn signals the aggregator never gets.
+    pipeline = _build(TurnSignalAbsorberProcessor(), _VoicemailDetector())
+    assert _names(pipeline)[2:5] == ["stt", "absorber", "voicemail"]

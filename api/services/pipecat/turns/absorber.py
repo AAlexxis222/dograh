@@ -12,7 +12,8 @@ Sits right behind a server-turn STT (Deepgram Flux, Dograh-Flux, Cartesia ink-2)
   delta; rewrites it → ``TranscriptionReplaceFrame`` (D-11); arrives with no local turn open
   after text went out → the tail is delivered as a message of its own (D-12); arrives with
   nothing emitted and no local turn open → held ``hold_ms`` for the next local turn, then
-  delivered as a message of its own (D-13).
+  delivered as a message of its own (D-13). A *second* final of the same Flux turn never
+  replaces: what it does not extend is appended as a message of its own.
 * State is indexed by Flux turn and reset on Flux's *next* StartOfTurn, never on its
   UserStopped, which overtakes its own final (spike 8a, S10).
 
@@ -260,7 +261,8 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
         self.stats["finals_received"] += 1
         turn = self._turn_or_new()
         await self._cancel_wait()
-        if turn.final_seen:
+        second_final = turn.final_seen
+        if second_final:
             # §5.3-9: a second final for the same Flux turn extends what already went
             # out instead of opening a new turn with the whole text.
             self.stats["second_final_retained"] += 1
@@ -308,6 +310,22 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
             turn.emitted = text
             return
         if delta is None:
+            if second_final:
+                # A second final is not a correction of an interim: this turn already had
+                # a final, so what is pending downstream is text that final confirmed (a
+                # duplicate first final leaves the promoted interim standing), and a
+                # replace would wipe it. Flux's finals are cumulative inside a turn, so
+                # one that does not extend the first is speech nobody received → append
+                # it as a message of its own.
+                self.stats["second_final_appended"] += 1
+                await self._forward(
+                    TranscriptionFrame(
+                        text, frame.user_id, frame.timestamp, finalized=True
+                    ),
+                    direction,
+                )
+                turn.emitted = text
+                return
             # D-11: the promoted interim is still pending in the open local turn →
             # replace it, never concatenate.
             self.stats["rewrite_replaced"] += 1

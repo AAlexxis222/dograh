@@ -209,6 +209,7 @@ FINAL_OUTCOMES = (
     "delta_emitted",
     "dup_avoided",
     "rewrite_replaced",
+    "second_final_appended",
     "orphan_emitted",
     "orphan_rewrite_emitted",
     "final_held_no_local_turn",

@@ -196,6 +196,14 @@ speech-to-text stage — ignore `turn` entirely.
   the same transcript, it classifies a promoted interim exactly as it classifies the final,
   so detection is unaffected.
 - The token delta drops punctuation the final adds to tokens that already went out.
+- A second end-of-turn transcript for the same turn that does not continue the first arrives
+  as a message of its own; it never replaces what the first one delivered. A service's
+  transcripts within one turn are expected to be cumulative, which is what Deepgram Flux and
+  Cartesia do; it has not been verified for Dograh-Flux.
+- When a local turn has already closed on a promoted interim, an interim of the next local
+  turn that rewrites it is promoted whole, so a few words can appear in both messages.
+- A transcript held while the user is muted is released when the mute lifts or when the hold
+  expires, and the aggregator's mute rules then apply to it: it may be suppressed there.
 
 ## API clients
 

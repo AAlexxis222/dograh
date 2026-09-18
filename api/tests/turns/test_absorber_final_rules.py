@@ -268,3 +268,27 @@ async def test_second_final_for_same_flux_turn_is_treated_as_extension_not_new_t
     )
     assert [d[1] for d in finals(rec)] == ["hola quiero", "reservar", "hoy"]
     assert absorber.stats["second_final_retained"] == 1
+
+
+@pytest.mark.asyncio
+async def test_second_final_that_does_not_extend_is_appended_not_replaced():
+    # The first final repeated the promoted interim, so that interim is what the open
+    # local turn still holds. Replacing it with the second final's words would wipe the
+    # whole utterance; the second final carries speech of its own instead.
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("up", UserStartedSpeakingFrame()),
+            ("down", itf("hola quiero reservar")),
+            ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
+            ("down", tf("Hola, quiero reservar.")),  # first final: the same words
+            ("down", tf("para dos personas.")),  # second final, no new StartOfTurn
+            ("down", UserStoppedSpeakingFrame()),
+        ]
+    )
+    assert [(d[0], d[1]) for d in finals(rec)] == [
+        ("TranscriptionFrame", "hola quiero reservar"),
+        ("TranscriptionFrame", "para dos personas."),
+    ]
+    assert absorber.stats["second_final_appended"] == 1
+    assert absorber.stats["rewrite_replaced"] == 0
