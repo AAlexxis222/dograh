@@ -178,15 +178,17 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
         """Nothing emitted and no local turn open → keep the final for the next local
         turn; deliver it on its own when ``hold_ms`` expires or the pipeline ends."""
         self.stats["final_held_no_local_turn"] += 1
-        previous = self._held
+        previous = await self._take_held()
         if previous is not None:
-            superseded = await self._take_held()
-            if previous[2] is not turn:
+            superseded, superseded_turn = previous
+            if superseded_turn is not turn:
                 # Flux's finals are cumulative only *within* one turn: a final of
                 # another turn does not carry this text, so dropping it would lose the
                 # very utterance D-13 exists to keep. Same turn = second final, which
                 # does carry it, so replacing it silently stays correct.
-                await self._release_held_as_message(superseded, direction)
+                await self._release_held_as_message(
+                    superseded, direction, superseded_turn
+                )
         held = HeldTranscriptionFrame(
             frame.text,
             frame.user_id,
@@ -196,7 +198,7 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
             finalized=frame.finalized,
         )
         if self._hold_s == 0:
-            await self._release_held_as_message(held, direction)
+            await self._release_held_as_message(held, direction, turn)
             return
 
         async def expire():
@@ -206,35 +208,44 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
             # the one cancelling itself.
             self._held = None
             if entry is not None:
-                await self._release_held_as_message(entry[0], direction)
+                held_frame, _task, held_turn = entry
+                await self._release_held_as_message(held_frame, direction, held_turn)
 
         self._held = (held, self.create_task(expire(), name="hybrid-hold"), turn)
 
-    async def _take_held(self) -> HeldTranscriptionFrame | None:
-        """Pop the held final and stop its timer. Never call it from that timer."""
+    async def _take_held(self) -> tuple[HeldTranscriptionFrame, FluxTurn] | None:
+        """Pop the held final with the Flux turn that produced it, stopping its timer.
+
+        Never call it from that timer, which would cancel the caller."""
         if self._held is None:
             return None
-        frame, task, _ = self._held
+        frame, task, turn = self._held
         self._held = None
         await self.cancel_task(task)
-        return frame
+        return frame, turn
 
     async def _release_held_as_message(
-        self, frame: HeldTranscriptionFrame, direction: FrameDirection
+        self,
+        frame: HeldTranscriptionFrame,
+        direction: FrameDirection,
+        turn: FluxTurn,
     ) -> None:
         self.stats["held_released_as_message"] += 1
         await self._forward(frame, direction)
+        # Booked against the turn that produced it, like every other release: a second
+        # final of that turn must then diff against this text instead of repeating it.
+        turn.emitted = frame.text
 
     async def _release_held_into_turn(self) -> None:
         """A local turn opened while a final was held: hand the text to that turn."""
-        if self._held is None:
+        entry = await self._take_held()
+        if entry is None:
             return
         # Attributed to the Flux turn that produced it, never to whichever turn is
         # current. Booked against a newer turn, this text becomes what that turn's own
         # words are diffed against: its interim reads as a rewrite of it, and its final
         # replaces it away (D-11), destroying an utterance already in the aggregation.
-        held_turn = self._held[2]
-        frame = await self._take_held()
+        frame, held_turn = entry
         self.stats["held_released_into_turn"] += 1
         await self._forward(frame, FrameDirection.DOWNSTREAM)
         # After the push, as in ``_promote``: a final arriving inside it must not see
@@ -386,11 +397,14 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
             return
         if isinstance(frame, (EndFrame, CancelFrame)):
             await self._cancel_wait()
-            held = await self._take_held()
-            if held is not None and isinstance(frame, EndFrame):
+            entry = await self._take_held()
+            if entry is not None and isinstance(frame, EndFrame):
                 # Last chance to deliver speech the local VAD never claimed. On a
                 # CancelFrame the pipeline is being torn down, so it is dropped instead.
-                await self._release_held_as_message(held, FrameDirection.DOWNSTREAM)
+                held, held_turn = entry
+                await self._release_held_as_message(
+                    held, FrameDirection.DOWNSTREAM, held_turn
+                )
             self._turn = None
             if self.stats:
                 logger.info(f"{self}: hybrid turn stats {dict(self.stats)}")

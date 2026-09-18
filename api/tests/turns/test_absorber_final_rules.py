@@ -181,6 +181,27 @@ async def test_released_held_text_is_attributed_to_its_own_flux_turn():
 
 
 @pytest.mark.asyncio
+async def test_released_held_text_is_not_replaced_away_by_a_final_with_no_promotion():
+    # The same misattribution with nothing promoted in between: turn B's final is then
+    # diffed against A's text directly and the D-11 replace destroys it.
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),  # Flux turn A
+            ("down", tf("hola")),
+            ("down", UserStoppedSpeakingFrame()),
+            ("down", UserStartedSpeakingFrame()),  # Flux turn B
+            ("up", UserStartedSpeakingFrame()),  # local turn → A released into it
+            ("down", tf("qué tal")),  # B's final, no interim promoted
+            ("down", UserStoppedSpeakingFrame()),
+        ],
+        hold_ms=1500,
+    )
+    assert [d[1] for d in finals(rec)] == ["hola", "qué tal"]
+    assert not any(d[0] == "TranscriptionReplaceFrame" for d in finals(rec))
+    assert absorber.stats["rewrite_replaced"] == 0
+
+
+@pytest.mark.asyncio
 async def test_hold_zero_drops_nothing_but_delivers_immediately_as_message():
     absorber, rec = await run_steps(
         [
@@ -192,6 +213,24 @@ async def test_hold_zero_drops_nothing_but_delivers_immediately_as_message():
     )
     assert finals(rec) == [("HeldTranscriptionFrame", "hola", True, "flux")]
     assert absorber.stats["held_released_as_message"] == 1
+
+
+@pytest.mark.asyncio
+async def test_second_final_after_an_as_message_release_does_not_repeat_the_words():
+    # The released text is booked against its turn, so the second final of that turn
+    # diffs against it (D-12 tail) instead of being held and delivered whole again.
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("down", tf("hola")),
+            (0.15, None),  # the hold expires: "hola" goes out as a message
+            ("down", tf("hola qué tal")),  # second final of the same Flux turn
+            ("down", UserStoppedSpeakingFrame()),
+        ],
+        hold_ms=50,
+    )
+    assert [d[1] for d in finals(rec)] == ["hola", "qué tal"]
+    assert absorber.stats["orphan_emitted"] == 1
 
 
 @pytest.mark.asyncio
