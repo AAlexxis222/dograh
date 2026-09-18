@@ -15,6 +15,7 @@ from api.constants import (
     TEXT_CHAT_INACTIVITY_TIMEOUT_SECONDS,
 )
 from api.schemas.service_tuning import ServiceTuning
+from api.schemas.turn_configuration import TurnConfiguration
 
 DEFAULT_MAX_CALL_DURATION_SECONDS = 300
 # Hard ceiling on configurable call duration. Must stay <= the concurrency
@@ -218,6 +219,17 @@ class WorkflowConfigurationDefaults(BaseModel):
     # Nullable on purpose: run_pipeline branches on key presence and applies a
     # transport-dependent default when absent, so this must never materialise.
     user_turn_stop_timeout: float | None = Field(default=None, gt=0)
+    # Nullable on purpose (same reason as service_tuning): a materialised
+    # TurnConfiguration() would inject {"source": "auto", "hybrid": {...}} into
+    # every run's effective document.
+    turn: TurnConfiguration | None = Field(
+        default=None,
+        description=(
+            "Turn-detection controls: {source: auto|stt|local, hybrid: {wait_ms, hold_ms}}. "
+            "source=local with a server-turn STT enables the hybrid (local analyzer over "
+            "the STT's transcription)."
+        ),
+    )
     # Owned by the AI-model cascade (ai_model_configuration.py); the workflow
     # cascade passes them through untouched.
     model_overrides: dict[str, Any] | None = None
