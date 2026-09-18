@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 import {
     buildSideBySideDiffRows,
     type DiffCell,
-    serializeWorkflowVersionJson,
+    serializeWorkflowVersionPair,
 } from "../utils/workflowVersionDiff";
 
 interface WorkflowVersionDiffDialogProps {
@@ -106,8 +106,10 @@ export const WorkflowVersionDiffDialog = ({
     selectedVersion,
 }: WorkflowVersionDiffDialogProps) => {
     const rows = useMemo(() => {
-        const previousJson = serializeWorkflowVersionJson(previousVersion);
-        const selectedJson = serializeWorkflowVersionJson(selectedVersion);
+        const { previous: previousJson, selected: selectedJson } = serializeWorkflowVersionPair(
+            previousVersion,
+            selectedVersion,
+        );
         return buildSideBySideDiffRows(previousJson, selectedJson);
     }, [previousVersion, selectedVersion]);
     const changeHunks = useMemo(() => getChangeHunks(rows), [rows]);

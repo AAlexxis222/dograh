@@ -191,6 +191,7 @@ async def create_text_chat_session(
             initial_context=run_inputs.initial_context,
             organization_id=user.selected_organization_id,
             definition_id=run_inputs.definition_id,
+            effective_configurations=run_inputs.effective_configurations,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

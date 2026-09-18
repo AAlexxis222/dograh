@@ -1,0 +1,304 @@
+"""The four branches of the STT's final (spec §6.1.1 ratified form, D-11/D-12/D-13)."""
+
+import pytest
+from pipecat.frames.frames import (
+    TranscriptionFrame,
+    UninterruptibleFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
+)
+
+from api.services.pipecat.turns.frames import (
+    HeldTranscriptionFrame,
+    PromotedTranscriptionFrame,
+)
+from api.tests.turns.test_absorber_unit import finals, itf, run_steps, tf
+
+
+def test_a_released_held_final_is_a_transcription_that_survives_an_interruption():
+    # The turn start that releases it makes the aggregator broadcast an interruption,
+    # which flushes every queued interruptible frame.
+    assert issubclass(HeldTranscriptionFrame, UninterruptibleFrame)
+    # ...and the aggregator must still treat it as an ordinary transcription.
+    assert issubclass(HeldTranscriptionFrame, TranscriptionFrame)
+
+
+def test_a_promoted_interim_is_a_transcription_that_survives_an_interruption():
+    # The absorber books the promotion as delivered when it leaves; a queue flush between
+    # it and the aggregator would drop the words while the final only carries the delta.
+    assert issubclass(PromotedTranscriptionFrame, UninterruptibleFrame)
+    assert issubclass(PromotedTranscriptionFrame, TranscriptionFrame)
+
+
+@pytest.mark.asyncio
+async def test_rewrite_with_local_turn_open_replaces_instead_of_appending():
+    # D-11: the aggregator would concatenate the promoted partial and the rewritten final.
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("up", UserStartedSpeakingFrame()),
+            ("down", itf("quiero reservar para el")),
+            ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
+            ("down", tf("Quiero cancelar para el sábado.")),  # a word changed → rewrite
+            ("down", UserStoppedSpeakingFrame()),
+        ]
+    )
+    assert finals(rec) == [
+        ("PromotedTranscriptionFrame", "quiero reservar para el", False, "flux"),
+        ("TranscriptionReplaceFrame", "Quiero cancelar para el sábado.", None, "flux"),
+    ]
+    assert absorber.stats["rewrite_replaced"] == 1
+
+
+@pytest.mark.asyncio
+async def test_orphan_extension_is_emitted_as_new_message():
+    # D-12 (S5/S8): the local turn closed before the final; the tail is real speech.
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("up", UserStartedSpeakingFrame()),
+            ("down", itf("quiero reservar para el")),
+            ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
+            ("up", UserStoppedSpeakingFrame()),  # local turn closed
+            ("down", tf("Quiero reservar para el sábado.")),
+            ("down", UserStoppedSpeakingFrame()),
+        ]
+    )
+    assert [d[1] for d in finals(rec)] == ["quiero reservar para el", "sábado."]
+    assert finals(rec)[1][2] is True
+    assert absorber.stats["orphan_emitted"] == 1
+    assert absorber.stats["dup_avoided"] == 0  # the tail was delivered, not swallowed
+
+
+@pytest.mark.asyncio
+async def test_orphan_rewrite_is_emitted_whole_as_new_message():
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("up", UserStartedSpeakingFrame()),
+            ("down", itf("quiero reservar para el")),
+            ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
+            ("up", UserStoppedSpeakingFrame()),
+            ("down", tf("Quiero cancelar para el sábado.")),
+            ("down", UserStoppedSpeakingFrame()),
+        ]
+    )
+    assert [d[1] for d in finals(rec)] == [
+        "quiero reservar para el",
+        "Quiero cancelar para el sábado.",
+    ]
+    assert absorber.stats["orphan_rewrite_emitted"] == 1
+
+
+@pytest.mark.asyncio
+async def test_orphan_dup_is_dropped_silently():
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("up", UserStartedSpeakingFrame()),
+            ("down", itf("quiero reservar")),
+            ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
+            ("up", UserStoppedSpeakingFrame()),
+            ("down", tf("Quiero reservar.")),
+            ("down", UserStoppedSpeakingFrame()),
+        ]
+    )
+    assert len(finals(rec)) == 1
+    assert absorber.stats["dup_avoided"] == 1
+
+
+@pytest.mark.asyncio
+async def test_final_with_nothing_emitted_and_no_local_turn_is_held_then_released_as_message():
+    # D-13 (Sghost): no interim, no local turn → not passed through; after hold_ms it is
+    # delivered on its own so real speech is never lost when the local VAD missed it.
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("down", tf("hola")),
+            ("down", UserStoppedSpeakingFrame()),
+            (0.1, None),
+        ],
+        hold_ms=200,
+    )
+    # run_steps sleeps 0.3 s before EndFrame → the hold (0.2 s) expires inside the run.
+    assert finals(rec) == [("HeldTranscriptionFrame", "hola", True, "flux")]
+    assert absorber.stats["final_held_no_local_turn"] == 1
+    assert absorber.stats["held_released_as_message"] == 1
+
+
+@pytest.mark.asyncio
+async def test_held_final_is_released_into_the_next_local_turn():
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("down", tf("hola")),
+            ("down", UserStoppedSpeakingFrame()),
+            ("up", UserStartedSpeakingFrame()),  # local turn opens within hold_ms
+        ],
+        hold_ms=1500,
+    )
+    assert finals(rec) == [("HeldTranscriptionFrame", "hola", True, "flux")]
+    assert absorber.stats["held_released_into_turn"] == 1
+    assert absorber.stats["held_released_as_message"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_held_final_is_not_lost_when_the_next_flux_turn_is_held_too():
+    # Flux's finals are cumulative only inside one turn: turn B's final does not carry
+    # turn A's utterance, so holding B must release A instead of dropping it.
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("down", tf("hola")),
+            ("down", UserStoppedSpeakingFrame()),
+            ("down", UserStartedSpeakingFrame()),  # Flux turn B, still no local turn
+            ("down", tf("qué tal")),
+            ("down", UserStoppedSpeakingFrame()),
+        ],
+        hold_ms=1500,
+    )
+    assert [d[1] for d in finals(rec)] == ["hola", "qué tal"]
+    assert absorber.stats["final_held_no_local_turn"] == 2
+    assert absorber.stats["held_released_as_message"] == 2
+
+
+@pytest.mark.asyncio
+async def test_released_held_text_is_attributed_to_its_own_flux_turn():
+    # The held text belongs to Flux turn A. Attributed to the current turn B instead,
+    # B's own final reads as a rewrite of it and the replace destroys A's words.
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),  # Flux turn A
+            ("down", tf("hola")),  # held: no local turn
+            ("down", UserStoppedSpeakingFrame()),
+            ("down", UserStartedSpeakingFrame()),  # Flux turn B
+            ("up", UserStartedSpeakingFrame()),  # local turn → A released into it
+            ("down", itf("quiero reservar")),
+            ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
+            ("down", tf("quiero reservar hoy")),
+            ("down", UserStoppedSpeakingFrame()),
+        ],
+        hold_ms=1500,
+    )
+    assert [d[1] for d in finals(rec)] == ["hola", "quiero reservar", "hoy"]
+    assert not any(d[0] == "TranscriptionReplaceFrame" for d in finals(rec))
+    assert absorber.stats["rewrite_replaced"] == 0
+    assert absorber.stats["held_released_into_turn"] == 1
+    # The misattribution shows up here first: B's own interim would be diffed against
+    # A's text and promoted as a rewrite of it.
+    assert absorber.stats["promoted_rewrite"] == 0
+
+
+@pytest.mark.asyncio
+async def test_released_held_text_is_not_replaced_away_by_a_final_with_no_promotion():
+    # The same misattribution with nothing promoted in between: turn B's final is then
+    # diffed against A's text directly and the D-11 replace destroys it.
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),  # Flux turn A
+            ("down", tf("hola")),
+            ("down", UserStoppedSpeakingFrame()),
+            ("down", UserStartedSpeakingFrame()),  # Flux turn B
+            ("up", UserStartedSpeakingFrame()),  # local turn → A released into it
+            ("down", tf("qué tal")),  # B's final, no interim promoted
+            ("down", UserStoppedSpeakingFrame()),
+        ],
+        hold_ms=1500,
+    )
+    assert [d[1] for d in finals(rec)] == ["hola", "qué tal"]
+    assert not any(d[0] == "TranscriptionReplaceFrame" for d in finals(rec))
+    assert absorber.stats["rewrite_replaced"] == 0
+
+
+@pytest.mark.asyncio
+async def test_hold_zero_drops_nothing_but_delivers_immediately_as_message():
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("down", tf("hola")),
+            ("down", UserStoppedSpeakingFrame()),
+        ],
+        hold_ms=0,
+    )
+    assert finals(rec) == [("HeldTranscriptionFrame", "hola", True, "flux")]
+    assert absorber.stats["held_released_as_message"] == 1
+
+
+@pytest.mark.asyncio
+async def test_second_final_after_an_as_message_release_does_not_repeat_the_words():
+    # The released text is booked against its turn, so the second final of that turn
+    # diffs against it (D-12 tail) instead of being held and delivered whole again.
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("down", tf("hola")),
+            (0.15, None),  # the hold expires: "hola" goes out as a message
+            ("down", tf("hola qué tal")),  # second final of the same Flux turn
+            ("down", UserStoppedSpeakingFrame()),
+        ],
+        hold_ms=50,
+    )
+    assert [d[1] for d in finals(rec)] == ["hola", "qué tal"]
+    assert absorber.stats["orphan_emitted"] == 1
+
+
+@pytest.mark.asyncio
+async def test_end_frame_flushes_a_held_final():
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("down", tf("hola")),
+            ("down", UserStoppedSpeakingFrame()),
+        ],
+        hold_ms=10000,
+    )
+    # EndFrame arrives 0.3 s later, long before the hold expires: nothing may be lost.
+    assert finals(rec) == [("HeldTranscriptionFrame", "hola", True, "flux")]
+    assert absorber.stats["held_released_as_message"] == 1
+
+
+@pytest.mark.asyncio
+async def test_second_final_for_same_flux_turn_is_treated_as_extension_not_new_turn():
+    # §5.3-9: not observed with Flux; if it happens, extend the closed turn instead of
+    # opening a new one with the whole text.
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("up", UserStartedSpeakingFrame()),
+            ("down", itf("hola quiero")),
+            ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
+            ("down", tf("hola quiero reservar")),
+            (
+                "down",
+                tf("hola quiero reservar hoy"),
+            ),  # second final, no new StartOfTurn
+            ("down", UserStoppedSpeakingFrame()),
+        ]
+    )
+    assert [d[1] for d in finals(rec)] == ["hola quiero", "reservar", "hoy"]
+    assert absorber.stats["second_final_retained"] == 1
+
+
+@pytest.mark.asyncio
+async def test_second_final_that_does_not_extend_is_appended_not_replaced():
+    # The first final repeated the promoted interim, so that interim is what the open
+    # local turn still holds. Replacing it with the second final's words would wipe the
+    # whole utterance; the second final carries speech of its own instead.
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("up", UserStartedSpeakingFrame()),
+            ("down", itf("hola quiero reservar")),
+            ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
+            ("down", tf("Hola, quiero reservar.")),  # first final: the same words
+            ("down", tf("para dos personas.")),  # second final, no new StartOfTurn
+            ("down", UserStoppedSpeakingFrame()),
+        ]
+    )
+    assert [(d[0], d[1]) for d in finals(rec)] == [
+        ("PromotedTranscriptionFrame", "hola quiero reservar"),
+        ("TranscriptionFrame", "para dos personas."),
+    ]
+    assert absorber.stats["second_final_appended"] == 1
+    assert absorber.stats["rewrite_replaced"] == 0

@@ -48,6 +48,7 @@ class WorkflowRunClient(BaseDBClient):
         queued_run_id: int = None,
         organization_id: int | None = None,
         definition_id: int | None = None,
+        effective_configurations: dict | None = None,
     ) -> WorkflowRunModel:
         async with self.async_session() as session:
             workflow_query = (
@@ -88,6 +89,7 @@ class WorkflowRunClient(BaseDBClient):
                 workflow=workflow,
                 mode=mode,
                 definition_id=definition_id,
+                effective_configurations=effective_configurations,
                 initial_context=initial_context or {},
                 gathered_context=gathered_context or {},
                 logs=logs or {},
@@ -245,22 +247,30 @@ class WorkflowRunClient(BaseDBClient):
     async def get_workflow_run_configurations(
         self, run_id: int, organization_id: int
     ) -> dict:
-        """Load the immutable workflow configuration snapshot for one run."""
+        """Configuration the run executes with: the snapshot frozen at creation,
+        or the pinned definition for runs created before the snapshot existed."""
 
         async with self.async_session() as session:
             result = await session.execute(
-                select(WorkflowDefinitionModel.workflow_configurations)
-                .join(
-                    WorkflowRunModel,
-                    WorkflowRunModel.definition_id == WorkflowDefinitionModel.id,
+                select(
+                    WorkflowRunModel.effective_configurations,
+                    WorkflowDefinitionModel.workflow_configurations,
                 )
                 .join(WorkflowModel, WorkflowRunModel.workflow_id == WorkflowModel.id)
+                .outerjoin(
+                    WorkflowDefinitionModel,
+                    WorkflowRunModel.definition_id == WorkflowDefinitionModel.id,
+                )
                 .where(
                     WorkflowRunModel.id == run_id,
                     WorkflowModel.organization_id == organization_id,
                 )
             )
-            return result.scalar_one_or_none() or {}
+            row = result.first()
+            if row is None:
+                return {}
+            frozen, pinned = row
+            return frozen if frozen is not None else (pinned or {})
 
     async def get_organization_id_by_workflow_run_id(
         self, run_id: int | None

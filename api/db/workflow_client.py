@@ -27,7 +27,15 @@ class WorkflowClient(BaseDBClient):
         workflow_definition: dict,
         user_id: int,
         organization_id: int = None,
+        workflow_configurations: dict | None = None,
+        template_context_variables: dict | None = None,
     ) -> WorkflowModel:
+        """Create a workflow whose published V1 carries the given settings.
+
+        ``workflow_configurations`` / ``template_context_variables`` land on the
+        V1 definition (and the legacy workflow columns); passing them later via
+        ``update_workflow`` would only create an unpublished draft.
+        """
         async with self.async_session() as session:
             try:
                 new_workflow = WorkflowModel(
@@ -35,6 +43,8 @@ class WorkflowClient(BaseDBClient):
                     workflow_definition=workflow_definition,  # Keep for backwards compatibility
                     user_id=user_id,
                     organization_id=organization_id,
+                    workflow_configurations=workflow_configurations,
+                    template_context_variables=template_context_variables,
                 )
                 session.add(new_workflow)
                 await session.flush()  # Flush to get the workflow ID
@@ -297,38 +307,93 @@ class WorkflowClient(BaseDBClient):
             )
             return result.scalars().first()
 
-    async def get_definition_configurations(
-        self,
-        definition_id: int | None,
-        *,
-        organization_id: int,
-    ) -> dict:
-        """Load the configuration document for one workflow definition.
+    async def get_definition_configurations_with_owner(
+        self, definition_id: int
+    ) -> tuple[dict, int] | None:
+        """Configuration document of one definition plus the organization that
+        owns it, or ``None`` when the definition does not exist.
 
-        Callers that need configuration *before* a run row exists must read the
-        definition the run will bind to. ``WorkflowModel.workflow_configurations``
-        is a legacy column kept in sync with the draft, so reading it here would
-        let unpublished edits change live call behaviour.
+        The cascade resolver compares the owner with the caller so it can
+        distinguish "missing" (400) from "another tenant's" (403) instead of
+        treating both as an empty document.
 
-        Scoping is mandatory: the lookup joins through ``WorkflowModel`` so a
-        definition id belonging to another tenant returns ``{}`` rather than
-        that tenant's configuration.
+        Deliberately unscoped, so the tenant check lives in Python rather than
+        in the WHERE clause. The architecture test that guards configuration
+        reads matches this method name, so a caller outside the cascade fails
+        that test and cannot quietly skip the check.
         """
-        if definition_id is None:
-            return {}
         async with self.async_session() as session:
             result = await session.execute(
-                select(WorkflowDefinitionModel.workflow_configurations)
+                select(
+                    WorkflowDefinitionModel.workflow_configurations,
+                    WorkflowModel.organization_id,
+                )
+                .join(
+                    WorkflowModel,
+                    WorkflowModel.id == WorkflowDefinitionModel.workflow_id,
+                )
+                .where(WorkflowDefinitionModel.id == definition_id)
+            )
+            row = result.first()
+            if row is None:
+                return None
+            return (row[0] or {}), row[1]
+
+    async def list_draft_definitions_for_backfill(
+        self, *, after_id: int, limit: int
+    ) -> list[tuple[int, int, int, dict]]:
+        """Draft definitions in id order, for the one-off sparse backfill.
+
+        Published/archived versions are run snapshots and are never listed.
+
+        Intentionally unscoped by organization — the one exception to the rule
+        that every data access carries an organization id. This is a one-off
+        maintenance sweep over every tenant; a request-serving caller must not
+        copy the pattern.
+        """
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(
+                    WorkflowDefinitionModel.id,
+                    WorkflowDefinitionModel.workflow_id,
+                    WorkflowModel.organization_id,
+                    WorkflowDefinitionModel.workflow_configurations,
+                )
                 .join(
                     WorkflowModel,
                     WorkflowModel.id == WorkflowDefinitionModel.workflow_id,
                 )
                 .where(
-                    WorkflowDefinitionModel.id == definition_id,
-                    WorkflowModel.organization_id == organization_id,
+                    WorkflowDefinitionModel.status == "draft",
+                    WorkflowDefinitionModel.id > after_id,
                 )
+                .order_by(WorkflowDefinitionModel.id)
+                .limit(limit)
             )
-            return result.scalar_one_or_none() or {}
+            return [(row[0], row[1], row[2], row[3] or {}) for row in result.all()]
+
+    async def update_definition_configurations(
+        self, definition_id: int, configurations: dict
+    ) -> None:
+        """Rewrite one draft's configuration document.
+
+        The ``status`` predicate is part of the write, not a precondition read:
+        a definition published between the listing and this UPDATE is a run
+        snapshot by then and must not be rewritten.
+
+        Unscoped by organization for the same reason as the listing above: it
+        exists for the one-off sweep, not for request handling.
+        """
+        async with self.async_session() as session:
+            await session.execute(
+                update(WorkflowDefinitionModel)
+                .where(
+                    WorkflowDefinitionModel.id == definition_id,
+                    WorkflowDefinitionModel.status == "draft",
+                )
+                .values(workflow_configurations=configurations)
+            )
+            await session.commit()
 
     async def get_workflow_versions(
         self,

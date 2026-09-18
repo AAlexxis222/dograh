@@ -1,0 +1,1795 @@
+{
+  "llm.atlascloud": {
+    "class": "OpenAILLMService",
+    "kwargs": {
+      "api_key": "k",
+      "base_url": "https://api.example/v1",
+      "settings": {
+        "__class__": "OpenAILLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_completion_tokens": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "some-model",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": 0.1,
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.aws_bedrock": {
+    "class": "AWSBedrockLLMService",
+    "kwargs": {
+      "aws_access_key": "a",
+      "aws_region": "eu-west-1",
+      "aws_secret_key": "s",
+      "settings": {
+        "__class__": "AWSBedrockLLMSettings",
+        "additional_model_request_fields": "NOT_GIVEN",
+        "enable_prompt_caching": "NOT_GIVEN",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "latency": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "anthropic.claude",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "stop_sequences": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": "NOT_GIVEN",
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.azure/gpt-4.1": {
+    "class": "AzureLLMService",
+    "kwargs": {
+      "api_key": "k",
+      "endpoint": "https://x.openai.azure.com",
+      "settings": {
+        "__class__": "AzureLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_completion_tokens": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "gpt-4.1",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": 0.1,
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.azure/gpt-5": {
+    "class": "AzureLLMService",
+    "kwargs": {
+      "api_key": "k",
+      "endpoint": "https://x.openai.azure.com",
+      "settings": {
+        "__class__": "AzureLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_completion_tokens": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "gpt-5-mini",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": 0.1,
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.dograh": {
+    "class": "DograhLLMService",
+    "kwargs": {
+      "api_key": "k",
+      "base_url": "https://services.dograh.com/api/v1/llm",
+      "correlation_id": "corr-1",
+      "settings": {
+        "__class__": "OpenAILLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_completion_tokens": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "gpt-4.1",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": "NOT_GIVEN",
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      },
+      "usage_context": "conversation"
+    }
+  },
+  "llm.google": {
+    "class": "DograhGoogleLLMService",
+    "kwargs": {
+      "api_key": "k",
+      "settings": {
+        "__class__": "GoogleLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "gemini-2.5-flash",
+        "presence_penalty": "NOT_GIVEN",
+        "safety_settings": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": 0.1,
+        "thinking": "NOT_GIVEN",
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.google/migrated": {
+    "class": "DograhGoogleLLMService",
+    "kwargs": {
+      "api_key": "k",
+      "settings": {
+        "__class__": "GoogleLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "gemini-2.5-flash",
+        "presence_penalty": "NOT_GIVEN",
+        "safety_settings": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": 0.1,
+        "thinking": "NOT_GIVEN",
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.google_vertex": {
+    "class": "DograhGoogleVertexLLMService",
+    "kwargs": {
+      "credentials": "c",
+      "location": "us-east4",
+      "project_id": "p",
+      "settings": {
+        "__class__": "GoogleVertexLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "gemini-2.5-flash",
+        "presence_penalty": "NOT_GIVEN",
+        "safety_settings": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": 0.1,
+        "thinking": "NOT_GIVEN",
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.groq": {
+    "class": "GroqLLMService",
+    "kwargs": {
+      "api_key": "k",
+      "settings": {
+        "__class__": "GroqLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_completion_tokens": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "llama-3.3-70b",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": 0.1,
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.huggingface": {
+    "class": "HuggingFaceLLMService",
+    "kwargs": {
+      "api_key": "k",
+      "base_url": "https://router.huggingface.co/v1",
+      "bill_to": "org",
+      "settings": {
+        "__class__": "HuggingFaceLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_completion_tokens": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "meta-llama/x",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": 0.1,
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.minimax": {
+    "class": "MiniMaxLLMService",
+    "kwargs": {
+      "api_key": "k",
+      "base_url": "https://api.minimax.io/v1",
+      "settings": {
+        "__class__": "MiniMaxLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_completion_tokens": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "MiniMax-M1",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": 1.0,
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.minimax/temperature": {
+    "class": "MiniMaxLLMService",
+    "kwargs": {
+      "api_key": "k",
+      "base_url": "https://api.minimax.io/v1",
+      "settings": {
+        "__class__": "MiniMaxLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_completion_tokens": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "MiniMax-M1",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": 0.4,
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.openai/base_url": {
+    "class": "OpenAILLMService",
+    "kwargs": {
+      "api_key": "k",
+      "base_url": "https://api.example/v1",
+      "settings": {
+        "__class__": "OpenAILLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_completion_tokens": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "gpt-4.1",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": 0.1,
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.openai/gpt-4.1": {
+    "class": "OpenAILLMService",
+    "kwargs": {
+      "api_key": "k",
+      "settings": {
+        "__class__": "OpenAILLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_completion_tokens": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "gpt-4.1",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": 0.1,
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.openai/gpt-5": {
+    "class": "OpenAILLMService",
+    "kwargs": {
+      "api_key": "k",
+      "settings": {
+        "__class__": "OpenAILLMSettings",
+        "extra": {
+          "reasoning_effort": "minimal",
+          "verbosity": "low"
+        },
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_completion_tokens": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "gpt-5-mini",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": "NOT_GIVEN",
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.openai/gpt-5-chat": {
+    "class": "OpenAILLMService",
+    "kwargs": {
+      "api_key": "k",
+      "settings": {
+        "__class__": "OpenAILLMSettings",
+        "extra": {
+          "reasoning_effort": "minimal",
+          "verbosity": "low"
+        },
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_completion_tokens": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "gpt-5-chat-latest",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": "NOT_GIVEN",
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.openrouter/gpt-4.1": {
+    "class": "OpenRouterLLMService",
+    "kwargs": {
+      "api_key": "k",
+      "settings": {
+        "__class__": "OpenRouterLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_completion_tokens": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "openai/gpt-4.1",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": 0.1,
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.openrouter/gpt-5": {
+    "class": "OpenRouterLLMService",
+    "kwargs": {
+      "api_key": "k",
+      "settings": {
+        "__class__": "OpenRouterLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_completion_tokens": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "openai/gpt-5-mini",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": 0.1,
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.sarvam": {
+    "class": "SarvamLLMService",
+    "kwargs": {
+      "api_key": "k",
+      "settings": {
+        "__class__": "SarvamLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_completion_tokens": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "sarvam-m",
+        "presence_penalty": "NOT_GIVEN",
+        "reasoning_effort": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": 0.5,
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN",
+        "wiki_grounding": "NOT_GIVEN"
+      }
+    }
+  },
+  "llm.speaches": {
+    "class": "SpeachesLLMService",
+    "kwargs": {
+      "api_key": "k",
+      "base_url": "https://api.example/v1",
+      "settings": {
+        "__class__": "SpeachesLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_completion_tokens": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "qwen",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": "NOT_GIVEN",
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "realtime.azure_realtime": {
+    "class": "DograhAzureRealtimeLLMService",
+    "kwargs": {
+      "api_key": "test-key",
+      "base_url": "wss://x.openai.azure.com/openai/v1/realtime?model=gpt-realtime",
+      "settings": {
+        "__class__": "AzureRealtimeLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "gpt-realtime",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "session_properties": {
+          "__class__": "SessionProperties",
+          "audio": {
+            "input": {
+              "format": null,
+              "noise_reduction": null,
+              "transcription": {
+                "language": null,
+                "model": "gpt-realtime-whisper",
+                "prompt": null
+              },
+              "turn_detection": null
+            },
+            "output": {
+              "format": null,
+              "speed": null,
+              "voice": "alloy"
+            }
+          },
+          "expires_at": null,
+          "id": null,
+          "include": null,
+          "instructions": null,
+          "max_output_tokens": null,
+          "model": null,
+          "object": null,
+          "output_modalities": null,
+          "prompt": null,
+          "reasoning": null,
+          "tool_choice": null,
+          "tools": null,
+          "tracing": null,
+          "type": "realtime"
+        },
+        "system_instruction": "NOT_GIVEN",
+        "temperature": "NOT_GIVEN",
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "realtime.google_realtime": {
+    "class": "DograhGeminiLiveLLMService",
+    "kwargs": {
+      "api_key": "test-key",
+      "settings": {
+        "__class__": "GeminiLiveLLMSettings",
+        "context_window_compression": "NOT_GIVEN",
+        "enable_affective_dialog": "NOT_GIVEN",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "language": "es",
+        "max_tokens": "NOT_GIVEN",
+        "media_resolution": "NOT_GIVEN",
+        "modalities": "NOT_GIVEN",
+        "model": "gemini-live",
+        "presence_penalty": "NOT_GIVEN",
+        "proactivity": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": 0.7,
+        "thinking": "NOT_GIVEN",
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN",
+        "vad": "NOT_GIVEN",
+        "voice": "Puck"
+      }
+    }
+  },
+  "realtime.google_vertex_realtime": {
+    "class": "DograhGeminiLiveVertexLLMService",
+    "kwargs": {
+      "credentials": "c",
+      "location": "us-east4",
+      "project_id": "p",
+      "settings": {
+        "__class__": "GeminiLiveVertexLLMSettings",
+        "context_window_compression": "NOT_GIVEN",
+        "enable_affective_dialog": "NOT_GIVEN",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "language": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "media_resolution": "NOT_GIVEN",
+        "modalities": "NOT_GIVEN",
+        "model": "gemini-live",
+        "presence_penalty": "NOT_GIVEN",
+        "proactivity": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": "NOT_GIVEN",
+        "thinking": "NOT_GIVEN",
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN",
+        "vad": "NOT_GIVEN",
+        "voice": "Charon"
+      }
+    }
+  },
+  "realtime.grok_realtime": {
+    "class": "DograhGrokRealtimeLLMService",
+    "kwargs": {
+      "api_key": "test-key",
+      "settings": {
+        "__class__": "GrokRealtimeLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "grok-realtime",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "session_properties": {
+          "__class__": "SessionProperties",
+          "audio": {
+            "input": {
+              "format": null,
+              "transcription": {
+                "language_hint": null,
+                "model": "grok-transcribe"
+              }
+            },
+            "output": null
+          },
+          "instructions": null,
+          "tools": null,
+          "turn_detection": {
+            "type": "server_vad"
+          },
+          "voice": "ara"
+        },
+        "system_instruction": "NOT_GIVEN",
+        "temperature": "NOT_GIVEN",
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "realtime.openai_realtime": {
+    "class": "DograhOpenAIRealtimeLLMService",
+    "kwargs": {
+      "api_key": "test-key",
+      "settings": {
+        "__class__": "OpenAIRealtimeLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "gpt-realtime",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "session_properties": {
+          "__class__": "SessionProperties",
+          "audio": {
+            "input": {
+              "format": null,
+              "noise_reduction": null,
+              "transcription": {
+                "language": "es",
+                "model": "gpt-realtime-whisper",
+                "prompt": null
+              },
+              "turn_detection": null
+            },
+            "output": {
+              "format": null,
+              "speed": null,
+              "voice": "alloy"
+            }
+          },
+          "expires_at": null,
+          "id": null,
+          "include": null,
+          "instructions": null,
+          "max_output_tokens": null,
+          "model": null,
+          "object": null,
+          "output_modalities": null,
+          "prompt": null,
+          "reasoning": null,
+          "tool_choice": null,
+          "tools": null,
+          "tracing": null,
+          "type": "realtime"
+        },
+        "system_instruction": "NOT_GIVEN",
+        "temperature": "NOT_GIVEN",
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "realtime.ultravox_realtime": {
+    "class": "DograhUltravoxRealtimeLLMService",
+    "kwargs": {
+      "params": {
+        "__class__": "DograhUltravoxOneShotInputParams",
+        "api_key": "test-key",
+        "extra": {},
+        "max_duration": "<timedelta>",
+        "metadata": {},
+        "model": "ultravox-v0.6",
+        "output_medium": "voice",
+        "system_prompt": null,
+        "temperature": 0.0,
+        "voice": "Jessica"
+      },
+      "settings": {
+        "__class__": "UltravoxRealtimeLLMSettings",
+        "extra": {},
+        "filter_incomplete_user_turns": "NOT_GIVEN",
+        "frequency_penalty": "NOT_GIVEN",
+        "max_tokens": "NOT_GIVEN",
+        "model": "ultravox-v0.6",
+        "output_medium": "voice",
+        "presence_penalty": "NOT_GIVEN",
+        "seed": "NOT_GIVEN",
+        "system_instruction": "NOT_GIVEN",
+        "temperature": "NOT_GIVEN",
+        "top_k": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "user_turn_completion_config": "NOT_GIVEN"
+      }
+    }
+  },
+  "stt.assemblyai": {
+    "class": "AssemblyAISTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "AssemblyAISTTSettings",
+        "agent_context": "NOT_GIVEN",
+        "continuous_partials": "NOT_GIVEN",
+        "domain": "NOT_GIVEN",
+        "end_of_turn_confidence_threshold": "NOT_GIVEN",
+        "extra": {},
+        "format_turns": "NOT_GIVEN",
+        "formatted_finals": "NOT_GIVEN",
+        "interruption_delay": "NOT_GIVEN",
+        "keyterms_prompt": [
+          "Marbella"
+        ],
+        "language": "en",
+        "language_code": "NOT_GIVEN",
+        "language_codes": "NOT_GIVEN",
+        "language_detection": "NOT_GIVEN",
+        "max_turn_silence": "NOT_GIVEN",
+        "min_turn_silence": "NOT_GIVEN",
+        "mode": "NOT_GIVEN",
+        "model": "universal-streaming",
+        "previous_context_n_turns": "NOT_GIVEN",
+        "prompt": "NOT_GIVEN",
+        "speaker_labels": "NOT_GIVEN",
+        "vad_threshold": "NOT_GIVEN",
+        "voice_focus": "NOT_GIVEN",
+        "voice_focus_threshold": "NOT_GIVEN",
+        "word_finalization_max_wait_time": "NOT_GIVEN"
+      }
+    }
+  },
+  "stt.azure_speech": {
+    "class": "AzureSTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "region": "eastus",
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "AzureSTTSettings",
+        "extra": {},
+        "language": "en-US",
+        "model": "NOT_GIVEN",
+        "profanity": "NOT_GIVEN"
+      }
+    }
+  },
+  "stt.cartesia/ink-2": {
+    "class": "CartesiaTurnsSTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "sample_rate": 16000,
+      "should_interrupt": false
+    }
+  },
+  "stt.cartesia/ink-whisper": {
+    "class": "CartesiaSTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "CartesiaSTTSettings",
+        "extra": {},
+        "keyterm": "NOT_GIVEN",
+        "language": "es",
+        "model": "ink-whisper"
+      }
+    }
+  },
+  "stt.deepgram/flux-en": {
+    "class": "DeepgramFluxSTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "DeepgramFluxSTTSettings",
+        "eager_eot_threshold": 0.5,
+        "eot_threshold": 0.7,
+        "eot_timeout_ms": 3000,
+        "extra": {},
+        "keyterm": [
+          "Marbella"
+        ],
+        "language": "NOT_GIVEN",
+        "language_hints": "NOT_GIVEN",
+        "min_confidence": "NOT_GIVEN",
+        "model": "flux-general-en",
+        "numerals": "NOT_GIVEN"
+      },
+      "should_interrupt": false
+    }
+  },
+  "stt.deepgram/flux-multi": {
+    "class": "DeepgramFluxSTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "DeepgramFluxSTTSettings",
+        "eager_eot_threshold": 0.5,
+        "eot_threshold": 0.7,
+        "eot_timeout_ms": 3000,
+        "extra": {},
+        "keyterm": [
+          "Marbella"
+        ],
+        "language": "NOT_GIVEN",
+        "language_hints": [
+          "es"
+        ],
+        "min_confidence": "NOT_GIVEN",
+        "model": "flux-general-multi",
+        "numerals": "NOT_GIVEN"
+      },
+      "should_interrupt": false
+    }
+  },
+  "stt.deepgram/nova": {
+    "class": "DeepgramSTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "DeepgramSTTSettings",
+        "detect_entities": "NOT_GIVEN",
+        "diarize": "NOT_GIVEN",
+        "dictation": "NOT_GIVEN",
+        "endpointing": 100,
+        "extra": {},
+        "interim_results": "NOT_GIVEN",
+        "keyterm": [
+          "Marbella"
+        ],
+        "keywords": "NOT_GIVEN",
+        "language": "multi",
+        "model": "nova-3-general",
+        "numerals": "NOT_GIVEN",
+        "profanity_filter": false,
+        "punctuate": "NOT_GIVEN",
+        "redact": "NOT_GIVEN",
+        "replace": "NOT_GIVEN",
+        "search": "NOT_GIVEN",
+        "smart_format": "NOT_GIVEN",
+        "utterance_end_ms": "NOT_GIVEN"
+      },
+      "should_interrupt": false
+    }
+  },
+  "stt.dograh/flux": {
+    "class": "DograhFluxSTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "base_url": "wss://services.dograh.com",
+      "correlation_id": "corr-1",
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "DeepgramFluxSTTSettings",
+        "eager_eot_threshold": 0.5,
+        "eot_threshold": 0.7,
+        "eot_timeout_ms": 3000,
+        "extra": {},
+        "keyterm": [
+          "Marbella"
+        ],
+        "language": "NOT_GIVEN",
+        "language_hints": [
+          "en"
+        ],
+        "min_confidence": "NOT_GIVEN",
+        "model": "flux-general-multi",
+        "numerals": "NOT_GIVEN"
+      },
+      "should_interrupt": false
+    }
+  },
+  "stt.dograh/non-flux": {
+    "class": "DograhSTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "base_url": "wss://services.dograh.com",
+      "correlation_id": "corr-1",
+      "keyterms": [
+        "Marbella"
+      ],
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "DograhSTTSettings",
+        "extra": {},
+        "language": "zz",
+        "model": "nova-3"
+      }
+    }
+  },
+  "stt.elevenlabs": {
+    "class": "ElevenLabsRealtimeSTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "base_url": "api.elevenlabs.io",
+      "commit_strategy": "vad",
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "ElevenLabsRealtimeSTTSettings",
+        "extra": {},
+        "filter_background_audio": "NOT_GIVEN",
+        "keyterms": "NOT_GIVEN",
+        "language": "es",
+        "min_silence_duration_ms": "NOT_GIVEN",
+        "min_speech_duration_ms": "NOT_GIVEN",
+        "model": "scribe_v2_realtime",
+        "vad_silence_threshold_secs": "NOT_GIVEN",
+        "vad_threshold": "NOT_GIVEN"
+      },
+      "should_interrupt": false
+    }
+  },
+  "stt.gladia": {
+    "class": "GladiaSTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "GladiaSTTSettings",
+        "custom_metadata": "NOT_GIVEN",
+        "enable_vad": "NOT_GIVEN",
+        "endpointing": "NOT_GIVEN",
+        "extra": {},
+        "language": "NOT_GIVEN",
+        "language_config": {
+          "__class__": "LanguageConfig",
+          "code_switching": false,
+          "languages": [
+            "en"
+          ]
+        },
+        "maximum_duration_without_endpointing": "NOT_GIVEN",
+        "messages_config": "NOT_GIVEN",
+        "model": "solaria-1",
+        "pre_processing": "NOT_GIVEN",
+        "realtime_processing": "NOT_GIVEN"
+      }
+    }
+  },
+  "stt.google": {
+    "class": "GoogleSTTService",
+    "kwargs": {
+      "credentials": null,
+      "location": "global",
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "GoogleSTTSettings",
+        "enable_automatic_punctuation": "NOT_GIVEN",
+        "enable_interim_results": "NOT_GIVEN",
+        "enable_spoken_emojis": "NOT_GIVEN",
+        "enable_spoken_punctuation": "NOT_GIVEN",
+        "enable_voice_activity_events": "NOT_GIVEN",
+        "enable_word_confidence": "NOT_GIVEN",
+        "enable_word_time_offsets": "NOT_GIVEN",
+        "extra": {},
+        "language": "NOT_GIVEN",
+        "language_codes": "NOT_GIVEN",
+        "languages": [
+          "en-US"
+        ],
+        "model": "latest_long",
+        "profanity_filter": "NOT_GIVEN",
+        "use_separate_recognition_per_channel": "NOT_GIVEN"
+      }
+    }
+  },
+  "stt.huggingface": {
+    "class": "HuggingFaceSTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "base_url": "https://router.huggingface.co/hf-inference",
+      "bill_to": null,
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "HuggingFaceSTTSettings",
+        "extra": {},
+        "generation_parameters": "NOT_GIVEN",
+        "language": "NOT_GIVEN",
+        "model": "openai/whisper-large-v3",
+        "return_timestamps": false
+      }
+    }
+  },
+  "stt.openai/segments": {
+    "class": "OpenAISTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "settings": {
+        "__class__": "OpenAISTTSettings",
+        "extra": {},
+        "language": "NOT_GIVEN",
+        "model": "gpt-4o-transcribe",
+        "prompt": "NOT_GIVEN",
+        "temperature": "NOT_GIVEN"
+      },
+      "should_interrupt": false
+    }
+  },
+  "stt.openai/segments-language": {
+    "class": "OpenAISTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "settings": {
+        "__class__": "OpenAISTTSettings",
+        "extra": {},
+        "language": "NOT_GIVEN",
+        "model": "gpt-4o-transcribe",
+        "prompt": "NOT_GIVEN",
+        "temperature": "NOT_GIVEN"
+      },
+      "should_interrupt": false
+    }
+  },
+  "stt.sarvam": {
+    "class": "SarvamSTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "SarvamSTTSettings",
+        "extra": {},
+        "first_turn_min_speech_frames": "NOT_GIVEN",
+        "high_vad_sensitivity": "NOT_GIVEN",
+        "interrupt_min_speech_frames": "NOT_GIVEN",
+        "language": "hi-IN",
+        "min_speech_frames": "NOT_GIVEN",
+        "model": "saarika:v2",
+        "negative_frames_count": "NOT_GIVEN",
+        "negative_frames_window": "NOT_GIVEN",
+        "negative_speech_threshold": "NOT_GIVEN",
+        "num_initial_ignored_frames": "NOT_GIVEN",
+        "positive_speech_threshold": "NOT_GIVEN",
+        "pre_speech_pad_frames": "NOT_GIVEN",
+        "prompt": "NOT_GIVEN",
+        "start_speech_volume_threshold": "NOT_GIVEN",
+        "vad_signals": "NOT_GIVEN"
+      }
+    }
+  },
+  "stt.smallest": {
+    "class": "SmallestSTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "SmallestSTTSettings",
+        "diarize": "NOT_GIVEN",
+        "endpointing": "NOT_GIVEN",
+        "extra": {},
+        "format": "NOT_GIVEN",
+        "full_transcript": "NOT_GIVEN",
+        "keywords": "NOT_GIVEN",
+        "language": "en",
+        "model": "lightning",
+        "numerals": "NOT_GIVEN",
+        "redact_pci": "NOT_GIVEN",
+        "redact_pii": "NOT_GIVEN",
+        "sentence_timestamps": "NOT_GIVEN",
+        "word_timestamps": "NOT_GIVEN"
+      }
+    }
+  },
+  "stt.speaches": {
+    "class": "SpeachesSTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "base_url": "https://api.example",
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "SpeachesSTTSettings",
+        "extra": {},
+        "language": "en",
+        "model": "whisper-1",
+        "prompt": "NOT_GIVEN",
+        "temperature": "NOT_GIVEN"
+      }
+    }
+  },
+  "stt.speechmatics": {
+    "class": "SpeechmaticsSTTService",
+    "kwargs": {
+      "api_key": "test-key",
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "SpeechmaticsSTTSettings",
+        "additional_vocab": [
+          {
+            "__class__": "AdditionalVocabEntry",
+            "content": "Marbella",
+            "sounds_like": null
+          }
+        ],
+        "domain": "NOT_GIVEN",
+        "enable_diarization": "NOT_GIVEN",
+        "end_of_utterance_max_delay": "NOT_GIVEN",
+        "end_of_utterance_silence_trigger": "NOT_GIVEN",
+        "extra": {},
+        "extra_params": "NOT_GIVEN",
+        "focus_mode": "NOT_GIVEN",
+        "focus_speakers": "NOT_GIVEN",
+        "ignore_speakers": "NOT_GIVEN",
+        "include_partials": "NOT_GIVEN",
+        "known_speakers": "NOT_GIVEN",
+        "language": "en",
+        "max_delay": "NOT_GIVEN",
+        "max_speakers": "NOT_GIVEN",
+        "model": "NOT_GIVEN",
+        "operating_point": "enhanced",
+        "prefer_current_speaker": "NOT_GIVEN",
+        "punctuation_overrides": "NOT_GIVEN",
+        "speaker_active_format": "NOT_GIVEN",
+        "speaker_passive_format": "NOT_GIVEN",
+        "speaker_sensitivity": "NOT_GIVEN",
+        "split_sentences": "NOT_GIVEN",
+        "turn_detection_mode": "NOT_GIVEN"
+      }
+    }
+  },
+  "tts.azure_speech": {
+    "class": "AzureTTSService",
+    "kwargs": {
+      "api_key": "test-key",
+      "region": "eastus",
+      "settings": {
+        "__class__": "AzureTTSSettings",
+        "emphasis": "NOT_GIVEN",
+        "extra": {},
+        "force_locale": "NOT_GIVEN",
+        "language": "es-ES",
+        "model": "NOT_GIVEN",
+        "pitch": "NOT_GIVEN",
+        "rate": "1.25",
+        "role": "NOT_GIVEN",
+        "style": "NOT_GIVEN",
+        "style_degree": "NOT_GIVEN",
+        "voice": "es-ES-ElviraNeural",
+        "volume": "NOT_GIVEN"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ]
+    }
+  },
+  "tts.camb": {
+    "class": "CambTTSService",
+    "kwargs": {
+      "api_key": "test-key",
+      "model": "mars-flash",
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ],
+      "voice_id": 147320
+    }
+  },
+  "tts.cartesia": {
+    "class": "CartesiaTTSService",
+    "kwargs": {
+      "api_key": "test-key",
+      "settings": {
+        "__class__": "CartesiaTTSSettings",
+        "extra": {},
+        "generation_config": "NOT_GIVEN",
+        "language": "es",
+        "model": "sonic-2",
+        "pronunciation_dict_id": "NOT_GIVEN",
+        "voice": "Name - voice-1"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ]
+    }
+  },
+  "tts.cartesia/speed-volume": {
+    "class": "CartesiaTTSService",
+    "kwargs": {
+      "api_key": "test-key",
+      "settings": {
+        "__class__": "CartesiaTTSSettings",
+        "extra": {},
+        "generation_config": {
+          "__class__": "GenerationConfig",
+          "emotion": null,
+          "speed": 1.2,
+          "volume": 0.8
+        },
+        "language": "es",
+        "model": "sonic-2",
+        "pronunciation_dict_id": "NOT_GIVEN",
+        "voice": "Name - voice-1"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ]
+    }
+  },
+  "tts.deepgram": {
+    "class": "DeepgramTTSService",
+    "kwargs": {
+      "api_key": "test-key",
+      "settings": {
+        "__class__": "DeepgramTTSSettings",
+        "extra": {},
+        "language": "NOT_GIVEN",
+        "model": "NOT_GIVEN",
+        "voice": "aura-2-thalia-en"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ]
+    }
+  },
+  "tts.dograh": {
+    "class": "DograhTTSService",
+    "kwargs": {
+      "api_key": "test-key",
+      "base_url": "wss://services.dograh.com",
+      "correlation_id": "corr-1",
+      "settings": {
+        "__class__": "DograhTTSSettings",
+        "extra": {},
+        "language": "NOT_GIVEN",
+        "model": "aura-2",
+        "pitch": "NOT_GIVEN",
+        "speed": 1.1,
+        "voice": "Name - voice-1",
+        "volume": "NOT_GIVEN"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ]
+    }
+  },
+  "tts.elevenlabs": {
+    "class": "ElevenLabsTTSService",
+    "kwargs": {
+      "api_key": "test-key",
+      "reconnect_on_error": false,
+      "settings": {
+        "__class__": "ElevenLabsTTSSettings",
+        "apply_text_normalization": "NOT_GIVEN",
+        "extra": {},
+        "language": "NOT_GIVEN",
+        "model": "eleven_flash_v2_5",
+        "similarity_boost": 0.75,
+        "speed": 1.0,
+        "stability": 0.8,
+        "style": "NOT_GIVEN",
+        "use_speaker_boost": "NOT_GIVEN",
+        "voice": "abc"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ],
+      "url": "wss://api.elevenlabs.io"
+    }
+  },
+  "tts.google": {
+    "class": "GoogleTTSService",
+    "kwargs": {
+      "credentials": null,
+      "location": null,
+      "settings": {
+        "__class__": "GoogleTTSSettings",
+        "extra": {},
+        "language": "es-ES",
+        "model": "chirp_3_hd",
+        "speaking_rate": 1.2,
+        "voice": "en-US-Chirp3-HD-Charon"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ]
+    }
+  },
+  "tts.inworld": {
+    "class": "InworldTTSService",
+    "kwargs": {
+      "api_key": "test-key",
+      "settings": {
+        "__class__": "InworldTTSSettings",
+        "delivery_mode": "BALANCED",
+        "extra": {},
+        "language": "es-ES",
+        "model": "inworld-tts-1",
+        "speaking_rate": 1.1,
+        "temperature": "NOT_GIVEN",
+        "voice": "Ashley"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ]
+    }
+  },
+  "tts.lmnt": {
+    "class": "LmntTTSService",
+    "kwargs": {
+      "api_key": "test-key",
+      "output_format": "raw",
+      "sample_rate": 16000,
+      "settings": {
+        "__class__": "LmntTTSSettings",
+        "extra": {},
+        "language": "es",
+        "model": "aurora",
+        "voice": "lily"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ]
+    }
+  },
+  "tts.minimax": {
+    "class": "MiniMaxOwnedSessionTTSService",
+    "kwargs": {
+      "aiohttp_session": "<mock>",
+      "api_key": "test-key",
+      "base_url": "https://api.minimax.io/v1/t2a_v2",
+      "group_id": "grp-1",
+      "settings": {
+        "__class__": "MiniMaxTTSSettings",
+        "emotion": "NOT_GIVEN",
+        "extra": {},
+        "language": "NOT_GIVEN",
+        "language_boost": "NOT_GIVEN",
+        "latex_read": "NOT_GIVEN",
+        "model": "speech-02-hd",
+        "pitch": "NOT_GIVEN",
+        "speed": 1.1,
+        "text_normalization": "NOT_GIVEN",
+        "voice": "Wise_Woman",
+        "volume": "NOT_GIVEN"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ]
+    }
+  },
+  "tts.openai": {
+    "class": "OpenAITTSService",
+    "kwargs": {
+      "api_key": "test-key",
+      "sample_rate": 24000,
+      "settings": {
+        "__class__": "OpenAITTSSettings",
+        "extra": {},
+        "instructions": "NOT_GIVEN",
+        "language": "NOT_GIVEN",
+        "model": "gpt-4o-mini-tts",
+        "speed": "NOT_GIVEN",
+        "voice": "NOT_GIVEN"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ]
+    }
+  },
+  "tts.rime": {
+    "class": "RimeTTSService",
+    "kwargs": {
+      "api_key": "test-key",
+      "settings": {
+        "__class__": "RimeTTSSettings",
+        "extra": {},
+        "inlineSpeedAlpha": "NOT_GIVEN",
+        "language": "es",
+        "model": "arcana",
+        "noTextNormalization": "NOT_GIVEN",
+        "pauseBetweenBrackets": "NOT_GIVEN",
+        "phonemizeBetweenBrackets": "NOT_GIVEN",
+        "reduceLatency": "NOT_GIVEN",
+        "repetition_penalty": "NOT_GIVEN",
+        "saveOovs": "NOT_GIVEN",
+        "segment": "NOT_GIVEN",
+        "speedAlpha": 1.2,
+        "temperature": "NOT_GIVEN",
+        "timeScaleFactor": "NOT_GIVEN",
+        "top_p": "NOT_GIVEN",
+        "voice": "luna"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ]
+    }
+  },
+  "tts.sarvam": {
+    "class": "SarvamTTSService",
+    "kwargs": {
+      "api_key": "test-key",
+      "settings": {
+        "__class__": "SarvamTTSSettings",
+        "enable_preprocessing": "NOT_GIVEN",
+        "extra": {},
+        "language": "hi",
+        "loudness": "NOT_GIVEN",
+        "max_chunk_length": "NOT_GIVEN",
+        "min_buffer_size": "NOT_GIVEN",
+        "model": "bulbul:v2",
+        "pace": 1.2,
+        "pitch": "NOT_GIVEN",
+        "temperature": "NOT_GIVEN",
+        "voice": "anushka"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ]
+    }
+  },
+  "tts.smallest": {
+    "class": "SmallestTTSService",
+    "kwargs": {
+      "api_key": "test-key",
+      "settings": {
+        "__class__": "SmallestTTSSettings",
+        "extra": {},
+        "language": "es",
+        "model": "lightning_v2",
+        "speed": 1.1,
+        "voice": "emily"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ]
+    }
+  },
+  "tts.speaches": {
+    "class": "SpeachesTTSService",
+    "kwargs": {
+      "api_key": "test-key",
+      "base_url": "https://api.example",
+      "settings": {
+        "__class__": "SpeachesTTSSettings",
+        "extra": {},
+        "instructions": "NOT_GIVEN",
+        "language": "NOT_GIVEN",
+        "model": "kokoro",
+        "speed": 1.1,
+        "voice": "fettah"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ]
+    }
+  },
+  "tts.xai": {
+    "class": "XAITTSService",
+    "kwargs": {
+      "api_key": "test-key",
+      "settings": {
+        "__class__": "XAIWebsocketTTSSettings",
+        "extra": {},
+        "language": "es",
+        "model": "NOT_GIVEN",
+        "optimize_streaming_latency": "NOT_GIVEN",
+        "speed": "NOT_GIVEN",
+        "text_normalization": "NOT_GIVEN",
+        "voice": "eve",
+        "with_timestamps": "NOT_GIVEN"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ]
+    }
+  },
+  "tts.xai/speed": {
+    "class": "XAITTSService",
+    "kwargs": {
+      "api_key": "test-key",
+      "settings": {
+        "__class__": "XAIWebsocketTTSSettings",
+        "extra": {},
+        "language": "es",
+        "model": "NOT_GIVEN",
+        "optimize_streaming_latency": "NOT_GIVEN",
+        "speed": "NOT_GIVEN",
+        "text_normalization": "NOT_GIVEN",
+        "voice": "eve",
+        "with_timestamps": "NOT_GIVEN"
+      },
+      "silence_time_s": 1.0,
+      "skip_aggregator_types": [
+        "recording_router",
+        "recording"
+      ],
+      "text_filters": [
+        {
+          "__class__": "XMLFunctionTagFilter",
+          "_compiled_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_default_patterns": [
+            "<function=[^/>]*\\s*/\\s*>",
+            "<function=.*?</function>"
+          ],
+          "_preserve_whitespace": true
+        }
+      ]
+    }
+  }
+}

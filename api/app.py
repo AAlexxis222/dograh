@@ -36,6 +36,10 @@ from api.constants import REDIS_URL
 from api.errors.mps import MPS_UNAVAILABLE_PUBLIC_MESSAGE, MPSUnavailableError
 from api.mcp_server import mcp
 from api.routes.main import router as main_router
+from api.services.configuration.cascade import (
+    WorkflowDefinitionMissingError,
+    WorkflowDefinitionNotVisibleError,
+)
 from api.services.pipecat.tracing_config import (
     handle_langfuse_sync,
     load_all_org_langfuse_credentials,
@@ -110,6 +114,41 @@ async def handle_mps_unavailable_error(
     return JSONResponse(
         status_code=503,
         content={"detail": MPS_UNAVAILABLE_PUBLIC_MESSAGE},
+    )
+
+
+# One route does not use these handlers: the inbound telephony webhook answers
+# the carrier with a hangup instruction instead, because a JSON error body
+# means nothing to a carrier and a failed webhook is a dropped call.
+@app.exception_handler(WorkflowDefinitionMissingError)
+async def handle_workflow_definition_missing(
+    _request: Request,
+    exc: WorkflowDefinitionMissingError,
+) -> JSONResponse:
+    """A run cannot start without a definition to bind its configuration to.
+
+    Some of these callers are unauthenticated (the public embed), so the body
+    says what happened and the identifiers stay in the log.
+    """
+
+    logger.warning("workflow definition missing: {}", exc)
+    return JSONResponse(
+        status_code=400, content={"detail": "Workflow has no runnable definition"}
+    )
+
+
+@app.exception_handler(WorkflowDefinitionNotVisibleError)
+async def handle_workflow_definition_not_visible(
+    _request: Request,
+    exc: WorkflowDefinitionNotVisibleError,
+) -> JSONResponse:
+    """The definition belongs to another tenant; the body must not confirm
+    which organization owns it."""
+
+    logger.warning("workflow definition not visible: {}", exc)
+    return JSONResponse(
+        status_code=403,
+        content={"detail": "Workflow definition is not available to this organization"},
     )
 
 

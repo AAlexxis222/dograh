@@ -32,6 +32,7 @@ from pipecat.utils.run_context import set_current_org_id
 from api.db import db_client
 from api.enums import WorkflowRunMode, WorkflowRunState
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
+from api.services.configuration.cascade import run_configurations_for
 from api.services.configuration.registry import ServiceProviders
 from api.services.pipecat.audio_config import create_audio_config
 from api.services.pipecat.pipeline_builder import create_pipeline_task
@@ -41,6 +42,7 @@ from api.services.pipecat.pipeline_metrics_aggregator import (
 from api.services.pipecat.pre_call_fetch import execute_pre_call_fetch
 from api.services.pipecat.recording_audio_cache import create_recording_audio_fetcher
 from api.services.pipecat.service_factory import create_llm_service
+from api.services.pipecat.service_tuning import llm_tuning_applies
 from api.services.pipecat.tracing_config import (
     build_remote_parent_context,
     get_trace_url,
@@ -455,7 +457,7 @@ async def execute_text_chat_pending_turn(
     set_current_org_id(workflow.organization_id)
 
     run_definition = workflow_run.definition
-    run_configs = run_definition.workflow_configurations or {}
+    run_configs = run_configurations_for(workflow_run)
 
     from api.services.configuration.ai_model_configuration import (
         get_effective_ai_model_configuration_for_workflow,
@@ -485,7 +487,10 @@ async def execute_text_chat_pending_turn(
         initial_context=base_initial_context,
     )
 
-    llm = create_llm_service(user_config, correlation_id=mps_correlation_id)
+    service_tuning = run_configs.get("service_tuning")
+    llm = create_llm_service(
+        user_config, correlation_id=mps_correlation_id, tuning=service_tuning
+    )
     inference_llm = llm
     call_dispositions = WorkflowConfigurationDefaults.model_validate(
         {"call_dispositions": run_configs.get("call_dispositions") or []}
@@ -493,16 +498,32 @@ async def execute_text_chat_pending_turn(
     needs_extraction_llm = workflow_graph.uses_variable_extraction() or bool(
         call_dispositions
     )
-    variable_extraction_llm = (
-        create_llm_service(
+    # Sharing is only safe when the instance on offer was tuned exactly as
+    # extraction would be. Here that instance is always the conversation LLM;
+    # run_pipeline has a realtime path where it is the inference LLM instead.
+    shares_existing_llm = llm_tuning_applies(
+        service_tuning, "conversation"
+    ) == llm_tuning_applies(service_tuning, "extraction")
+    if (
+        needs_extraction_llm
+        and user_config.llm.provider == ServiceProviders.DOGRAH.value
+    ):
+        variable_extraction_llm = create_llm_service(
             user_config,
             correlation_id=mps_correlation_id,
             usage_context="variable_extraction",
+            tuning=service_tuning,
+            role="extraction",
         )
-        if needs_extraction_llm
-        and user_config.llm.provider == ServiceProviders.DOGRAH.value
-        else llm
-    )
+    elif needs_extraction_llm and not shares_existing_llm:
+        variable_extraction_llm = create_llm_service(
+            user_config,
+            correlation_id=mps_correlation_id,
+            tuning=service_tuning,
+            role="extraction",
+        )
+    else:
+        variable_extraction_llm = llm
 
     runtime_configuration = {
         "llm_provider": user_config.llm.provider,
@@ -601,9 +622,8 @@ async def execute_text_chat_pending_turn(
         embeddings_api_version = getattr(user_config.embeddings, "api_version", None)
 
     has_recordings = await db_client.has_active_recordings(workflow.organization_id)
-    context_compaction_enabled = (workflow.workflow_configurations or {}).get(
-        "context_compaction_enabled", False
-    )
+    # Pinned definition, not the workflow row (which mirrors the draft).
+    context_compaction_enabled = run_configs.get("context_compaction_enabled", False)
     engine = PipecatEngine(
         llm=llm,
         inference_llm=inference_llm,

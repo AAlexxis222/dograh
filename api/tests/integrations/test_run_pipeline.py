@@ -15,6 +15,7 @@ completion flag, and ``gathered_context`` entries.
 """
 
 import asyncio
+from unittest.mock import patch
 
 import pytest
 from pipecat.tests.mock_transport import MockTransport
@@ -67,6 +68,10 @@ WORKFLOW_DEFINITION = {
     ],
 }
 
+# Lives only in the organization layer, so it can only reach the pipeline
+# through the document frozen on the run.
+ORGANIZATION_MAX_CALL_DURATION = 987
+
 
 @pytest.fixture
 async def workflow_run_setup(db_session, async_session):
@@ -78,6 +83,9 @@ async def workflow_run_setup(db_session, async_session):
         workflow_definition=WORKFLOW_DEFINITION,
         name_prefix="Event Handler Integration",
         provider_id_suffix="event-handlers",
+        organization_configuration_defaults={
+            "max_call_duration": ORGANIZATION_MAX_CALL_DURATION
+        },
     )
 
 
@@ -215,3 +223,93 @@ async def test_call_stays_registered_for_drain_until_artifacts_uploaded(
     assert observed["count_during_upload"] == 1
     assert observed["run_task_done_during_upload"] is False
     assert active_calls.active_call_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_reads_configuration_from_frozen_snapshot(
+    workflow_run_setup, db_session
+):
+    """An unpublished draft must not change the behaviour of a live run.
+
+    ``save_workflow_draft`` mirrors the draft into the legacy
+    ``WorkflowModel.workflow_configurations`` column; the pipeline used to read
+    ``context_compaction_enabled`` and ``voicemail_detection`` from that column.
+    It now reads the document frozen on the run, which is also the only place
+    the organization-level ``max_call_duration`` exists: the pinned definition
+    carries an empty configuration and the workflow column carries the draft.
+    """
+    from pipecat.extensions.voicemail.voicemail_detector import VoicemailDetector
+
+    from api.services.pipecat.pipeline_engine_callbacks_processor import (
+        PipelineEngineCallbacksProcessor,
+    )
+    from api.services.workflow.pipecat_engine import PipecatEngine
+
+    workflow_run, user, workflow = workflow_run_setup
+    # The run is pinned to V1 (published, empty configuration). Create a draft
+    # that enables both knobs; it also lands in the workflow row.
+    await db_session.save_workflow_draft(
+        workflow.id,
+        workflow_configurations={
+            "context_compaction_enabled": True,
+            "voicemail_detection": {"enabled": True},
+        },
+    )
+    refreshed_workflow = await db_session.get_workflow(
+        workflow.id, organization_id=workflow.organization_id
+    )
+    assert refreshed_workflow.workflow_configurations["context_compaction_enabled"]
+
+    transport = MockTransport(
+        TransportParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            audio_out_end_silence_secs=0,
+        )
+    )
+    captured_task: list = []
+    audio_config = create_audio_config(WorkflowRunMode.SMALLWEBRTC.value)
+    with (
+        patch_run_pipeline_externals(captured_task),
+        patch(
+            "api.services.pipecat.run_pipeline.PipecatEngine", wraps=PipecatEngine
+        ) as engine_cls,
+        patch(
+            "api.services.pipecat.run_pipeline.VoicemailDetector",
+            wraps=VoicemailDetector,
+        ) as voicemail_cls,
+        patch(
+            "api.services.pipecat.run_pipeline.PipelineEngineCallbacksProcessor",
+            wraps=PipelineEngineCallbacksProcessor,
+        ) as callbacks_cls,
+    ):
+        run_task = asyncio.create_task(
+            _run_pipeline(
+                transport=transport,
+                workflow_id=workflow.id,
+                workflow_run_id=workflow_run.id,
+                user_id=user.id,
+                audio_config=audio_config,
+                user_provider_id=user.provider_id,
+            )
+        )
+        for _ in range(60):
+            if captured_task or run_task.done():
+                break
+            await asyncio.sleep(0.05)
+        if run_task.done() and not captured_task:
+            run_task.result()
+        assert captured_task, "create_pipeline_task was never invoked"
+        pipeline_task = captured_task[0]
+        await wait_for_pipeline_worker_started(
+            pipeline_task, timeout=3.0, run_task=run_task
+        )
+        await pipeline_task.cancel()
+        await asyncio.wait_for(run_task, timeout=5.0)
+
+    assert engine_cls.call_args.kwargs["context_compaction_enabled"] is False
+    voicemail_cls.assert_not_called()
+    assert (
+        callbacks_cls.call_args.kwargs["max_call_duration_seconds"]
+        == ORGANIZATION_MAX_CALL_DURATION
+    )

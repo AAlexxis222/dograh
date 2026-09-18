@@ -1,0 +1,253 @@
+---
+title: "Workflow Settings"
+description: "Organization defaults, inherited vs own values, and how a run freezes its configuration."
+---
+
+## Overview
+
+Every workflow runs with a configuration document: call duration, ambient noise, turn
+handling, disposition codes, text-chat timeouts and more. That document is resolved from
+three layers, in order:
+
+1. **Schema defaults** shipped with Dograh.
+2. **Organization defaults** — the base every workflow in the organization inherits.
+3. **The workflow definition** pinned by the run — the workflow's own values.
+
+Later layers win key by key. A workflow only stores the keys it actually sets, so a change
+to the organization base reaches every workflow that never overrode that key.
+
+## Organization defaults
+
+Three endpoints manage the organization base:
+
+| Method | Path | Returns |
+| --- | --- | --- |
+| `GET` | `/api/v1/organizations/workflow-configuration-defaults` | The stored sparse document (secrets masked) |
+| `PUT` | `/api/v1/organizations/workflow-configuration-defaults` | The document as stored |
+| `GET` | `/api/v1/organizations/workflow-configuration-effective-defaults` | Schema defaults merged with the organization base, plus `warnings` |
+
+The `PUT` stores only the keys present in the request body. A key sent as `null` at the root
+of the document means "unset": it is dropped, and workflows fall back to the schema default.
+
+Some keys are rejected with `422` at the organization level:
+
+- **Secrets** — API keys and other credentials live on the workflow, behind their own gate.
+- **External PBX** — `external_pbx_field_mappings` and `external_pbx_lead_headers` are
+  guarded by the workflow save policy, which an organization layer would bypass.
+- **AI model sections** — `model_overrides` and `model_configuration_v2_override` already
+  have their own organization level (model configurations), so a second one would be
+  ambiguous.
+
+Custom disposition codes set in the organization base are added to the catalog returned by
+`GET /api/v1/organizations/disposition-codes`, alongside the system codes and the codes
+registered for the organization.
+
+## Inherit or override
+
+A workflow inherits every key it does not set. The workflow save stores exactly the keys the
+request carries, so a sparse document keeps every other key following the organization base.
+The builder saves only the settings you change. Every setting shows an **Inherited** or
+**Custom** badge; *Use organization default* removes the workflow's own value so the setting
+follows the organization base again (the change is stored on save). A custom value equal to
+the organization default stays custom until you use that action.
+
+Lists replace by default: a workflow that sets `call_dispositions` replaces the organization
+catalog. To extend it instead, set the sibling flag:
+
+```json
+{
+  "call_dispositions_extend_org": true,
+  "call_dispositions": [
+    {
+      "code": "callback_scheduled",
+      "description": "The caller asked to be called back at a specific time."
+    }
+  ]
+}
+```
+
+With the flag on, the workflow's options are appended to the organization catalog and
+de-duplicated by `code`; an entry whose `code` already exists in the base replaces it.
+The turn section has the same shape with its own flag: `turn.ignore_terms.merge_defaults`
+appends the workflow's terms to the inherited list instead of replacing it.
+
+Nested `null` values are kept as written; only a `null` at the root of the document means
+"unset".
+
+## Reading a workflow's effective configuration
+
+One endpoint returns the three layers a client needs to show a setting without merging
+anything itself:
+
+```
+GET /api/v1/workflow/{workflow_id}/configuration-effective
+```
+
+| Field | Contains |
+| --- | --- |
+| `effective` | What the workflow would run with today: schema defaults, organization base and the workflow's own values merged |
+| `own` | Only the keys the workflow stores itself — a leaf missing here is inherited |
+| `base` | Schema defaults merged with the organization base, i.e. what an absent leaf falls back to |
+| `warnings` | The clamp messages produced while resolving this workflow's effective document, so they can include workflow-layer clamps the organization endpoint never reports |
+| `definition_id`, `definition_status` | The definition the answer was read from, or `null` while the workflow has neither a draft nor a published definition (a duplicate before its first publish) |
+
+It reads the **draft** definition when one exists, and the published definition otherwise —
+the same choice the builder makes when it opens a workflow. Secrets are masked in all three
+layers, so the response is not a way to read stored credentials back.
+
+A setting is *custom* when its path is present in `own`, and *inherited* otherwise. That is a
+question about presence, not about values: a workflow value that happens to equal the
+organization default is still custom, and returns to inherited only when the key is removed
+from the stored document.
+
+## What a run executes
+
+The cascade is resolved **once**, when the run is created, and frozen on the run as
+`effective_configurations`. Nothing re-resolves it while the call is in flight, so editing
+the organization base or the workflow mid-call cannot change a run already underway.
+
+The frozen document is visible in the run detail response:
+
+```
+GET /api/v1/workflow/{workflow_id}/runs/{run_id}
+```
+
+```json
+{
+  "id": 1234,
+  "effective_configurations": {
+    "max_call_duration": 600,
+    "voicemail_detection": { "enabled": true, "api_key": "**************cdef" }
+  }
+}
+```
+
+Secrets are masked in that response. Runs created before this feature existed have no
+frozen snapshot; they keep reading the workflow definition they pinned at creation, so their
+behaviour is unchanged.
+
+If a stored value is out of range, the resolver clamps it instead of failing the run. At run
+creation the clamp is written to the API logs and is not returned to the caller; the
+organization effective-defaults endpoint does return the same clamps in its `warnings` list.
+Writes through the API still get a `422`.
+
+## Turn detection
+
+The `turn` key decides who owns the turns of a call: the speech-to-text service, or the
+local voice-activity detector and turn analyzer that run inside the pipeline.
+
+```json
+{
+  "turn": {
+    "source": "local",
+    "hybrid": { "wait_ms": 0, "hold_ms": 1500 }
+  }
+}
+```
+
+| `turn.source` | What it does |
+| --- | --- |
+| `auto` (default) | Today's behaviour. A speech-to-text service that emits its own turns owns them; every other service uses the local strategies |
+| `stt` | The speech-to-text service's own turns. Accepted today, and the same as `auto` on a service that has no server turns — the pipeline logs a warning and falls back |
+| `local` | The local analyzer owns the turns. On a service with server turns this enables the hybrid described below |
+
+### Hybrid mode
+
+`source=local` on a service that emits server turns — Deepgram Flux, Dograh-Flux,
+Cartesia ink-2 — leaves transcription with that service and hands the turn decision to the
+local detector. A processor placed directly behind the speech-to-text stage reconciles the
+two:
+
+- It swallows the service's own turn signals so only the local turns reach the aggregator.
+  While the user is muted they pass through instead, so the mute path stays observable; the
+  aggregator suppresses them itself.
+- When the local detector stops inside an open turn, it promotes the last interim
+  transcript, so the local stop strategy has text to close the turn on.
+- When the service's final transcript arrives it emits only what the final adds, as a token
+  delta, and replaces the pending aggregation instead of appending when the final rewrites
+  what was already promoted.
+- A final that arrives with no local turn open is either delivered as a message of its own,
+  or held (see `hold_ms`) when nothing had been emitted for it yet.
+
+| Knob | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `hybrid.wait_ms` | `0` | `0`–`2000` | How long to wait for the service's own end-of-turn after the local stop before promoting the interim. A final that arrives inside the window cancels the promotion, so the turn closes on the final instead of on the interim plus a delta: the knob trades latency for that chance. `0` promotes immediately and is the recommended value |
+| `hybrid.hold_ms` | `1500` | `0`–`10000` | How long a final that arrives with no local turn open is held for a local turn to open. Speech the local detector never registered would otherwise be lost, or arrive as a message on its own in the middle of the next one |
+
+Out-of-range values are a `422` on the write. A value already stored out of range is
+clamped by the resolver with a warning, like every other bound in this document. An unknown
+key inside `hybrid` is rejected, as in `service_tuning`. `turn` itself accepts keys this
+build does not know, like the document itself and the ambient noise, voicemail detection and
+transcript sections.
+
+### What does not change
+
+With `turn` absent, or `source` set to `auto`, nothing in the pipeline changes. The
+defaults are the current behaviour: no processor is added and the aggregator is the same
+one as before. `smart_turn_stop_secs`, `turn_start_strategy` and `turn_stop_strategy` keep
+their meaning under every source, and realtime models — which have no separate
+speech-to-text stage — ignore `turn` entirely.
+
+### Known limits
+
+- A final that rewrites text after the local turn has already closed arrives as a second
+  message rather than editing the first. Replacement applies while the aggregation is still
+  pending; once the text has reached the context, and the model may already be answering,
+  a second message is the less invasive outcome.
+- The voicemail detector sees promoted interims, which are not marked as final. Measured on
+  the same transcript, it classifies a promoted interim exactly as it classifies the final,
+  so detection is unaffected.
+- The token delta drops punctuation the final adds to tokens that already went out.
+- A second end-of-turn transcript for the same turn that does not continue the first arrives
+  as a message of its own; it never replaces what the first one delivered. A service's
+  transcripts within one turn are expected to be cumulative, which is what Deepgram Flux and
+  Cartesia do; it has not been verified for Dograh-Flux.
+- When a local turn has already closed on a promoted interim, an interim of the next local
+  turn that rewrites it is promoted whole, so a few words can appear in both messages.
+- A transcript held while the user is muted is not released by the mute lifting: it leaves the
+  absorber when the next local turn opens or when the hold expires, and the aggregator's mute
+  rules then apply to it, so it may still be suppressed there. A final that is forwarded
+  while the user is muted, because a local turn was open or text had already gone out, is
+  suppressed by the aggregator the same way and counts as delivered: a later transcript of
+  that turn only adds what it extends.
+- On Deepgram Flux the promotion needs interim transcripts, which Flux emits on
+  `EagerEndOfTurn`. The hybrid relies on the service's `eager_eot_threshold` (default `0.5`)
+  and does not pin it; raising it under `service_tuning` starves the promotion and every turn
+  closes on the service's final instead.
+- A final of a previous service turn that arrives after the next service turn has started is
+  attributed to the new turn: it is delivered whole into it, so its words can appear twice,
+  once from its own promoted interim and once from the late final.
+- With `turn_start_strategy` set to `min_words` or `provisional_vad`, a transcript shorter
+  than the threshold that arrives while the bot speaks no longer resets the pending
+  aggregation once a turn is open; a delta of an open turn is exactly such a transcript.
+  With no turn open the strategy's rule stands.
+
+## API clients
+
+The external-PBX keys behave differently from every other key. While the external-PBX
+integration is disabled for the organization, the workflow save no longer copies
+`external_pbx_field_mappings` and `external_pbx_lead_headers` back from the stored draft, and
+they cannot be set at the organization level either. A client that replaces the document
+without them therefore clears them. Send both keys with their current values to keep them.
+The builder does this already, so this only affects API, SDK and MCP clients.
+
+## Backfill
+
+Before organization defaults existed, the builder re-sent the whole materialised document on
+every save, so most drafts carry every schema default as if it had been set by hand. Those
+baked values would shadow the organization base forever. A one-off script strips them:
+
+```bash
+python -m scripts.backfill_workflow_configuration_defaults            # dry-run report
+python -m scripts.backfill_workflow_configuration_defaults --apply    # write changes
+```
+
+Run the backfill after deploying this builder update: a workflow saved from the previous
+builder re-bakes the defaults, so a backfill run before the update can be undone by the next
+save from an old client.
+
+It rewrites **draft** definitions only — published and archived definitions are run snapshots
+and are never touched, and a workflow with no draft is left as it is. It removes only leaves
+equal to the schema default; anything you set yourself, and any key the schema does not
+declare, is kept. Surviving values are written back normalised, exactly as the workflow save
+already stores them.

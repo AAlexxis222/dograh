@@ -1,3 +1,5 @@
+import { annotateInheritedLeaves } from "@/lib/workflowConfigurationLeaves";
+
 export interface WorkflowVersionJsonSource {
     workflow_json: unknown;
     workflow_configurations?: unknown;
@@ -179,6 +181,32 @@ export const serializeWorkflowVersionJson = (
     null,
     2,
 );
+
+/**
+ * Serializes a version pair for the diff view, annotating leaves that are
+ * stored on one side and absent on the other as inherited from the base
+ * rather than removed/added — since a sparse configuration document only
+ * stores overrides.
+ */
+export const serializeWorkflowVersionPair = (
+    previous: WorkflowVersionJsonSource,
+    selected: WorkflowVersionJsonSource,
+): { previous: string; selected: string } => {
+    if (previous.workflow_configurations == null && selected.workflow_configurations == null) {
+        return {
+            previous: serializeWorkflowVersionJson(previous),
+            selected: serializeWorkflowVersionJson(selected),
+        };
+    }
+    const annotated = annotateInheritedLeaves(
+        previous.workflow_configurations,
+        selected.workflow_configurations,
+    );
+    return {
+        previous: serializeWorkflowVersionJson({ ...previous, workflow_configurations: annotated.left }),
+        selected: serializeWorkflowVersionJson({ ...selected, workflow_configurations: annotated.right }),
+    };
+};
 
 const frontierValue = (frontier: Map<number, number>, diagonal: number): number =>
     frontier.get(diagonal) ?? Number.NEGATIVE_INFINITY;

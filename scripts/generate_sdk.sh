@@ -25,6 +25,10 @@
 
 set -euo pipefail
 
+# The generators print non-ASCII (the node-spec dump, the "→" progress
+# lines); on Windows Python would otherwise encode stdout as cp1252.
+export PYTHONUTF8=1
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -35,8 +39,23 @@ if [ -f "$REPO_ROOT/api/.env" ]; then
     set +a
 fi
 
-SPECS_JSON="$(mktemp -t dograh-specs-XXXXXX.json)"
-OPENAPI_JSON="$(mktemp -t dograh-openapi-XXXXXX.json)"
+# A temp file path the Python and Node processes can open. Under Git Bash on
+# Windows ``mktemp`` returns a POSIX path (/tmp/...) that a native Windows
+# Python cannot resolve; ``cygpath -m`` gives the same file as C:/... (forward
+# slashes, so it is safe inside the Python heredoc below). On Linux there is
+# no cygpath and the path is used as-is.
+_tmp_json() {
+    local path
+    path="$(mktemp -t "$1")"
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -m "$path"
+    else
+        printf '%s\n' "$path"
+    fi
+}
+
+SPECS_JSON="$(_tmp_json dograh-specs-XXXXXX.json)"
+OPENAPI_JSON="$(_tmp_json dograh-openapi-XXXXXX.json)"
 trap 'rm -f "$SPECS_JSON" "$OPENAPI_JSON"' EXIT
 
 # ── 1. Node-spec typed dataclasses ────────────────────────────────────

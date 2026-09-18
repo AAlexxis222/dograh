@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
     buildSideBySideDiffRows,
     serializeWorkflowVersionJson,
+    serializeWorkflowVersionPair,
 } from "./workflowVersionDiff";
 
 describe("serializeWorkflowVersionJson", () => {
@@ -89,6 +90,34 @@ describe("serializeWorkflowVersionJson", () => {
                 type: "agentNode",
             }],
         });
+    });
+});
+
+describe("serializeWorkflowVersionPair", () => {
+    it("marks a leaf that stopped being stored as inherited instead of removed", () => {
+        const { previous, selected } = serializeWorkflowVersionPair(
+            { workflow_json: {}, workflow_configurations: { max_call_duration: 600, ambient_noise_configuration: { volume: 0.7 } } },
+            { workflow_json: {}, workflow_configurations: { ambient_noise_configuration: { volume: 0.7, enabled: true } } },
+        );
+        expect(JSON.parse(selected).workflow_configurations).toEqual({
+            max_call_duration: "(inherited)",
+            ambient_noise_configuration: { enabled: true, volume: 0.7 },
+        });
+        expect(JSON.parse(previous).workflow_configurations).toEqual({
+            max_call_duration: 600,
+            ambient_noise_configuration: { enabled: "(inherited)", volume: 0.7 },
+        });
+        const rows = buildSideBySideDiffRows(previous, selected);
+        const changed = rows.filter((row) => row.left?.kind !== "unchanged" || row.right?.kind !== "unchanged");
+        expect(changed.some((row) => row.right?.text.includes("(inherited)"))).toBe(true);
+    });
+
+    it("leaves versions without configurations untouched", () => {
+        const { previous, selected } = serializeWorkflowVersionPair(
+            { workflow_json: {}, workflow_configurations: null },
+            { workflow_json: {}, workflow_configurations: null },
+        );
+        expect(previous).toBe(selected);
     });
 });
 

@@ -23,6 +23,12 @@ from api.errors.failure import (
 from api.services.configuration.ai_model_configuration import (
     get_effective_ai_model_configuration_for_workflow,
 )
+from api.services.configuration.cascade import (
+    WorkflowDefinitionMissingError,
+    WorkflowDefinitionNotVisibleError,
+    load_effective_workflow_configurations,
+    run_configurations_for,
+)
 from api.services.configuration.registry import ServiceProviders
 from api.services.managed_model_services import (
     MPS_CORRELATION_ID_CONTEXT_KEY,
@@ -30,6 +36,7 @@ from api.services.managed_model_services import (
     uses_managed_model_services_v2,
 )
 from api.services.mps_service_key_client import mps_service_key_client
+from api.services.workflow.run_creation import published_definition
 
 MINIMUM_DOGRAH_CREDITS_FOR_CALL = 0.10
 
@@ -731,12 +738,8 @@ async def authorize_workflow_run_start(
                 error_message="User not found",
             )
 
-        # The run executes its pinned definition's configuration, so the MPS
+        # The run executes the configuration frozen on it, so the MPS
         # correlation must be minted for the service key in that snapshot.
-        # workflow.workflow_configurations is a legacy column synced to the
-        # draft on every save, which can carry a different service key than
-        # the definition the run will actually use.
-        workflow_configurations = workflow.workflow_configurations
         if workflow_run_id is not None:
             # As with the owner lookup, a DB read failure falls through to the
             # outer fail-closed handler; only a genuinely missing/mismatched run
@@ -756,9 +759,28 @@ async def authorize_workflow_run_start(
                     error_code="workflow_run_not_found",
                     error_message="Workflow run not found",
                 )
-            if workflow_run.definition is not None:
+            workflow_configurations = run_configurations_for(workflow_run)
+        else:
+            # Pre-run authorization (campaign start): resolve what the runs
+            # will freeze, from the published definition.
+            try:
                 workflow_configurations = (
-                    workflow_run.definition.workflow_configurations
+                    await load_effective_workflow_configurations(
+                        db_client,
+                        organization_id=organization_id,
+                        definition_id=getattr(
+                            published_definition(workflow), "id", None
+                        ),
+                    )
+                ).effective
+            except (
+                WorkflowDefinitionMissingError,
+                WorkflowDefinitionNotVisibleError,
+            ):
+                return QuotaCheckResult(
+                    has_quota=False,
+                    error_code="workflow_definition_missing",
+                    error_message="Workflow has no published definition",
                 )
 
         user_config = await get_effective_ai_model_configuration_for_workflow(

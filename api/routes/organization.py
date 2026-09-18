@@ -51,6 +51,7 @@ from api.schemas.telephony_phone_number import (
     PhoneNumberUpdateRequest,
     ProviderSyncStatus,
 )
+from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
 from api.services.auth.depends import (
     get_user,
     get_user_with_selected_organization,
@@ -67,6 +68,10 @@ from api.services.configuration.ai_model_configuration import (
     upsert_organization_ai_model_configuration_v2,
 )
 from api.services.configuration.check_validity import UserConfigurationValidator
+from api.services.configuration.default_configurations import (
+    EffectiveDefaultConfigurationsResponse,
+    build_default_configurations_response,
+)
 from api.services.configuration.defaults import DEFAULT_SERVICE_PROVIDERS
 from api.services.configuration.masking import is_mask_of, mask_key, mask_user_config
 from api.services.configuration.registry import (
@@ -87,6 +92,12 @@ from api.services.organization_preferences import (
     external_pbx_integrations_enabled,
     get_organization_preferences,
     upsert_organization_preferences,
+)
+from api.services.organization_workflow_configuration_defaults import (
+    OrganizationWorkflowConfigurationRejected,
+    get_effective_organization_workflow_configuration_defaults,
+    get_organization_workflow_configuration_defaults,
+    upsert_organization_workflow_configuration_defaults,
 )
 from api.services.pipecat.tracing_config import normalize_langfuse_host
 from api.services.posthog_client import capture_event
@@ -595,11 +606,20 @@ async def get_disposition_codes(
     custom_codes = await db_client.get_organization_disposition_codes(
         user.selected_organization_id
     )
+    organization_base = await get_organization_workflow_configuration_defaults(
+        user.selected_organization_id
+    )
+    base_codes = [
+        option.get("code")
+        for option in (organization_base or {}).get("call_dispositions") or []
+        if isinstance(option, dict) and option.get("code")
+    ]
     known = set(SYSTEM_DISPOSITION_CODES)
+    extra = sorted({code for code in [*custom_codes, *base_codes] if code not in known})
     return DispositionCodesResponse(
         codes=[
             *SYSTEM_DISPOSITION_CODES,
-            *sorted(code for code in custom_codes if code not in known),
+            *extra,
         ],
         end_task_reason_codes=list(END_TASK_REASON_DISPOSITION_CODES),
         system_codes=list(SYSTEM_DISPOSITION_CODES),
@@ -624,6 +644,71 @@ async def save_preferences(
         organization_id,
         request,
     )
+
+
+class OrganizationWorkflowConfigurationDefaultsResponse(BaseModel):
+    workflow_configurations: dict[str, Any] = Field(
+        description="Sparse organization base: only the keys the organization set. "
+        "Workflows inherit every key they do not set themselves. The PUT "
+        "replaces the whole document, so a body that omits a key the "
+        "organization had set deletes it."
+    )
+
+
+@router.get(
+    "/workflow-configuration-defaults",
+    response_model=OrganizationWorkflowConfigurationDefaultsResponse,
+)
+async def get_workflow_configuration_defaults(
+    user: UserModel = Depends(get_user_with_selected_organization),
+):
+    stored = await get_organization_workflow_configuration_defaults(
+        user.selected_organization_id
+    )
+    return {"workflow_configurations": stored}
+
+
+@router.put(
+    "/workflow-configuration-defaults",
+    response_model=OrganizationWorkflowConfigurationDefaultsResponse,
+)
+async def save_workflow_configuration_defaults(
+    request: WorkflowConfigurationDefaults,
+    user: UserModel = Depends(get_user_with_selected_organization),
+):
+    try:
+        stored = await upsert_organization_workflow_configuration_defaults(
+            user.selected_organization_id, user_id=user.id, configurations=request
+        )
+    except OrganizationWorkflowConfigurationRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"workflow_configurations": stored}
+
+
+@router.get(
+    "/workflow-configuration-effective-defaults",
+    response_model=EffectiveDefaultConfigurationsResponse,
+)
+async def get_workflow_configuration_effective_defaults(
+    user: UserModel = Depends(get_user_with_selected_organization),
+):
+    resolved = await get_effective_organization_workflow_configuration_defaults(
+        user.selected_organization_id
+    )
+    try:
+        validated = WorkflowConfigurationDefaults.model_validate(resolved.effective)
+    except ValidationError as exc:
+        # A document stored before a schema change, or written around the PUT.
+        # The organization can still repair it, so this is the caller's error.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "stored organization defaults no longer validate against the "
+                "current schema; fix them via PUT"
+            ),
+        ) from exc
+    payload = build_default_configurations_response(validated)
+    return {**payload, "warnings": resolved.warnings}
 
 
 @router.get(

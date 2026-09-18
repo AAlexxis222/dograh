@@ -588,3 +588,13 @@ def no_disposition_mapping():
         AsyncMock(return_value=OrganizationPreferences()),
     ) as stub:
         yield stub
+
+
+def mock_configuration_cascade(mock_db, organization_id: int = 11) -> None:
+    """Run creation resolves the configuration cascade; route tests that own
+    neither layer point the definition lookup at an empty document owned by the
+    test organization, and leave the organization defaults empty."""
+    mock_db.get_definition_configurations_with_owner = AsyncMock(
+        return_value=({}, organization_id)
+    )
+    mock_db.get_configuration_value = AsyncMock(return_value={})

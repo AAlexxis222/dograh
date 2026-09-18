@@ -311,6 +311,9 @@ class CampaignCallDispatcher:
 
             # Create workflow run with queued_run_id tracking
             workflow_run_name = f"WR-CAMPAIGN-{campaign.id}-{queued_run.id}"
+            # A missing or foreign definition raises out of here on purpose:
+            # the catch-all below releases the concurrency slot and the
+            # from-number before re-raising. Catching it here would leak both.
             run_inputs = await prepare_workflow_run_inputs(db_client, workflow)
             workflow_run = await db_client.create_workflow_run(
                 name=workflow_run_name,
@@ -322,6 +325,7 @@ class CampaignCallDispatcher:
                 queued_run_id=queued_run.id,  # Link to queued run for retry tracking
                 organization_id=campaign.organization_id,
                 definition_id=run_inputs.definition_id,
+                effective_configurations=run_inputs.effective_configurations,
             )
             await call_concurrency.bind_workflow_run(concurrency_slot, workflow_run.id)
             slot_bound = True

@@ -18,6 +18,7 @@ from api.constants import (
 from api.db import db_client
 from api.db.models import WorkflowRunTextSessionModel
 from api.enums import WorkflowRunMode
+from api.services.configuration.cascade import run_configurations_for
 from api.services.workflow.text_chat_session_service import (
     TextChatSessionRevisionConflictError,
     complete_text_chat_session,
@@ -146,16 +147,10 @@ async def complete_inactive_text_chat_session(
 def _text_chat_inactivity_timeout_seconds(
     text_session: WorkflowRunTextSessionModel,
 ) -> int:
-    """Resolve the timeout captured by the workflow definition for this run."""
-    workflow_run = text_session.workflow_run
-    definition = getattr(workflow_run, "definition", None)
-    if definition is not None:
-        configurations = getattr(definition, "workflow_configurations", None)
-    else:
-        workflow = getattr(workflow_run, "workflow", None)
-        configurations = getattr(workflow, "workflow_configurations", None)
+    """Resolve the timeout from the configuration frozen on this run."""
+    configurations = run_configurations_for(text_session.workflow_run)
 
-    configured_timeout = (configurations or {}).get(
+    configured_timeout = configurations.get(
         "text_chat_inactivity_timeout_seconds",
         TEXT_CHAT_INACTIVITY_TIMEOUT_SECONDS,
     )

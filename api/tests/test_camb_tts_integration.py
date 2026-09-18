@@ -76,6 +76,8 @@ class TestServiceFactoryCamb:
             "pipecat.services.dograh.llm",
             "pipecat.services.dograh.stt",
             "pipecat.services.dograh.tts",
+            "pipecat.services.dograh.flux",
+            "pipecat.services.dograh.flux.stt",
             "pipecat.utils.text.xml_function_tag_filter",
         ]
         mocks = {}
@@ -105,7 +107,9 @@ class TestServiceFactoryCamb:
                 transport_in_sample_rate=16000,
             )
 
-            with patch("pipecat.services.camb.tts.CambTTSService") as MockCambTTS:
+            with patch(
+                "api.services.pipecat.service_factory.CambTTSService"
+            ) as MockCambTTS:
                 mock_instance = MagicMock()
                 mock_instance._settings = MagicMock()
                 MockCambTTS.return_value = mock_instance
@@ -115,8 +119,8 @@ class TestServiceFactoryCamb:
                 MockCambTTS.assert_called_once()
                 call_kwargs = MockCambTTS.call_args[1]
                 assert call_kwargs["api_key"] == "test-api-key"
-                assert call_kwargs["voice_id"] == 147320
-                assert call_kwargs["model"] == "mars-flash"
+                assert call_kwargs["settings"].voice == 147320
+                assert call_kwargs["settings"].model == "mars-flash"
 
     def test_camb_voice_id_parsing(self):
         """Voice ID string is correctly converted to int."""

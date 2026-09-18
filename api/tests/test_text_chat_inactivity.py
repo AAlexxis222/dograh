@@ -357,6 +357,25 @@ def test_pending_assistant_turn_uses_configured_inactivity_timeout():
     assert deadline == last_activity_at + timedelta(seconds=60)
 
 
+def test_inactivity_timeout_prefers_frozen_configuration_over_pinned():
+    """The run executes what was frozen on it, not what the definition says now."""
+    text_session = SimpleNamespace(
+        workflow_run=SimpleNamespace(
+            effective_configurations={"text_chat_inactivity_timeout_seconds": 20 * 60},
+            definition=SimpleNamespace(
+                workflow_configurations={
+                    "text_chat_inactivity_timeout_seconds": 60 * 60
+                }
+            ),
+        ),
+    )
+
+    assert (
+        text_chat_inactivity._text_chat_inactivity_timeout_seconds(text_session)
+        == 20 * 60
+    )
+
+
 @pytest.mark.asyncio
 async def test_inactive_session_query_filters_mode_completion_and_cutoff(
     async_session,

@@ -55,6 +55,10 @@ async def test_agent_stream_uses_provider_path_param_not_query_param():
 
         registry.get_optional.return_value = spec
         db_client.get_workflow_by_uuid_unscoped = AsyncMock(return_value=workflow)
+        db_client.get_definition_configurations_with_owner = AsyncMock(
+            return_value=({}, workflow.organization_id)
+        )
+        db_client.get_configuration_value = AsyncMock(return_value={})
         db_client.create_workflow_run = AsyncMock(return_value=workflow_run)
         db_client.update_workflow_run = AsyncMock()
 
@@ -120,6 +124,10 @@ async def test_agent_stream_marks_run_failed_when_quota_exceeded():
     ):
         registry.get_optional.return_value = spec
         db_client.get_workflow_by_uuid_unscoped = AsyncMock(return_value=workflow)
+        db_client.get_definition_configurations_with_owner = AsyncMock(
+            return_value=({}, workflow.organization_id)
+        )
+        db_client.get_configuration_value = AsyncMock(return_value={})
         db_client.create_workflow_run = AsyncMock(return_value=workflow_run)
         db_client.update_workflow_run = AsyncMock()
         mock_concurrency.acquire_org_slot = AsyncMock(return_value=object())
@@ -156,6 +164,10 @@ async def test_agent_stream_rejects_when_concurrency_limit_reached():
     ):
         registry.get_optional.return_value = spec
         db_client.get_workflow_by_uuid_unscoped = AsyncMock(return_value=workflow)
+        db_client.get_definition_configurations_with_owner = AsyncMock(
+            return_value=({}, workflow.organization_id)
+        )
+        db_client.get_configuration_value = AsyncMock(return_value={})
         db_client.create_workflow_run = AsyncMock()
         mock_concurrency.acquire_org_slot = AsyncMock(
             side_effect=CallConcurrencyLimitError(
