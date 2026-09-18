@@ -154,6 +154,33 @@ async def test_a_held_final_is_not_lost_when_the_next_flux_turn_is_held_too():
 
 
 @pytest.mark.asyncio
+async def test_released_held_text_is_attributed_to_its_own_flux_turn():
+    # The held text belongs to Flux turn A. Attributed to the current turn B instead,
+    # B's own final reads as a rewrite of it and the replace destroys A's words.
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),  # Flux turn A
+            ("down", tf("hola")),  # held: no local turn
+            ("down", UserStoppedSpeakingFrame()),
+            ("down", UserStartedSpeakingFrame()),  # Flux turn B
+            ("up", UserStartedSpeakingFrame()),  # local turn → A released into it
+            ("down", itf("quiero reservar")),
+            ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
+            ("down", tf("quiero reservar hoy")),
+            ("down", UserStoppedSpeakingFrame()),
+        ],
+        hold_ms=1500,
+    )
+    assert [d[1] for d in finals(rec)] == ["hola", "quiero reservar", "hoy"]
+    assert not any(d[0] == "TranscriptionReplaceFrame" for d in finals(rec))
+    assert absorber.stats["rewrite_replaced"] == 0
+    assert absorber.stats["held_released_into_turn"] == 1
+    # The misattribution shows up here first: B's own interim would be diffed against
+    # A's text and promoted as a rewrite of it.
+    assert absorber.stats["promoted_rewrite"] == 0
+
+
+@pytest.mark.asyncio
 async def test_hold_zero_drops_nothing_but_delivers_immediately_as_message():
     absorber, rec = await run_steps(
         [

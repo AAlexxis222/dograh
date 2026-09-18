@@ -227,15 +227,19 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
 
     async def _release_held_into_turn(self) -> None:
         """A local turn opened while a final was held: hand the text to that turn."""
-        frame = await self._take_held()
-        if frame is None:
+        if self._held is None:
             return
+        # Attributed to the Flux turn that produced it, never to whichever turn is
+        # current. Booked against a newer turn, this text becomes what that turn's own
+        # words are diffed against: its interim reads as a rewrite of it, and its final
+        # replaces it away (D-11), destroying an utterance already in the aggregation.
+        held_turn = self._held[2]
+        frame = await self._take_held()
         self.stats["held_released_into_turn"] += 1
-        turn = self._turn_or_new()
         await self._forward(frame, FrameDirection.DOWNSTREAM)
         # After the push, as in ``_promote``: a final arriving inside it must not see
         # ``emitted`` set for text that never left.
-        turn.emitted = frame.text
+        held_turn.emitted = frame.text
 
     async def _on_flux_final(
         self, frame: TranscriptionFrame, direction: FrameDirection
