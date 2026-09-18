@@ -169,13 +169,14 @@ two:
 
 | Knob | Default | Range | Meaning |
 | --- | --- | --- | --- |
-| `hybrid.wait_ms` | `0` | `0`–`2000` | How long to wait for the service's own end-of-turn after the local stop before promoting the interim. `0` promotes immediately and is the recommended value; a wait only delays the turn |
+| `hybrid.wait_ms` | `0` | `0`–`2000` | How long to wait for the service's own end-of-turn after the local stop before promoting the interim. A final that arrives inside the window cancels the promotion, so the turn closes on the final instead of on the interim plus a delta: the knob trades latency for that chance. `0` promotes immediately and is the recommended value |
 | `hybrid.hold_ms` | `1500` | `0`–`10000` | How long a final that arrives with no local turn open is held for a local turn to open. Speech the local detector never registered would otherwise be lost, or arrive as a message on its own in the middle of the next one |
 
 Out-of-range values are a `422` on the write. A value already stored out of range is
 clamped by the resolver with a warning, like every other bound in this document. An unknown
-key inside `hybrid` is rejected; `turn` itself accepts keys this build does not know, like
-every other section of the document.
+key inside `hybrid` is rejected, as in `service_tuning`. `turn` itself accepts keys this
+build does not know, like the document itself and the ambient noise, voicemail detection and
+transcript sections.
 
 ### What does not change
 

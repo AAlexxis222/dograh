@@ -42,8 +42,9 @@ class HybridTurnConfiguration(BaseModel):
 
 
 class TurnConfiguration(BaseModel):
-    # ``extra="allow"`` like every other section of the configuration document: the
-    # ``turn`` namespace is already reserved for keys this part does not ship —
+    # ``extra="allow"`` like the document itself and its ambient_noise_configuration,
+    # voicemail_detection and transcript_configuration sections (service_tuning is
+    # strict): the ``turn`` namespace is reserved for keys this part does not ship —
     # ``turn.ignore_terms.terms`` has a merge rule in ``cascade.py`` and
     # ``turn.analyzer.url`` is queued in ``secrets_registry.py``. Forbidding them
     # here would make any document that carries one fail validation outright (the
