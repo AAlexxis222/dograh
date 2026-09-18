@@ -1,5 +1,5 @@
-"""`turn` as workflow configuration: forbid unknown keys, bounded knobs, absent by default,
-clamped with a warning when a stored document is out of range (spec §2.2, §6.1.1)."""
+"""`turn` as workflow configuration: bounded knobs, absent by default, clamped with a
+warning when a stored document is out of range (spec §2.2, §6.1.1)."""
 
 import pytest
 from pydantic import ValidationError
@@ -33,12 +33,21 @@ def test_turn_defaults():
         {"hybrid": {"wait_ms": 2001}},
         {"hybrid": {"hold_ms": 10001}},
         {"hybrid": {"bogus": 1}},
-        {"bogus": 1},
     ],
 )
-def test_turn_rejects_unknown_keys_and_out_of_range(payload):
+def test_turn_rejects_unknown_hybrid_keys_and_out_of_range(payload):
     with pytest.raises(ValidationError):
         WorkflowConfigurationDefaults(turn=payload)
+
+
+def test_turn_keeps_the_reserved_sibling_namespaces():
+    # `turn.ignore_terms` (cascade merge rule) and `turn.analyzer.url` (secrets
+    # registry) belong to later parts: a document carrying them must still validate
+    # and survive a round trip, like every other section of the document.
+    doc = WorkflowConfigurationDefaults(
+        turn={"source": "local", "ignore_terms": {"terms": ["ok"]}}
+    ).model_dump(exclude_unset=True)
+    assert doc["turn"]["ignore_terms"] == {"terms": ["ok"]}
 
 
 def test_turn_round_trips_through_defaults_model():

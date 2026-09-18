@@ -42,7 +42,15 @@ class HybridTurnConfiguration(BaseModel):
 
 
 class TurnConfiguration(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # ``extra="allow"`` like every other section of the configuration document: the
+    # ``turn`` namespace is already reserved for keys this part does not ship —
+    # ``turn.ignore_terms.terms`` has a merge rule in ``cascade.py`` and
+    # ``turn.analyzer.url`` is queued in ``secrets_registry.py``. Forbidding them
+    # here would make any document that carries one fail validation outright (the
+    # PUT, the resolver and ``scripts/backfill_workflow_configuration_defaults.py``
+    # all run ``WorkflowConfigurationDefaults.model_validate``). The knobs this part
+    # owns stay strict: ``source`` is a ``Literal`` and ``hybrid`` forbids extras.
+    model_config = ConfigDict(extra="allow")
 
     source: Literal["auto", "stt", "local"] = "auto"
     hybrid: HybridTurnConfiguration = Field(default_factory=HybridTurnConfiguration)
