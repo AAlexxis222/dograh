@@ -367,6 +367,8 @@ async def run_scenario(
             if absorber_processor
             else _stub_transcripts_pushed(stub, sc)
         ),
+        # With ``dropped_by_absorber`` these three are the suite's ``_lost_total`` tripwire:
+        # emitted − reached + dropped must be 0, or text died between the STT and the context.
         transcripts_to_aggregator=reached["n"],
         dangling_tasks=len(dangling),
         events=events,

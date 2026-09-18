@@ -7,28 +7,6 @@ from api.tests.turns.harness import Scenario
 
 TEXT = "quiero reservar para el sábado"
 
-# --- Timing tolerance (register M9): every absolute threshold derives from this one ---------
-# Declared tolerance of the scenario clock (spec §4), also the measured VAD-stop jitter of the
-# MockTransport (1001-1030 ms for a window ending at 1000).
-TOLERANCE_MS = 30
-# S6/S7/S11: the local VAD start raised the interruption at 62-89 ms (measured 2026-09-09);
-# the interim that could raise it otherwise arrives at 800. Any bound between those two
-# discriminates; 10 tolerances (= the pre-M9 literal 300) keeps the measured cells unchanged.
-BARGE_IN_MAX_MS = 10 * TOLERANCE_MS
-# S9: the unmute (bot audio drained) trails the second turn's final by 94-160 ms — 126-160 over
-# the 5 runs of 2026-09-10 morning, then 94.2-109.7 across the fix-wave-2 runs the same day
-# (see results-A `S9` notes, `mute_margin_ms`). The assertion demands the measured lower
-# bound minus tolerance; the margin is the fragile threshold M9 pointed at.
-MUTE_MARGIN_MS = 94 - TOLERANCE_MS
-
-S0 = Scenario(
-    id="S0",
-    flux=[(0, "start", ""), (800, "eager", TEXT), (1400, "end", TEXT)],
-    speaking=[(0, 1000)],
-    verdicts=[E.COMPLETE],
-    end_at=8000,
-)
-
 # --- R1 double close: Flux's final lands after the local VAD stop (1000 ms) ------------------
 S1 = Scenario(
     id="S1",
@@ -127,28 +105,9 @@ S7 = Scenario(
 )  # MinWords over sparse interims: late start and aggregation reset
 
 # --- R5 mute: MuteUntilFirstBotComplete over a muted turn, then a normal one ----------------
-# Turn 1 (0-1400) happens while the user is muted; the bot speaks at 3000 (3000 ms of mock
-# audio) and its completion lifts the mute; turn 2 (5000-6400) must behave like S0.
-S9 = Scenario(
-    id="S9",
-    flux=[
-        (0, "start", ""),
-        (800, "eager", TEXT),
-        (1400, "end", TEXT),
-        (5000, "start", ""),
-        (5800, "eager", TEXT),
-        (6400, "end", TEXT),
-    ],
-    speaking=[(0, 1000), (5000, 6000)],
-    verdicts=[E.COMPLETE, E.COMPLETE],
-    end_at=13000,
-    mute_until_bot=True,
-    bot_speaking_at=3000,
-)
-
-# S9 measures the reset table while muted; S9B is the other half of spec §4's S9 ("after the
-# mute, S1 holds"): same shape, but the second turn is scheduled well after the bot's 3000 ms of
-# audio has drained (unmute at ~6540), so it runs unmuted and must behave like S1.
+# Turn 1 (0-1400) happens while the user is muted; the bot speaks at 3000 (3000 ms of mock audio)
+# and its completion lifts the mute at ~6540. Turn 2 is scheduled ~2.5 s after that drain, so it
+# runs unmuted and must behave like S1 — spec §4's S9, second half ("after the mute, S1 holds").
 S9B = Scenario(
     id="S9b",
     flux=[

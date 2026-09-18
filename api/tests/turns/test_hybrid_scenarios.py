@@ -36,10 +36,12 @@ async def test_aligned_scenarios_one_message_full_text(sc):
 
 @pytest.mark.asyncio
 async def test_s5_pause_mid_sentence_delivers_the_whole_sentence():
-    # D-12: the spike measured PART + orphan_text_dropped=1; production emits the tail.
+    # D-12: the local turn closes ~190 ms before Flux's final, so the tail is nobody's. The
+    # spike dropped it (PART only, `orphan_text_dropped=1`); production leaves it as a message
+    # of its own, which is what the orphan branch below pins. Loss is checked by `_lost_total`.
     r = await run_scenario(S.S5, absorber=True)
     assert " ".join(_texts(r)) == S.TEXT, r.events
-    assert r.absorber_stats["orphan_text_dropped"] == 0
+    assert r.absorber_stats["orphan_emitted"] == 1, r.absorber_stats
     assert _lost_total(r) == 0
     assert r.dangling_tasks == 0
 
@@ -94,7 +96,9 @@ async def test_s7_min_words_still_one_message():
 @pytest.mark.asyncio
 async def test_s9_muted_turn_then_normal_turn():
     r = await run_scenario(S.S9B, absorber=True)
-    # Turn 1 is muted (MuteUntilFirstBotComplete); turn 2 behaves like S1.
+    # Turn 1 is muted (MuteUntilFirstBotComplete); turn 2 behaves like S1. One message total:
+    # the muted turn leaked nothing, not even the final the absorber held and released.
+    assert len(_texts(r)) == 1, r.messages
     assert _texts(r)[-1] == S.TEXT, r.events
     # §5.3-4: under mute the turn signals are passed through instead of swallowed. WHICH of the
     # two crosses is a race the scenario cannot fix: the aggregator broadcasts its mute at
