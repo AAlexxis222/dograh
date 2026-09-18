@@ -22,11 +22,17 @@ class HybridUserAggregator(LLMUserAggregator):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         if isinstance(frame, TranscriptionReplaceFrame):
             # Drop what the promoted interim put in the pending aggregation, then let the
-            # rewritten final take the normal transcription path (mute check included).
-            await self.reset()
-            frame = TranscriptionFrame(
+            # rewritten final take the normal transcription path.
+            replacement = TranscriptionFrame(
                 frame.text, frame.user_id, frame.timestamp, finalized=True
             )
+            # Only when that path will actually aggregate the replacement: the base drops
+            # blank transcriptions (`_handle_transcription`) and every transcription while
+            # the user is muted (`_maybe_mute_frame`), and a replace must never destroy
+            # more than it replaces.
+            if replacement.text.strip() and not self._user_is_muted:
+                await self.reset()
+            frame = replacement
         await super().process_frame(frame, direction)
 
 

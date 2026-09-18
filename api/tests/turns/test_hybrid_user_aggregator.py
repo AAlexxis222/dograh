@@ -3,7 +3,10 @@
 
 import pytest
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     TranscriptionFrame,
+    UninterruptibleFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
 )
@@ -14,6 +17,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.tests.utils import SleepFrame
+from pipecat.turns.user_mute import AlwaysUserMuteStrategy
 from pipecat.turns.user_start import TranscriptionUserTurnStartStrategy
 from pipecat.turns.user_stop import ExternalUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
@@ -30,7 +34,7 @@ from pipecat.tests import run_test
 _SETTLE = 0.05
 
 
-def _params():
+def _params(mute_strategies=None):
     # The external strategy closes the turn on the ``UserStoppedSpeakingFrame`` below, which
     # is what a hybrid pipeline does (local turn detection signals the stop). The
     # speech-timeout strategy was measured first: with no VAD the turn starts and never
@@ -41,15 +45,16 @@ def _params():
             start=[TranscriptionUserTurnStartStrategy()],
             stop=[ExternalUserTurnStopStrategy(wait_for_transcript=False)],
         ),
+        user_mute_strategies=mute_strategies or [],
         user_turn_stop_timeout=5.0,
     )
 
 
-def _build(hybrid):
+def _build(hybrid, mute_strategies=None):
     context = LLMContext(messages=[{"role": "system", "content": "t"}])
     aggs = build_context_aggregators(
         context,
-        user_params=_params(),
+        user_params=_params(mute_strategies),
         assistant_params=LLMAssistantAggregatorParams(),
         realtime_service_mode=False,
         hybrid=hybrid,
@@ -61,6 +66,13 @@ def test_non_hybrid_returns_stock_pair():
     _, aggs = _build(False)
     assert isinstance(aggs, LLMContextAggregatorPair)
     assert not isinstance(aggs.user(), HybridUserAggregator)
+
+
+def test_replace_frame_survives_an_interruption():
+    # An interruption empties the processing queue of everything that is not
+    # uninterruptible (``FrameQueue.reset``), and the interim this frame corrects is
+    # already in the aggregation.
+    assert issubclass(TranscriptionReplaceFrame, UninterruptibleFrame)
 
 
 def test_hybrid_returns_hybrid_user_and_paired_assistant():
@@ -88,6 +100,54 @@ async def test_replace_frame_substitutes_pending_aggregation():
     )
     user_messages = [m for m in context.get_messages() if m["role"] == "user"]
     assert [m["content"] for m in user_messages] == ["Quiero cancelar para el sábado."]
+
+
+@pytest.mark.asyncio
+async def test_blank_replace_keeps_the_pending_aggregation():
+    # The base drops blank transcriptions, so resetting would delete the promoted interim
+    # and put nothing in its place.
+    context, aggs = _build(True)
+    await run_test(
+        aggs.user(),
+        frames_to_send=[
+            UserStartedSpeakingFrame(),
+            TranscriptionFrame("quiero reservar para el", "u1", "t", finalized=False),
+            SleepFrame(sleep=_SETTLE),
+            TranscriptionReplaceFrame("   ", "u1", "t"),
+            SleepFrame(sleep=_SETTLE),
+            UserStoppedSpeakingFrame(),
+            SleepFrame(sleep=_SETTLE),
+        ],
+        expected_down_frames=None,
+    )
+    user_messages = [m for m in context.get_messages() if m["role"] == "user"]
+    assert [m["content"] for m in user_messages] == ["quiero reservar para el"]
+
+
+@pytest.mark.asyncio
+async def test_replace_while_muted_keeps_the_pending_aggregation():
+    # Same reasoning for the other guard: the base drops every transcription while the
+    # user is muted. Mute is driven the way production drives it — bot speech.
+    context, aggs = _build(True, mute_strategies=[AlwaysUserMuteStrategy()])
+    await run_test(
+        aggs.user(),
+        frames_to_send=[
+            UserStartedSpeakingFrame(),
+            TranscriptionFrame("quiero reservar para el", "u1", "t", finalized=False),
+            SleepFrame(sleep=_SETTLE),
+            BotStartedSpeakingFrame(),
+            SleepFrame(sleep=_SETTLE),
+            TranscriptionReplaceFrame("Quiero cancelar para el sábado.", "u1", "t"),
+            SleepFrame(sleep=_SETTLE),
+            BotStoppedSpeakingFrame(),
+            SleepFrame(sleep=_SETTLE),
+            UserStoppedSpeakingFrame(),
+            SleepFrame(sleep=_SETTLE),
+        ],
+        expected_down_frames=None,
+    )
+    user_messages = [m for m in context.get_messages() if m["role"] == "user"]
+    assert [m["content"] for m in user_messages] == ["quiero reservar para el"]
 
 
 @pytest.mark.asyncio
