@@ -31,7 +31,10 @@ from api.schemas.turn_configuration import (
     DEFAULT_HYBRID_HOLD_MS,
     DEFAULT_HYBRID_WAIT_MS,
 )
-from api.services.pipecat.turns.frames import TranscriptionReplaceFrame
+from api.services.pipecat.turns.frames import (
+    HeldTranscriptionFrame,
+    TranscriptionReplaceFrame,
+)
 from api.services.pipecat.turns.text_delta import token_delta
 from pipecat.frames.frames import (
     CancelFrame,
@@ -74,7 +77,9 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
         self._local_open = False
         self._muted = False
         self._wait_task: asyncio.Task | None = None
-        self._held: tuple[TranscriptionFrame, asyncio.Task] | None = None
+        # The Flux turn is kept with the held final: only finals of that same turn
+        # carry its text, so only they may supersede it.
+        self._held: tuple[HeldTranscriptionFrame, asyncio.Task, FluxTurn] | None = None
         self.stats: Counter = Counter()
 
     # ---- helpers -------------------------------------------------------
@@ -167,39 +172,55 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
         )
 
     # ---- the final held for the next local turn (D-13) ------------------
-    async def _hold(self, frame: TranscriptionFrame, direction: FrameDirection) -> None:
+    async def _hold(
+        self, frame: TranscriptionFrame, direction: FrameDirection, turn: FluxTurn
+    ) -> None:
         """Nothing emitted and no local turn open → keep the final for the next local
         turn; deliver it on its own when ``hold_ms`` expires or the pipeline ends."""
         self.stats["final_held_no_local_turn"] += 1
-        # Flux's finals for a turn are cumulative, so this one already carries whatever
-        # an older held one said: keeping both would duplicate that text.
-        await self._take_held()
+        previous = self._held
+        if previous is not None:
+            superseded = await self._take_held()
+            if previous[2] is not turn:
+                # Flux's finals are cumulative only *within* one turn: a final of
+                # another turn does not carry this text, so dropping it would lose the
+                # very utterance D-13 exists to keep. Same turn = second final, which
+                # does carry it, so replacing it silently stays correct.
+                await self._release_held_as_message(superseded, direction)
+        held = HeldTranscriptionFrame(
+            frame.text,
+            frame.user_id,
+            frame.timestamp,
+            language=frame.language,
+            result=frame.result,
+            finalized=frame.finalized,
+        )
         if self._hold_s == 0:
-            await self._release_held_as_message(frame, direction)
+            await self._release_held_as_message(held, direction)
             return
 
         async def expire():
             await asyncio.sleep(self._hold_s)
-            held = self._held
+            entry = self._held
             # Cleared by hand instead of through ``_take_held``: this task must never be
             # the one cancelling itself.
             self._held = None
-            if held is not None:
-                await self._release_held_as_message(held[0], direction)
+            if entry is not None:
+                await self._release_held_as_message(entry[0], direction)
 
-        self._held = (frame, self.create_task(expire(), name="hybrid-hold"))
+        self._held = (held, self.create_task(expire(), name="hybrid-hold"), turn)
 
-    async def _take_held(self) -> TranscriptionFrame | None:
+    async def _take_held(self) -> HeldTranscriptionFrame | None:
         """Pop the held final and stop its timer. Never call it from that timer."""
         if self._held is None:
             return None
-        frame, task = self._held
+        frame, task, _ = self._held
         self._held = None
         await self.cancel_task(task)
         return frame
 
     async def _release_held_as_message(
-        self, frame: TranscriptionFrame, direction: FrameDirection
+        self, frame: HeldTranscriptionFrame, direction: FrameDirection
     ) -> None:
         self.stats["held_released_as_message"] += 1
         await self._forward(frame, direction)
@@ -246,7 +267,7 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
                 await self._forward(frame, direction)
                 turn.emitted = text
             else:
-                await self._hold(frame, direction)
+                await self._hold(frame, direction, turn)
             return
         delta = token_delta(emitted, text)
         if delta == "":

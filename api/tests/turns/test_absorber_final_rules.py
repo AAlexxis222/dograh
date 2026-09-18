@@ -2,12 +2,23 @@
 
 import pytest
 from pipecat.frames.frames import (
+    TranscriptionFrame,
+    UninterruptibleFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
 
+from api.services.pipecat.turns.frames import HeldTranscriptionFrame
 from api.tests.turns.test_absorber_unit import finals, itf, run_steps, tf
+
+
+def test_a_released_held_final_is_a_transcription_that_survives_an_interruption():
+    # The turn start that releases it makes the aggregator broadcast an interruption,
+    # which flushes every queued interruptible frame.
+    assert issubclass(HeldTranscriptionFrame, UninterruptibleFrame)
+    # ...and the aggregator must still treat it as an ordinary transcription.
+    assert issubclass(HeldTranscriptionFrame, TranscriptionFrame)
 
 
 @pytest.mark.asyncio
@@ -47,7 +58,7 @@ async def test_orphan_extension_is_emitted_as_new_message():
     assert [d[1] for d in finals(rec)] == ["quiero reservar para el", "sábado."]
     assert finals(rec)[1][2] is True
     assert absorber.stats["orphan_emitted"] == 1
-    assert absorber.stats["orphan_text_dropped"] == 0
+    assert absorber.stats["dup_avoided"] == 0  # the tail was delivered, not swallowed
 
 
 @pytest.mark.asyncio
@@ -101,7 +112,7 @@ async def test_final_with_nothing_emitted_and_no_local_turn_is_held_then_release
         hold_ms=200,
     )
     # run_steps sleeps 0.3 s before EndFrame → the hold (0.2 s) expires inside the run.
-    assert finals(rec) == [("TranscriptionFrame", "hola", True, "flux")]
+    assert finals(rec) == [("HeldTranscriptionFrame", "hola", True, "flux")]
     assert absorber.stats["final_held_no_local_turn"] == 1
     assert absorber.stats["held_released_as_message"] == 1
 
@@ -117,9 +128,29 @@ async def test_held_final_is_released_into_the_next_local_turn():
         ],
         hold_ms=1500,
     )
-    assert finals(rec) == [("TranscriptionFrame", "hola", True, "flux")]
+    assert finals(rec) == [("HeldTranscriptionFrame", "hola", True, "flux")]
     assert absorber.stats["held_released_into_turn"] == 1
     assert absorber.stats["held_released_as_message"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_held_final_is_not_lost_when_the_next_flux_turn_is_held_too():
+    # Flux's finals are cumulative only inside one turn: turn B's final does not carry
+    # turn A's utterance, so holding B must release A instead of dropping it.
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("down", tf("hola")),
+            ("down", UserStoppedSpeakingFrame()),
+            ("down", UserStartedSpeakingFrame()),  # Flux turn B, still no local turn
+            ("down", tf("qué tal")),
+            ("down", UserStoppedSpeakingFrame()),
+        ],
+        hold_ms=1500,
+    )
+    assert [d[1] for d in finals(rec)] == ["hola", "qué tal"]
+    assert absorber.stats["final_held_no_local_turn"] == 2
+    assert absorber.stats["held_released_as_message"] == 2
 
 
 @pytest.mark.asyncio
@@ -132,7 +163,7 @@ async def test_hold_zero_drops_nothing_but_delivers_immediately_as_message():
         ],
         hold_ms=0,
     )
-    assert finals(rec) == [("TranscriptionFrame", "hola", True, "flux")]
+    assert finals(rec) == [("HeldTranscriptionFrame", "hola", True, "flux")]
     assert absorber.stats["held_released_as_message"] == 1
 
 
@@ -147,7 +178,7 @@ async def test_end_frame_flushes_a_held_final():
         hold_ms=10000,
     )
     # EndFrame arrives 0.3 s later, long before the hold expires: nothing may be lost.
-    assert finals(rec) == [("TranscriptionFrame", "hola", True, "flux")]
+    assert finals(rec) == [("HeldTranscriptionFrame", "hola", True, "flux")]
     assert absorber.stats["held_released_as_message"] == 1
 
 

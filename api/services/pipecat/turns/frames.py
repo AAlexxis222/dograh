@@ -2,7 +2,11 @@
 
 from dataclasses import dataclass
 
-from pipecat.frames.frames import DataFrame, UninterruptibleFrame
+from pipecat.frames.frames import (
+    DataFrame,
+    TranscriptionFrame,
+    UninterruptibleFrame,
+)
 
 
 @dataclass
@@ -25,3 +29,18 @@ class TranscriptionReplaceFrame(DataFrame, UninterruptibleFrame):
 
     def __str__(self):
         return f"{self.name}(user: {self.user_id}, text: [{self.text}])"
+
+
+@dataclass
+class HeldTranscriptionFrame(TranscriptionFrame, UninterruptibleFrame):
+    """A final the absorber held back and is now releasing (D-13).
+
+    Uninterruptible because the local turn start that releases it makes the aggregator
+    broadcast an interruption a few awaits later (``llm_response_universal.py:1243``),
+    and an interruption flushes every queued interruptible frame
+    (``FrameProcessor._start_interruption``): the text would be counted as delivered and
+    then dropped. Same reasoning as ``TranscriptionReplaceFrame``.
+
+    A plain ``TranscriptionFrame`` to everyone else: the aggregator dispatches on
+    ``isinstance`` (``llm_response_universal.py:795``), so nothing else changes.
+    """

@@ -108,7 +108,12 @@ def finals(rec):
     return [
         d
         for d in rec.down
-        if d[0] in ("TranscriptionFrame", "TranscriptionReplaceFrame")
+        if d[0]
+        in (
+            "TranscriptionFrame",
+            "HeldTranscriptionFrame",
+            "TranscriptionReplaceFrame",
+        )
     ]
 
 
