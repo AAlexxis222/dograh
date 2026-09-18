@@ -5,9 +5,12 @@ duplicated context in Srewrite, no dangling tasks, and Flux's turn signals never
 aggregator. Slow (~2-3 min): run in the foreground with a 600 s timeout."""
 
 import pytest
+from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState as E
+from pipecat.extensions.voicemail.voicemail_detector import VoicemailDetector
 
 from api.tests.turns import scenarios as S
-from api.tests.turns.harness import run_scenario
+from api.tests.turns.harness import Scenario, run_scenario
+from pipecat.tests import MockLLMService
 
 
 def _ghost(r) -> bool:
@@ -109,6 +112,39 @@ async def test_s9_muted_turn_then_normal_turn():
         r.counts["DOWN:UserStartedSpeakingFrame"]
         + r.counts["DOWN:UserStoppedSpeakingFrame"]
     ) >= 1, r.counts
+
+
+# V19-ter: in production the voicemail detector sits right below the absorber, so with the
+# hybrid on it classifies from the promoted interim (a ``TranscriptionFrame(finalized=False)``)
+# instead of Flux's final. Short on purpose: one local turn is all the classifier needs.
+SVOICEMAIL = Scenario(
+    id="SVOICEMAIL",
+    flux=[(0, "start", ""), (800, "eager", S.TEXT), (1400, "end", S.TEXT)],
+    speaking=[(0, 1000)],
+    verdicts=[E.COMPLETE],
+    end_at=3000,
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "absorber", [True, False], ids=["promoted-interim", "flux-final"]
+)
+async def test_voicemail_detector_classifies_either_way(absorber):
+    voicemail_llm = MockLLMService(
+        mock_steps=[MockLLMService.create_text_chunks(text="CONVERSATION")],
+        chunk_delay=0.001,
+    )
+    detector = VoicemailDetector(llm=voicemail_llm)
+    r = await run_scenario(SVOICEMAIL, absorber=absorber, voicemail_detector=detector)
+    # Measured: the classifier runs once either way, so a promoted interim is classified
+    # exactly like Flux's final -- the detector does not filter on ``finalized``.
+    assert voicemail_llm.get_current_step() == 1
+    if absorber:
+        # The promoted interim was the only user text the detector saw: Flux's final
+        # repeated it and the absorber dropped it as a duplicate.
+        assert r.absorber_stats["promoted"] == 1, r.absorber_stats
+        assert r.absorber_stats["dup_avoided"] == 1, r.absorber_stats
 
 
 @pytest.mark.asyncio

@@ -228,7 +228,10 @@ async def run_scenario(
     wait_ms: int = 0,
     hold_ms: int = 1500,
     vad_jitter_ms: int = 0,
+    voicemail_detector=None,
 ) -> Result:
+    """``voicemail_detector``: optional pipecat ``VoicemailDetector``, inserted where
+    ``build_pipeline`` puts it — right below the absorber, above the aggregator."""
     offset = _timeline_offset(sc)
     timeline = Timeline(offset_ms=offset)
     counts: Counter = Counter()
@@ -302,6 +305,8 @@ async def run_scenario(
             wait_ms=wait_ms, hold_ms=hold_ms
         )
         processors.append(absorber_processor)
+    if voicemail_detector is not None:
+        processors.append(voicemail_detector.detector())
     processors += [
         Tap(timeline, counts, events),
         user_agg,
