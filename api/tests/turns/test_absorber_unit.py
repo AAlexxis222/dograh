@@ -180,6 +180,24 @@ async def test_final_equal_to_promoted_is_deduped():
 
 
 @pytest.mark.asyncio
+async def test_blank_final_after_a_promotion_adds_nothing():
+    # A blank final has fewer tokens than the promotion, which ``token_delta`` reads as a
+    # rewrite: it must be dropped before it reaches the replace branch.
+    absorber, rec = await run_steps(
+        [
+            ("down", UserStartedSpeakingFrame()),
+            ("up", UserStartedSpeakingFrame()),
+            ("down", itf("hola quiero")),
+            ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
+            ("down", tf("   ")),
+            ("down", UserStoppedSpeakingFrame()),
+        ]
+    )
+    assert [d[1] for d in finals(rec)] == ["hola quiero"]
+    assert absorber.stats["dup_avoided"] == 1
+
+
+@pytest.mark.asyncio
 async def test_second_local_turn_in_same_flux_turn_promotes_only_the_delta():
     absorber, rec = await run_steps(
         [

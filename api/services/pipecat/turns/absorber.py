@@ -94,7 +94,15 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
 
     async def _promote(self) -> None:
         turn = self._turn
-        if turn is None or turn.final_seen or self._muted or not turn.last_interim:
+        # ``.strip()``: an interim of pure whitespace is text to nobody. Promoting it
+        # would push a blank transcription into the aggregation and leave ``emitted``
+        # holding whitespace, which the next final would then diff against.
+        if (
+            turn is None
+            or turn.final_seen
+            or self._muted
+            or not (turn.last_interim or "").strip()
+        ):
             return
         text = turn.last_interim
         if turn.emitted is None:
@@ -171,6 +179,9 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
                 # ``token_delta``, which reads "fewer tokens than emitted" as a rewrite.
                 # Dropping it also keeps a blank out of the replace/orphan/hold branches
                 # and out of the aggregator, where it would open a ghost turn.
+                # Logged because it shares ``dup_avoided`` with "the final repeated what
+                # we already sent": the counter alone cannot tell the two apart.
+                logger.debug(f"{self}: blank final dropped, it adds no text")
                 self.stats["dup_avoided"] += 1
                 return
             if emitted is None:
