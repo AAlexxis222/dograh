@@ -202,8 +202,9 @@ speech-to-text stage — ignore `turn` entirely.
   Cartesia do; it has not been verified for Dograh-Flux.
 - When a local turn has already closed on a promoted interim, an interim of the next local
   turn that rewrites it is promoted whole, so a few words can appear in both messages.
-- A transcript held while the user is muted is released when the mute lifts or when the hold
-  expires, and the aggregator's mute rules then apply to it: it may be suppressed there.
+- A transcript held while the user is muted is not released by the mute lifting: it leaves the
+  absorber when the next local turn opens or when the hold expires, and the aggregator's mute
+  rules then apply to it, so it may still be suppressed there.
 
 ## API clients
 
