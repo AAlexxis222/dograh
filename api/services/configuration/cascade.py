@@ -18,6 +18,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from loguru import logger
+from pydantic import ValidationError
+
 from api.constants import (
     MAX_TEXT_CHAT_INACTIVITY_TIMEOUT_SECONDS,
     MIN_TEXT_CHAT_INACTIVITY_TIMEOUT_SECONDS,
@@ -33,8 +36,6 @@ from api.services.configuration.service_tuning_bounds import (
     SERVICE_TUNING_NUMERIC_BOUNDS,
     apply_service_tuning_invariants,
 )
-from loguru import logger
-from pydantic import ValidationError
 
 if TYPE_CHECKING:
     from api.db.db_client import DBClient
