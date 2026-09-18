@@ -131,6 +131,71 @@ creation the clamp is written to the API logs and is not returned to the caller;
 organization effective-defaults endpoint does return the same clamps in its `warnings` list.
 Writes through the API still get a `422`.
 
+## Turn detection
+
+The `turn` key decides who owns the turns of a call: the speech-to-text service, or the
+local voice-activity detector and turn analyzer that run inside the pipeline.
+
+```json
+{
+  "turn": {
+    "source": "local",
+    "hybrid": { "wait_ms": 0, "hold_ms": 1500 }
+  }
+}
+```
+
+| `turn.source` | What it does |
+| --- | --- |
+| `auto` (default) | Today's behaviour. A speech-to-text service that emits its own turns owns them; every other service uses the local strategies |
+| `stt` | The speech-to-text service's own turns. Accepted today, and the same as `auto` on a service that has no server turns — the pipeline logs a warning and falls back |
+| `local` | The local analyzer owns the turns. On a service with server turns this enables the hybrid described below |
+
+### Hybrid mode
+
+`source=local` on a service that emits server turns — Deepgram Flux, Dograh-Flux,
+Cartesia ink-2 — leaves transcription with that service and hands the turn decision to the
+local detector. A processor placed directly behind the speech-to-text stage reconciles the
+two:
+
+- It swallows the service's own turn signals so only the local turns reach the aggregator.
+- When the local detector stops inside an open turn, it promotes the last interim
+  transcript, so the local stop strategy has text to close the turn on.
+- When the service's final transcript arrives it emits only what the final adds, as a token
+  delta, and replaces the pending aggregation instead of appending when the final rewrites
+  what was already promoted.
+- A final that arrives with no local turn open is either delivered as a message of its own,
+  or held (see `hold_ms`) when nothing had been emitted for it yet.
+
+| Knob | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `hybrid.wait_ms` | `0` | `0`–`2000` | How long to wait for the service's own end-of-turn after the local stop before promoting the interim. `0` promotes immediately and is the recommended value; a wait only delays the turn |
+| `hybrid.hold_ms` | `1500` | `0`–`10000` | How long a final that arrives with no local turn open is held for a local turn to open. Speech the local detector never registered would otherwise be lost, or arrive as a message on its own in the middle of the next one |
+
+Out-of-range values are a `422` on the write. A value already stored out of range is
+clamped by the resolver with a warning, like every other bound in this document. An unknown
+key inside `hybrid` is rejected; `turn` itself accepts keys this build does not know, like
+every other section of the document.
+
+### What does not change
+
+With `turn` absent, or `source` set to `auto`, nothing in the pipeline changes. The
+defaults are the current behaviour: no processor is added and the aggregator is the same
+one as before. `smart_turn_stop_secs`, `turn_start_strategy` and `turn_stop_strategy` keep
+their meaning under every source, and realtime models — which have no separate
+speech-to-text stage — ignore `turn` entirely.
+
+### Known limits
+
+- A final that rewrites text after the local turn has already closed arrives as a second
+  message rather than editing the first. Replacement applies while the aggregation is still
+  pending; once the text has reached the context, and the model may already be answering,
+  a second message is the less invasive outcome.
+- The voicemail detector sees promoted interims, which are not marked as final. Measured on
+  the same transcript, it classifies a promoted interim exactly as it classifies the final,
+  so detection is unaffected.
+- The token delta drops punctuation the final adds to tokens that already went out.
+
 ## API clients
 
 The external-PBX keys behave differently from every other key. While the external-PBX

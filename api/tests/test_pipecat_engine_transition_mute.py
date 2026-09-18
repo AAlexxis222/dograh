@@ -46,7 +46,6 @@ from api.services.workflow.workflow_graph import WorkflowGraph
 from api.tests.pipecat_test_utils import run_engine_test_pipeline
 from pipecat.tests import MockLLMService, MockTTSService
 
-
 _engines_under_test: list[PipecatEngine] = []
 
 

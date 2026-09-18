@@ -783,6 +783,21 @@ export interface components {
              */
             preset_parameters?: components["schemas"]["PresetToolParameter"][] | null;
         };
+        /** HybridTurnConfiguration */
+        HybridTurnConfiguration: {
+            /**
+             * Wait Ms
+             * @description Milliseconds to wait for the STT's own end-of-turn after the local VAD stop before promoting the last interim. 0 promotes immediately (recommended).
+             * @default 0
+             */
+            wait_ms: number;
+            /**
+             * Hold Ms
+             * @description How long a final transcript that arrives with no local turn open is held for the next local turn before being delivered as a message of its own.
+             * @default 1500
+             */
+            hold_ms: number;
+        };
         /** InitiateCallRequest */
         InitiateCallRequest: {
             /** Workflow Id */
@@ -1323,6 +1338,18 @@ export interface components {
             /** @description Transfer Call configuration. */
             config: components["schemas"]["TransferCallConfig"];
         };
+        /** TurnConfiguration */
+        TurnConfiguration: {
+            /**
+             * Source
+             * @default auto
+             * @enum {string}
+             */
+            source: "auto" | "stt" | "local";
+            hybrid?: components["schemas"]["HybridTurnConfiguration"];
+        } & {
+            [key: string]: unknown;
+        };
         /** UpdateWorkflowRequest */
         UpdateWorkflowRequest: {
             /** Name */
@@ -1437,6 +1464,8 @@ export interface components {
             service_tuning?: components["schemas"]["ServiceTuning"] | null;
             /** User Turn Stop Timeout */
             user_turn_stop_timeout?: number | null;
+            /** @description Turn-detection controls: {source: auto|stt|local, hybrid: {wait_ms, hold_ms}}. source=local with a server-turn STT enables the hybrid (local analyzer over the STT's transcription). */
+            turn?: components["schemas"]["TurnConfiguration"] | null;
             /** Model Overrides */
             model_overrides?: {
                 [key: string]: unknown;
@@ -1542,6 +1571,7 @@ export type HttpValidationError = components['schemas']['HTTPValidationError'];
 export type HttpApiConfig = components['schemas']['HttpApiConfig'];
 export type HttpApiToolDefinition = components['schemas']['HttpApiToolDefinition'];
 export type HttpTransferResolverConfig = components['schemas']['HttpTransferResolverConfig'];
+export type HybridTurnConfiguration = components['schemas']['HybridTurnConfiguration'];
 export type InitiateCallRequest = components['schemas']['InitiateCallRequest'];
 export type LlmScope = components['schemas']['LLMScope'];
 export type McpToolConfig = components['schemas']['McpToolConfig'];
@@ -1566,6 +1596,7 @@ export type ToolResponse = components['schemas']['ToolResponse'];
 export type TranscriptConfiguration = components['schemas']['TranscriptConfiguration'];
 export type TransferCallConfig = components['schemas']['TransferCallConfig'];
 export type TransferCallToolDefinition = components['schemas']['TransferCallToolDefinition'];
+export type TurnConfiguration = components['schemas']['TurnConfiguration'];
 export type UpdateWorkflowRequest = components['schemas']['UpdateWorkflowRequest'];
 export type ValidationError = components['schemas']['ValidationError'];
 export type VoicemailDetectionConfiguration = components['schemas']['VoicemailDetectionConfiguration'];
