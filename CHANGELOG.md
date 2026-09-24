@@ -1,5 +1,68 @@
 # Changelog
 
+## 1.47.0 (2026-09-15)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Features
+* feat: optional Reo.dev integration by @chewwbaka in https://github.com/dograh-hq/dograh/pull/728
+* feat(ui): add Cartesia event announcement banner (cloud only) by @sandeepvemu-dograh in https://github.com/dograh-hq/dograh/pull/751
+* feat: add answer supervision before pipeline kicks off by @a6kme in https://github.com/dograh-hq/dograh/pull/759
+* feat(tts): add Speechify as a Voice (TTS) provider (Simba 3.2) by @shauntrennery in https://github.com/dograh-hq/dograh/pull/654
+* feat(turns): let external-turn STT decide the turn start, retire provisional_vad by @a6kme in https://github.com/dograh-hq/dograh/pull/767
+* feat(telephony): expose provider call ID in workflow initial context by @chewwbaka in https://github.com/dograh-hq/dograh/pull/692
+* feat: refactor campaign dispatcher to handle higher concurrency by @a6kme in https://github.com/dograh-hq/dograh/pull/769
+* feat(workflow): expose run ID in initial context by @a6kme in https://github.com/dograh-hq/dograh/pull/774
+* feat: transfer call to a different agent by @a6kme in https://github.com/dograh-hq/dograh/pull/776
+### Bug Fixes
+* fix: ARI destination dial string in campaigns by @a6kme in https://github.com/dograh-hq/dograh/pull/764
+* fix(ui): derive session cookie Secure flag from the request, not NODE_ENV by @a6kme in https://github.com/dograh-hq/dograh/pull/771
+* fix: update MinIO image registry to Quay by @palinko91 in https://github.com/dograh-hq/dograh/pull/772
+* fix(answer): run answer handling on inbound, and let patterns beat the clock by @a6kme in https://github.com/dograh-hq/dograh/pull/773
+### Other Changes
+* Add Exotel telephony provider for Connect Voice AI by @vinayexotel in https://github.com/dograh-hq/dograh/pull/639
+
+## New Contributors
+* @vinayexotel made their first contribution in https://github.com/dograh-hq/dograh/pull/639
+* @shauntrennery made their first contribution in https://github.com/dograh-hq/dograh/pull/654
+
+**Full Changelog**: https://github.com/dograh-hq/dograh/compare/dograh-v1.46.0...dograh-v1.47.0
+
+## 1.46.0 (2026-09-03)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Features
+* feat: better UX for setting up telephony by @a6kme in https://github.com/dograh-hq/dograh/pull/678
+* feat: add Google Tag Manager by @sandeepvemu-dograh in https://github.com/dograh-hq/dograh/pull/673
+* feat: click to copy telephony phone ID by @chewwbaka in https://github.com/dograh-hq/dograh/pull/702
+* feat: derive call disposition from the conversation, and funnel termi… by @a6kme in https://github.com/dograh-hq/dograh/pull/685
+* feat(transfer-call): support custom disposition after successful tran… by @chewwbaka in https://github.com/dograh-hq/dograh/pull/712
+* feat: configure structured call dispositions in workflow settings by @chewwbaka in https://github.com/dograh-hq/dograh/pull/713
+* feat: add sonic-3.6 to Cartesia TTS model options by @chewwbaka in https://github.com/dograh-hq/dograh/pull/726
+### Bug Fixes
+* fix: transfer disposition and vicidial lead sync by @a6kme in https://github.com/dograh-hq/dograh/pull/676
+* fix: serve disposition filter codes from the backend by @a6kme in https://github.com/dograh-hq/dograh/pull/677
+* fix: generate a unique Stasis app name per ARI configuration by @a6kme in https://github.com/dograh-hq/dograh/pull/679
+* fix(ui): don't label a secret-only integration node "Not configured" by @ImrKhn03 in https://github.com/dograh-hq/dograh/pull/646
+* fix: keep Langfuse traces private by default by @anupPradhan0 in https://github.com/dograh-hq/dograh/pull/674
+* fix(logging): emit structured JSON on stdout and drop probe noise by @a6kme in https://github.com/dograh-hq/dograh/pull/706
+* fix(helm): add readiness probe and minReadySeconds to arq-worker by @a6kme in https://github.com/dograh-hq/dograh/pull/708
+### Other Changes
+* Update README with badges for Product Hunt and Trendshift by @sandeepvemu-dograh in https://github.com/dograh-hq/dograh/pull/659
+* Update README with new Product Hunt badges - Product of the week by @sandeepvemu-dograh in https://github.com/dograh-hq/dograh/pull/672
+* added meta pixel by @pk-198 in https://github.com/dograh-hq/dograh/pull/696
+* Tuner simulation by @mohamedsalem-bot in https://github.com/dograh-hq/dograh/pull/698
+* ci: amd64-only API image build for the EKS deploy path by @a6kme in https://github.com/dograh-hq/dograh/pull/724
+
+## New Contributors
+* @sandeepvemu-dograh made their first contribution in https://github.com/dograh-hq/dograh/pull/659
+* @ImrKhn03 made their first contribution in https://github.com/dograh-hq/dograh/pull/646
+
+**Full Changelog**: https://github.com/dograh-hq/dograh/compare/dograh-v1.45.0...dograh-v1.46.0
+
 ## 1.45.0 (2026-08-11)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->
