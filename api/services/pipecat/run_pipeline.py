@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import dataclass
 from typing import Optional
 
 from fastapi import HTTPException
@@ -7,6 +8,12 @@ from loguru import logger
 from api.db import db_client
 from api.enums import WorkflowRunMode
 from api.errors.failure import mark_failure_reported
+from api.schemas.turn_configuration import (
+    DEFAULT_HYBRID_HOLD_MS,
+    DEFAULT_HYBRID_WAIT_MS,
+    MAX_HYBRID_HOLD_MS,
+    MAX_HYBRID_WAIT_MS,
+)
 from api.schemas.workflow_configurations import (
     DEFAULT_MAX_CALL_DURATION_SECONDS,
     DEFAULT_MAX_USER_IDLE_TIMEOUT_SECONDS,
@@ -78,6 +85,8 @@ from api.services.pipecat.tracing_config import (
 )
 from api.services.pipecat.transcript_log_coordinator import TranscriptLogCoordinator
 from api.services.pipecat.transport_setup import create_webrtc_transport
+from api.services.pipecat.turns.absorber import TurnSignalAbsorberProcessor
+from api.services.pipecat.turns.hybrid_user_aggregator import build_context_aggregators
 from api.services.pipecat.worker_runner import run_pipeline_worker
 from api.services.pipecat.ws_sender_registry import get_ws_sender
 from api.services.telephony import registry as telephony_registry
@@ -92,7 +101,6 @@ from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.extensions.voicemail.voicemail_detector import VoicemailDetector
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMAssistantAggregatorParams,
-    LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
@@ -136,6 +144,64 @@ def _resolve_user_turn_stop_timeout(
     if uses_external_turns:
         return EXTERNAL_TURN_USER_STOP_TIMEOUT
     return DEFAULT_USER_TURN_STOP_TIMEOUT
+
+
+@dataclass(frozen=True)
+class HybridTurn:
+    wait_ms: int
+    hold_ms: int
+
+
+def _hybrid_knob(hybrid: dict, key: str, default: int, maximum: int) -> int:
+    """A document written straight to the store bypasses the schema, and the cascade
+    clamps numbers only: a value it cannot bound falls back to the default here rather
+    than failing the call at pipeline construction."""
+    try:
+        value = int(hybrid.get(key, default))
+    except (TypeError, ValueError):
+        return default
+    return min(max(value, 0), maximum)
+
+
+def resolve_hybrid_turn(
+    run_configs: dict,
+    *,
+    uses_external_turns: bool,
+    is_realtime: bool,
+    workflow_run_id: int | None = None,
+) -> HybridTurn | None:
+    """``turn.source=local`` over a server-turn STT enables the hybrid (spec §6.1.1).
+
+    Realtime pipelines have no STT stage; ``local`` with an STT that has no server turns
+    is already what the local strategies do. ``stt`` is accepted and, until part 2 can
+    reject it at PUT time, falls back to today's behaviour with a warning.
+
+    ``workflow_run_id`` only prefixes that warning, so the line can be read next to the
+    other turn decisions of the same run.
+    """
+    turn = run_configs.get("turn")
+    if not isinstance(turn, dict):
+        turn = {}
+    source = turn.get("source", "auto")
+    if source == "stt" and not uses_external_turns:
+        logger.warning(
+            f"[run {workflow_run_id}] turn.source=stt requested but the STT emits no "
+            "turn signals; using auto"
+        )
+        return None
+    if source != "local" or is_realtime or not uses_external_turns:
+        return None
+    hybrid = turn.get("hybrid")
+    if not isinstance(hybrid, dict):
+        hybrid = {}
+    return HybridTurn(
+        wait_ms=_hybrid_knob(
+            hybrid, "wait_ms", DEFAULT_HYBRID_WAIT_MS, MAX_HYBRID_WAIT_MS
+        ),
+        hold_ms=_hybrid_knob(
+            hybrid, "hold_ms", DEFAULT_HYBRID_HOLD_MS, MAX_HYBRID_HOLD_MS
+        ),
+    )
 
 
 def _resolve_turn_start_min_words(run_configs: dict) -> int:
@@ -938,6 +1004,7 @@ async def _run_pipeline_impl(
     # Configure turn strategies based on STT provider, model, and workflow configuration
     if is_realtime:
         uses_external_turns = False
+        hybrid_turn = None
         # Realtime services still need user-turn tracking even when the model
         # itself owns speech generation and interruption behavior.
         user_turn_strategies, user_vad_analyzer = _create_realtime_user_turn_config(
@@ -948,6 +1015,16 @@ async def _run_pipeline_impl(
         # follows those external signals. Other models use configurable turn
         # detection.
         uses_external_turns = stt_uses_external_turns(user_config)
+        hybrid_turn = resolve_hybrid_turn(
+            run_configs,
+            uses_external_turns=uses_external_turns,
+            is_realtime=False,
+            workflow_run_id=workflow_run_id,
+        )
+        if hybrid_turn is not None:
+            # The absorber swallows the STT's turn signals; the aggregator runs the local
+            # strategies, the local stop timeout and Silero (spec §6.1.1).
+            uses_external_turns = False
         user_turn_start_strategies = _create_non_realtime_user_turn_start_strategies(
             run_configs,
             uses_external_turns=uses_external_turns,
@@ -958,7 +1035,7 @@ async def _run_pipeline_impl(
         logger.info(
             f"[run {workflow_run_id}] Non-realtime interrupt strategy "
             f"requested={turn_start_strategy} "
-            f"uses_external_turns={uses_external_turns}"
+            f"uses_external_turns={uses_external_turns} hybrid={hybrid_turn is not None}"
         )
 
         user_turn_stop_strategies = _create_non_realtime_user_turn_stop_strategies(
@@ -982,11 +1059,19 @@ async def _run_pipeline_impl(
         user_idle_timeout=max_user_idle_timeout,
         vad_analyzer=user_vad_analyzer,
     )
-    context_aggregator = LLMContextAggregatorPair(
+    context_aggregator = build_context_aggregators(
         context,
-        assistant_params=assistant_params,
         user_params=user_params,
+        assistant_params=assistant_params,
         realtime_service_mode=is_realtime,
+        hybrid=hybrid_turn is not None,
+    )
+    turn_signal_absorber = (
+        TurnSignalAbsorberProcessor(
+            wait_ms=hybrid_turn.wait_ms, hold_ms=hybrid_turn.hold_ms
+        )
+        if hybrid_turn is not None
+        else None
     )
 
     # Create usage metrics aggregator with engine's callback
@@ -1117,6 +1202,7 @@ async def _run_pipeline_impl(
             termination_funnel,
             voicemail_detector=voicemail_detector,
             recording_router=recording_router,
+            turn_signal_absorber=turn_signal_absorber,
         )
 
     # Create pipeline task with audio configuration

@@ -38,6 +38,7 @@ def build_pipeline(
     termination_funnel,
     voicemail_detector=None,
     recording_router=None,
+    turn_signal_absorber=None,
 ):
     """Build the main pipeline with all components.
 
@@ -49,6 +50,9 @@ def build_pipeline(
         recording_router: Optional RecordingRouterProcessor. When provided,
             inserts between callback processor and TTS to route between
             pre-recorded audio playback and dynamic TTS.
+        turn_signal_absorber: Optional TurnSignalAbsorberProcessor (hybrid turn mode).
+            Sits directly behind the STT, ahead of the voicemail detector, so it sees
+            the STT's turn signals before anything else does.
     """
     # Build processors list with optional voicemail detection.
     #
@@ -61,6 +65,10 @@ def build_pipeline(
         termination_funnel,
         stt,
     ]
+
+    if turn_signal_absorber is not None:
+        logger.info("Adding hybrid turn signal absorber to pipeline")
+        processors.append(turn_signal_absorber)
 
     # Insert voicemail detector after STT if enabled
     # Note: We intentionally do NOT use voicemail_detector.gate() to allow TTS

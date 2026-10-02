@@ -131,6 +131,97 @@ creation the clamp is written to the API logs and is not returned to the caller;
 organization effective-defaults endpoint does return the same clamps in its `warnings` list.
 Writes through the API still get a `422`.
 
+## Turn detection
+
+The `turn` key decides who owns the turns of a call: the speech-to-text service, or the
+local voice-activity detector and turn analyzer that run inside the pipeline.
+
+```json
+{
+  "turn": {
+    "source": "local",
+    "hybrid": { "wait_ms": 0, "hold_ms": 1500 }
+  }
+}
+```
+
+| `turn.source` | What it does |
+| --- | --- |
+| `auto` (default) | Today's behaviour. A speech-to-text service that emits its own turns owns them; every other service uses the local strategies |
+| `stt` | The speech-to-text service's own turns. Accepted today, and the same as `auto` on a service that has no server turns — the pipeline logs a warning and falls back |
+| `local` | The local analyzer owns the turns. On a service with server turns this enables the hybrid described below |
+
+### Hybrid mode
+
+`source=local` on a service that emits server turns — Deepgram Flux, Dograh-Flux,
+Cartesia ink-2 — leaves transcription with that service and hands the turn decision to the
+local detector. A processor placed directly behind the speech-to-text stage reconciles the
+two:
+
+- It swallows the service's own turn signals so only the local turns reach the aggregator.
+  While the user is muted they pass through instead, so the mute path stays observable; the
+  aggregator suppresses them itself.
+- When the local detector stops inside an open turn, it promotes the last interim
+  transcript, so the local stop strategy has text to close the turn on.
+- When the service's final transcript arrives it emits only what the final adds, as a token
+  delta, and replaces the pending aggregation instead of appending when the final rewrites
+  what was already promoted.
+- A final that arrives with no local turn open is either delivered as a message of its own,
+  or held (see `hold_ms`) when nothing had been emitted for it yet.
+
+| Knob | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `hybrid.wait_ms` | `0` | `0`–`2000` | How long to wait for the service's own end-of-turn after the local stop before promoting the interim. A final that arrives inside the window cancels the promotion, so the turn closes on the final instead of on the interim plus a delta: the knob trades latency for that chance. `0` promotes immediately and is the recommended value |
+| `hybrid.hold_ms` | `1500` | `0`–`10000` | How long a final that arrives with no local turn open is held for a local turn to open. Speech the local detector never registered would otherwise be lost, or arrive as a message on its own in the middle of the next one |
+
+Out-of-range values are a `422` on the write. A value already stored out of range is
+clamped by the resolver with a warning, like every other bound in this document. An unknown
+key inside `hybrid` is rejected, as in `service_tuning`. `turn` itself accepts keys this
+build does not know, like the document itself and the ambient noise, voicemail detection and
+transcript sections.
+
+### What does not change
+
+With `turn` absent, or `source` set to `auto`, nothing in the pipeline changes. The
+defaults are the current behaviour: no processor is added and the aggregator is the same
+one as before. `smart_turn_stop_secs`, `turn_start_strategy` and `turn_stop_strategy` keep
+their meaning under every source, and realtime models — which have no separate
+speech-to-text stage — ignore `turn` entirely.
+
+### Known limits
+
+- A final that rewrites text after the local turn has already closed arrives as a second
+  message rather than editing the first. Replacement applies while the aggregation is still
+  pending; once the text has reached the context, and the model may already be answering,
+  a second message is the less invasive outcome.
+- The voicemail detector sees promoted interims, which are not marked as final. Measured on
+  the same transcript, it classifies a promoted interim exactly as it classifies the final,
+  so detection is unaffected.
+- The token delta drops punctuation the final adds to tokens that already went out.
+- A second end-of-turn transcript for the same turn that does not continue the first arrives
+  as a message of its own; it never replaces what the first one delivered. A service's
+  transcripts within one turn are expected to be cumulative, which is what Deepgram Flux and
+  Cartesia do; it has not been verified for Dograh-Flux.
+- When a local turn has already closed on a promoted interim, an interim of the next local
+  turn that rewrites it is promoted whole, so a few words can appear in both messages.
+- A transcript held while the user is muted is not released by the mute lifting: it leaves the
+  absorber when the next local turn opens or when the hold expires, and the aggregator's mute
+  rules then apply to it, so it may still be suppressed there. A final that is forwarded
+  while the user is muted, because a local turn was open or text had already gone out, is
+  suppressed by the aggregator the same way and counts as delivered: a later transcript of
+  that turn only adds what it extends.
+- On Deepgram Flux the promotion needs interim transcripts, which Flux emits on
+  `EagerEndOfTurn`. The hybrid relies on the service's `eager_eot_threshold` (default `0.5`)
+  and does not pin it; raising it under `service_tuning` starves the promotion and every turn
+  closes on the service's final instead.
+- A final of a previous service turn that arrives after the next service turn has started is
+  attributed to the new turn: it is delivered whole into it, so its words can appear twice,
+  once from its own promoted interim and once from the late final.
+- With `turn_start_strategy` set to `min_words` or `provisional_vad`, a transcript shorter
+  than the threshold that arrives while the bot speaks no longer resets the pending
+  aggregation once a turn is open; a delta of an open turn is exactly such a transcript.
+  With no turn open the strategy's rule stands.
+
 ## API clients
 
 The external-PBX keys behave differently from every other key. While the external-PBX

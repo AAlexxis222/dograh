@@ -3394,6 +3394,24 @@ export type HuggingFaceSttConfiguration = {
 };
 
 /**
+ * HybridTurnConfiguration
+ */
+export type HybridTurnConfiguration = {
+    /**
+     * Wait Ms
+     *
+     * Milliseconds to wait for the STT's own end-of-turn after the local VAD stop before promoting the last interim. 0 promotes immediately (recommended).
+     */
+    wait_ms?: number;
+    /**
+     * Hold Ms
+     *
+     * How long a final transcript that arrives with no local turn open is held for the next local turn before being delivered as a message of its own.
+     */
+    hold_ms?: number;
+};
+
+/**
  * ImpersonateRequest
  *
  * Request payload for superadmin impersonation.
@@ -6890,6 +6908,18 @@ export type TrunkUpdateRequest = {
 };
 
 /**
+ * TurnConfiguration
+ */
+export type TurnConfiguration = {
+    /**
+     * Source
+     */
+    source?: 'auto' | 'stt' | 'local';
+    hybrid?: HybridTurnConfiguration;
+    [key: string]: unknown;
+};
+
+/**
  * TurnCredentialsResponse
  *
  * Response model for TURN credentials.
@@ -7668,6 +7698,10 @@ export type WorkflowConfigurationDefaults = {
      * User Turn Stop Timeout
      */
     user_turn_stop_timeout?: number | null;
+    /**
+     * Turn-detection controls: {source: auto|stt|local, hybrid: {wait_ms, hold_ms}}. source=local with a server-turn STT enables the hybrid (local analyzer over the STT's transcription).
+     */
+    turn?: TurnConfiguration | null;
     /**
      * Model Overrides
      */
