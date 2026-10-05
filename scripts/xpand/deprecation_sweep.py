@@ -122,7 +122,7 @@ def with_unstructured(hits: list[Hit], text_rows: Iterable[tuple[str, int]]) -> 
     extra = [
         Hit(kind, row_id, "<raw-json-text>", "?", "?", "unstructured",
             "a retiring or legacy model id appears in the row but not inside a {provider, model} pair",
-            "open the row; likely a provider-less model_overrides or a non-standard shape")
+            "open the full row; likely a provider-less model_overrides or a non-standard shape")
         for kind, row_id in sorted(set(text_rows) - seen)
     ]
     return hits + extra

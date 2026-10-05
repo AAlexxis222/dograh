@@ -50,12 +50,13 @@ MODEL_KINDS = frozenset({"tts", "stt", "llm", "realtime"})   # entries whose nam
 
 
 def blocking_patterns(*, today: dt.date) -> tuple[str, ...]:
-    """Model-id patterns whose entries are legacy or already in the shutdown window on ``today``."""
+    """Model-id patterns already in the shutdown window on ``today``. Legacy entries are left out: they never fail
+    the sweep, so in the raw-text fallback they would only produce false ``unstructured`` hits."""
     out: list[str] = []
     for e in load_deprecations():
         if e["kind"] not in MODEL_KINDS:
             continue
-        if e["effect"] == "legacy" or (e["effect"] == "shutdown" and today >= dt.date.fromisoformat(str(e["date"])) - BLOCK_MARGIN):
+        if e["effect"] == "shutdown" and today >= dt.date.fromisoformat(str(e["date"])) - BLOCK_MARGIN:
             out += e["model_or_feature"] if isinstance(e["model_or_feature"], list) else [e["model_or_feature"]]
     return tuple(out)
 

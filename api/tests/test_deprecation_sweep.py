@@ -109,7 +109,7 @@ def test_text_regex_rejects_unsupported_glob_syntax():
 def test_blocking_patterns_follow_horizon_and_model_kinds():
     now = blocking_patterns(today=TODAY + dt.timedelta(days=14))
     assert {"sonic-2", "sonic-2-*", "sonic-turbo-*", "sonic-3-2025-10-27"} <= set(now)
-    assert "grok-voice-think-fast-1.0" in now          # legacy always blocks
+    assert "grok-voice-think-fast-1.0" not in now      # legacy never fails the sweep, so no text fallback
     assert not {"o3*", "line-sdk-hosting", "v1/prompts", "eleven_v4"} & set(now)   # not yet in their window
     later = set(blocking_patterns(today=dt.date(2027, 6, 1)))
     assert "o3*" in later
@@ -165,6 +165,15 @@ def test_exit_code_is_0_when_only_legacy(monkeypatch, capsys):
     docs = [("workflow", 1, {"realtime": {"provider": "grok_realtime", "model": "grok-voice-think-fast-1.0"}})]
     code, out = _run_main(monkeypatch, capsys, docs)
     assert code == 0 and "state=legacy" in out
+
+
+def test_legacy_only_row_exits_0_with_the_real_text_regex(monkeypatch, capsys):
+    rx = build_text_regex(blocking_patterns(today=TODAY + dt.timedelta(days=14)))
+    docs = [("workflow", 1, {"stt": {"provider": "assemblyai", "model": "u3-rt-pro"}}),
+            ("workflow", 2, {"realtime": {"provider": "grok_realtime", "model": "grok-voice-think-fast-1.0"}})]
+    text_rows = [(k, i) for k, i, doc in docs if re.search(rx, json.dumps(doc), re.I)]
+    code, out = _run_main(monkeypatch, capsys, docs, text_rows=text_rows)
+    assert code == 0 and "unstructured_hit" not in out
 
 
 def test_exit_code_is_1_for_unstructured_only(monkeypatch, capsys):
