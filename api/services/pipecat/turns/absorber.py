@@ -44,7 +44,7 @@ from api.services.pipecat.turns.frames import (
     PromotedTranscriptionFrame,
     TranscriptionReplaceFrame,
 )
-from api.services.pipecat.turns.text_delta import token_delta
+from api.services.pipecat.turns.text_delta import token_count, token_delta
 from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
@@ -345,6 +345,13 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
         self.stats["delta_emitted"] += 1
         turn.emitted = text
 
+    @staticmethod
+    def _adds_words(high_water: str, text: str) -> bool:
+        delta = token_delta(high_water, text)
+        if delta is None:  # a rewrite: new speech only if it is longer than the mark
+            return token_count(text) > token_count(high_water)
+        return bool(delta)
+
     # ---- frame routing -------------------------------------------------
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -412,13 +419,14 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
             # B2 log #2: after the local close, an ``Update`` that repeats, rewrites
             # (``None``) or shortens the text would open a turn, and so would one that
             # restores words a shorter one dropped: only words beyond the longest text
-            # seen for this turn pass. Before any local close nothing is late: the
-            # interims are what opens the local turn (min_words counts them).
+            # seen for this turn pass, also when Flux rewrites an earlier word on the way
+            # (a rewrite with more tokens than the mark). Before any local close nothing
+            # is late: the interims are what opens the local turn (min_words counts them).
             if (
                 not self._local_open
                 and turn.local_closed
                 and high_water is not None
-                and not token_delta(high_water, frame.text)
+                and not self._adds_words(high_water, frame.text)
             ):
                 self.stats["late_interim_dropped"] += 1
                 return

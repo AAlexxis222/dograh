@@ -162,3 +162,31 @@ async def test_revision_before_the_local_turn_opens_does_not_delay_the_barge_in(
         if key == "UP:InterruptionFrame" and t > REVISION_BEFORE_OPEN.bot_speaking_at
     ]
     assert interruptions and interruptions[0] < 1000, (interruptions, r.absorber_stats)
+
+
+# Review r2 N2: after the local close the user goes on in the same Flux turn and Flux rewrites
+# an earlier word while adding new ones. More tokens than the mark is new speech: it must reach
+# the aggregator (production min_words) and barge in when it arrives, not at Flux's final.
+CONT_REWRITE = Scenario(
+    id="Scont_rewrite",
+    flux=[
+        (0, "start", ""),
+        (800, "update", S.TEXT),
+        (2300, "update", "quiero reservar para el domingo por la tarde"),
+        (4000, "end", "quiero reservar para el domingo por la tarde"),
+    ],
+    speaking=[(0, 1000), (2100, 3600)],
+    verdicts=[E.COMPLETE, E.COMPLETE],
+    end_at=10500,
+    start="min_words_only",
+    bot_speaking_at=1300,
+)
+
+
+@pytest.mark.asyncio
+async def test_a_late_rewrite_that_adds_words_barges_in_when_it_arrives():
+    r = await run_scenario(CONT_REWRITE, absorber=True)
+    keys = [key for _, key in r.events]
+    bot = keys.index("UP:BotStartedSpeakingFrame")
+    barge_ins = [t for t, key in r.events[bot:] if key == "UP:InterruptionFrame"]
+    assert barge_ins and barge_ins[0] < 3000, (barge_ins, r.absorber_stats)
