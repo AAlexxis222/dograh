@@ -202,7 +202,7 @@ def test_every_object_valued_setting_has_a_settings_models_row():
 def test_valid_nested_object_reaches_the_service():
     with patch("api.services.pipecat.service_factory.CartesiaTTSService") as mock:
         create_tts_service(
-            user_config_tts("cartesia", model="sonic-2"),
+            user_config_tts("cartesia", model="sonic-3.6"),
             audio_config(),
             tuning={
                 "tts": {"cartesia": {"settings": {"generation_config": {"speed": 1.2}}}}

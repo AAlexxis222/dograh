@@ -47,7 +47,7 @@ USER_CONFIGURATION: dict[str, Any] = {
     },
     "tts": {
         "provider": "cartesia",
-        "model": "sonic-2",
+        "model": "sonic-3.6",
         "api_key": "test-key",
         "voice_id": "test-voice",
     },
