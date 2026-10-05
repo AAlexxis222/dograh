@@ -1,9 +1,17 @@
 """Read-only sweep: saved model configs that point at retiring or legacy models.
 
+From the repo root (both forms work; the DB URL must use an async driver, e.g. postgresql+asyncpg://):
+
+    DATABASE_URL=<instance> python scripts/xpand/deprecation_sweep.py --horizon-days 14
     DATABASE_URL=<instance> python -m scripts.xpand.deprecation_sweep --horizon-days 14
 
-Prints one line per hit (code, where, reason, hint) and exits 1 if there is any.
-Reuses api.services.capabilities.deprecations; nothing is written to the DB.
+One line per hit: <code> where=<kind>#<id>:<path> state=<state> date=<date|none> reason=... hint=...
+Exit 1 if there is a shutdown (or unstructured) hit within the horizon, 0 if there are none or only legacy ones,
+2 if DATABASE_URL is missing. Reuses api.services.capabilities.deprecations; nothing is written to the DB.
+
+Two passes per table, erring on the side of reporting: a structured walk over {provider, model} pairs (JSON
+strings are decoded), and a raw-text regex built from the registry that catches what the walk cannot
+interpret (e.g. a provider-less model_overrides). Rows only the regex finds print as ``unstructured_hit``.
 """
 
 from __future__ import annotations
@@ -11,16 +19,24 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
+import json
 import os
+import re
 import sys
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-from api.services.capabilities.deprecations import status_for
+if __name__ == "__main__":  # `python scripts/xpand/deprecation_sweep.py` puts scripts/xpand, not the repo root, on sys.path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from api.services.capabilities.deprecations import blocking_patterns, status_for  # noqa: E402
 
 CODE = "deprecated_model_in_use"
+UNSTRUCTURED_CODE = "unstructured_hit"
 _BLOCKING = ("shutdown", "legacy")
+_FAILING = ("shutdown", "unstructured")   # exit 1; legacy alone only prints
 
 
 @dataclass(frozen=True)
@@ -33,6 +49,19 @@ class Hit:
     state: str
     reason: str
     hint: str
+    date: dt.date | None = None
+
+
+def _decode(value: Any) -> Any:
+    """JSON objects/arrays stored as strings (possibly several layers deep) become Python values."""
+    for _ in range(4):  # bounded: each pass peels one layer of encoding
+        if not (isinstance(value, str) and value.lstrip()[:1] in ('{', '[', '"')):
+            break
+        try:
+            value = json.loads(value)
+        except ValueError:
+            break
+    return value
 
 
 def _service_refs(doc: Any, path: str = "") -> Iterator[tuple[str, str, str]]:
@@ -42,6 +71,7 @@ def _service_refs(doc: Any, path: str = "") -> Iterator[tuple[str, str, str]]:
     top-level stt/tts/llm/realtime, under model_overrides, and under the org v2
     byok.pipeline / byok.realtime sections.
     """
+    doc = _decode(doc)
     if isinstance(doc, dict):
         provider, model = doc.get("provider"), doc.get("model")
         if isinstance(provider, str) and isinstance(model, str):
@@ -64,36 +94,84 @@ def find_deprecated_usage(
         for path, provider, model in _service_refs(doc):
             status = status_for(provider, model, today=at)
             if status.state in _BLOCKING:
-                hits.append(Hit(kind, row_id, path, provider, model, status.state, status.reason, status.hint))
+                hits.append(Hit(kind, row_id, path, provider, model, status.state, status.reason, status.hint, status.date))
     return hits
 
 
+def build_text_regex(patterns: Iterable[str]) -> str:
+    """Regex (Python re and Postgres ARE, use case-insensitively) matching a quoted JSON string equal to a pattern.
+
+    ``\\*"`` tolerates the backslashes of JSON nested inside JSON strings; ``*`` in a pattern spans any non-quote run.
+    """
+    alternatives = []
+    for pattern in patterns:
+        if "?" in pattern or "[" in pattern:
+            raise ValueError(f"unsupported glob syntax in deprecations.yaml pattern: {pattern!r}")
+        alternatives.append('[^"\\\\]*'.join(re.escape(part) for part in pattern.split("*")))
+    if not alternatives:
+        raise ValueError("no patterns to build a text regex from")
+    return '\\\\*"(' + "|".join(alternatives) + ')\\\\*"'
+
+
+def with_unstructured(hits: list[Hit], text_rows: Iterable[tuple[str, int]]) -> list[Hit]:
+    """Add an ``unstructured`` hit for each (kind, row_id) the text regex found but the structured walk did not."""
+    seen = {(h.kind, h.row_id) for h in hits}
+    extra = [
+        Hit(kind, row_id, "<raw-json-text>", "?", "?", "unstructured",
+            "a retiring or legacy model id appears in the row but not inside a {provider, model} pair",
+            "open the row; likely a provider-less model_overrides or a non-standard shape")
+        for kind, row_id in sorted(set(text_rows) - seen)
+    ]
+    return hits + extra
+
+
 def format_hit(hit: Hit) -> str:
-    return f"{CODE} where={hit.kind}#{hit.row_id}:{hit.path} reason={hit.reason} hint={hit.hint}"
+    code = UNSTRUCTURED_CODE if hit.state == "unstructured" else CODE
+    date = hit.date.isoformat() if hit.date else "none"
+    return f"{code} where={hit.kind}#{hit.row_id}:{hit.path} state={hit.state} date={date} reason={hit.reason} hint={hit.hint}"
 
 
-_QUERIES = (
-    ("workflow", "SELECT w.id, w.workflow_configurations FROM workflows w WHERE w.released_definition_id IS NOT NULL"),
-    ("workflow_definition", "SELECT id, workflow_configurations FROM workflow_definitions WHERE status = 'published'"),
-    ("workflow_definition", "SELECT id, workflow_json FROM workflow_definitions WHERE status = 'published'"),
-    ("org", "SELECT id, value FROM organization_configurations"),
+@dataclass(frozen=True)
+class Source:
+    kind: str
+    table: str
+    column: str
+    where: str = ""
+
+
+_SOURCES = (
+    Source("workflow", "workflows", "workflow_configurations", "WHERE released_definition_id IS NOT NULL"),
+    Source("workflow_definition", "workflow_definitions", "workflow_configurations", "WHERE status IN ('draft', 'published')"),
+    Source("workflow_definition_json", "workflow_definitions", "workflow_json", "WHERE status IN ('draft', 'published')"),
+    Source("workflow_template", "workflow_templates", "template_json"),
+    Source("org", "organization_configurations", "value"),
+    Source("user_config", "user_configurations", "configuration"),
 )
 
 
-async def _load_docs(database_url: str) -> list[tuple[str, int, Any]]:
+async def _load_rows(database_url: str, pattern: str) -> tuple[list[tuple[str, int, Any]], list[tuple[str, int]]]:
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
 
     engine = create_async_engine(database_url)
     docs: list[tuple[str, int, Any]] = []
+    text_rows: list[tuple[str, int]] = []
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SET TRANSACTION READ ONLY"))
-            for kind, sql in _QUERIES:
-                docs += [(kind, row[0], row[1]) for row in await conn.execute(text(sql))]
+            for s in _SOURCES:  # identifiers come from the constant above, the pattern is bound
+                sql = text(f"SELECT id, {s.column}, CAST({s.column} AS text) ~* :pat FROM {s.table} {s.where}")
+                for row_id, doc, text_hit in await conn.execute(sql, {"pat": pattern}):
+                    docs.append((s.kind, row_id, doc))
+                    if text_hit:
+                        text_rows.append((s.kind, row_id))
     finally:
         await engine.dispose()
-    return docs
+    return docs, text_rows
+
+
+def _utc_today(clock: Callable[..., dt.datetime] = dt.datetime.now) -> dt.date:
+    return clock(dt.timezone.utc).date()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -104,11 +182,13 @@ def main(argv: list[str] | None = None) -> int:
     if not database_url:
         print("deprecation_sweep_no_database where=env:DATABASE_URL reason=variable not set hint=export DATABASE_URL (read-only access is enough)")
         return 2
-    docs = asyncio.run(_load_docs(database_url))
-    hits = find_deprecated_usage(docs, today=dt.date.today(), horizon_days=args.horizon_days)
+    today = _utc_today()
+    pattern = build_text_regex(blocking_patterns(today=today + dt.timedelta(days=args.horizon_days)))
+    docs, text_rows = asyncio.run(_load_rows(database_url, pattern))
+    hits = with_unstructured(find_deprecated_usage(docs, today=today, horizon_days=args.horizon_days), text_rows)
     for hit in hits:
         print(format_hit(hit))
-    return 1 if hits else 0
+    return 1 if any(h.state in _FAILING for h in hits) else 0
 
 
 if __name__ == "__main__":

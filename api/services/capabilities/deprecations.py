@@ -20,6 +20,7 @@ class Status:
     state: str            # active | warning | warning_price | shutdown | legacy
     reason: str = ""
     hint: str = ""
+    date: dt.date | None = None   # retirement / price-change date; None for active and legacy
 
 
 @functools.cache
@@ -36,13 +37,27 @@ def status_for(provider: str, model: str, *, today: dt.date) -> Status:
             return Status("legacy", f"{provider}/{model} is legacy (deprecations.yaml)", hint)
         date = dt.date.fromisoformat(str(e["date"]))
         if e["effect"] == "price":
-            return Status("warning_price", f"{provider}/{model} price change on {date}", "review cost")
+            return Status("warning_price", f"{provider}/{model} price change on {date}", "review cost", date)
         if today >= date - BLOCK_MARGIN:
-            return Status("shutdown", f"{provider}/{model} retired on {date} (deprecations.yaml)", hint)
+            return Status("shutdown", f"{provider}/{model} retired on {date} (deprecations.yaml)", hint, date)
         warn_from = dt.date.fromisoformat(str(e["warn_from"])) if e.get("warn_from") else date - dt.timedelta(days=WARN_DAYS)
         if today >= warn_from:
-            return Status("warning", f"{provider}/{model} retires on {date}", hint)
+            return Status("warning", f"{provider}/{model} retires on {date}", hint, date)
     return Status("active")
+
+
+MODEL_KINDS = frozenset({"tts", "stt", "llm", "realtime"})   # entries whose names appear as model ids in saved configs
+
+
+def blocking_patterns(*, today: dt.date) -> tuple[str, ...]:
+    """Model-id patterns whose entries are legacy or already in the shutdown window on ``today``."""
+    out: list[str] = []
+    for e in load_deprecations():
+        if e["kind"] not in MODEL_KINDS:
+            continue
+        if e["effect"] == "legacy" or (e["effect"] == "shutdown" and today >= dt.date.fromisoformat(str(e["date"])) - BLOCK_MARGIN):
+            out += e["model_or_feature"] if isinstance(e["model_or_feature"], list) else [e["model_or_feature"]]
+    return tuple(out)
 
 
 def _matches(model: str, patterns) -> bool:

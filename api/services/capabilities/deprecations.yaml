@@ -14,12 +14,20 @@ entries:
     read_at: 2026-10-02
   - provider: cartesia
     kind: tts
-    model_or_feature: [sonic-2, sonic-turbo, sonic-3-2025-10-27]
+    model_or_feature: [sonic-2, "sonic-2-*", sonic-turbo, "sonic-turbo-*", sonic-3-2025-10-27]   # all dated snapshots too
     date: 2026-10-20
     effect: shutdown
     replacement: sonic-3.6
     source_url: https://docs.cartesia.ai/build-with-cartesia/tts-models/older-models.md
     read_at: 2026-10-02
+  - provider: cartesia
+    kind: tts
+    model_or_feature: [sonic, sonic-english, sonic-multilingual, "sonic-2024-*"]   # already off since June
+    date: 2026-06-01
+    effect: shutdown
+    replacement: sonic-3.6
+    source_url: https://docs.cartesia.ai/build-with-cartesia/tts-models/api-changes.md
+    read_at: 2026-10-05
   - provider: openai
     kind: platform
     model_or_feature: [v1/prompts, evals]
@@ -38,7 +46,7 @@ entries:
     read_at: 2026-10-02
   - provider: openai
     kind: llm
-    model_or_feature: ["gpt-5-*-2025-08-07", "gpt-5-mini-2025-08-07", "gpt-5-nano-2025-08-07", "o3*"]
+    model_or_feature: ["gpt-5*-2025-08-07", "o3*"]
     date: 2026-12-11
     effect: shutdown
     replacement: null
@@ -62,16 +70,27 @@ entries:
     read_at: 2026-10-02
   - provider: openai
     kind: tts
-    model_or_feature: [tts-1, tts-1-hd, "gpt-4o-mini-tts*"]
+    model_or_feature: ["tts-1*", "gpt-4o-mini-tts*"]
     date: 2027-01-06
     effect: shutdown
     replacement: null   # no documented Spanish voice in OpenAI TTS (VOZ-AC-B1-83)
     warn_from: 2026-10-02
     source_url: https://platform.openai.com/docs/deprecations
     read_at: 2026-10-02
-  - provider: openai
+  # Registry provider keys are openai_realtime / azure_realtime (ServiceProviders), not "openai".
+  # No "gpt-realtime*" glob: it would also flag the replacement gpt-realtime-2.1 and the registry default gpt-realtime-2;
+  # dated snapshots are covered by the "-20*" globs (gpt-realtime-2025-08-28, gpt-realtime-mini-2025-12-15).
+  - provider: openai_realtime
     kind: realtime
-    model_or_feature: [gpt-realtime, gpt-realtime-mini, "gpt-audio*", "gpt-4o-realtime*"]
+    model_or_feature: [gpt-realtime, "gpt-realtime-20*", gpt-realtime-mini, "gpt-realtime-mini-20*", "gpt-audio*", "gpt-4o-realtime*"]
+    date: 2027-01-20
+    effect: shutdown
+    replacement: gpt-realtime-2.1 (or gpt-realtime-2.1-mini)
+    source_url: https://platform.openai.com/docs/deprecations
+    read_at: 2026-10-02
+  - provider: azure_realtime
+    kind: realtime
+    model_or_feature: [gpt-realtime, "gpt-realtime-20*", gpt-realtime-mini, "gpt-realtime-mini-20*", "gpt-audio*", "gpt-4o-realtime*"]
     date: 2027-01-20
     effect: shutdown
     replacement: gpt-realtime-2.1 (or gpt-realtime-2.1-mini)
@@ -83,6 +102,7 @@ entries:
     date: 2027-02-26
     effect: shutdown
     replacement: gpt-transcribe (or gpt-live-transcribe)
+    warn_from: 2026-10-02   # VOZ-AC-B1-81: the OpenAI STT default must be flagged
     source_url: https://platform.openai.com/docs/deprecations
     read_at: 2026-10-02
   - provider: openai
