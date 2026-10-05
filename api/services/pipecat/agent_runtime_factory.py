@@ -33,6 +33,7 @@ from api.services.pipecat.service_factory import (
     create_llm_service,
     create_tts_service,
 )
+from api.services.pipecat.service_tuning import llm_tuning_applies
 from api.services.workflow.agent_runtime import AgentRuntime, new_visit_id
 from api.services.workflow.dto import ReactFlowDTO
 from api.services.workflow.run_creation import definition_to_run
@@ -178,32 +179,52 @@ class AgentRuntimeFactory:
             skip_instance_constraints_for={"trigger"},
         )
 
-        llm = create_llm_service(user_config, correlation_id=self._mps_correlation_id)
+        service_tuning = run_configs.get("service_tuning")
+        llm = create_llm_service(
+            user_config,
+            correlation_id=self._mps_correlation_id,
+            tuning=service_tuning,
+        )
         tts = create_tts_service(
             user_config,
             self._audio_config,
             correlation_id=self._mps_correlation_id,
             organization_id=self._organization_id,
             tts_cache_enabled=run_configs.get("tts_cache_enabled") is True,
+            tuning=service_tuning,
         )
         # Same client policy as the run setup: the conversation LLM also
-        # serves out-of-band inference, and extraction gets a separately
-        # tagged client only where the run would have created one, so a
-        # handoff does not quietly double this agent's provider connections.
+        # serves out-of-band inference, and extraction gets a separate client
+        # only where the run would have created one, so a handoff does not
+        # quietly double this agent's provider connections. Sharing is only
+        # safe when the conversation LLM was tuned exactly as extraction would be.
         needs_extraction_llm = workflow_graph.uses_variable_extraction() or bool(
             (run_configs.get("call_dispositions") or [])
         )
+        shares_existing_llm = llm_tuning_applies(
+            service_tuning, "conversation"
+        ) == llm_tuning_applies(service_tuning, "extraction")
         inference_llm = llm
-        variable_extraction_llm = (
-            create_llm_service(
+        if (
+            needs_extraction_llm
+            and user_config.llm.provider == ServiceProviders.DOGRAH.value
+        ):
+            variable_extraction_llm = create_llm_service(
                 user_config,
                 correlation_id=self._mps_correlation_id,
                 usage_context="variable_extraction",
+                tuning=service_tuning,
+                role="extraction",
             )
-            if needs_extraction_llm
-            and user_config.llm.provider == ServiceProviders.DOGRAH.value
-            else llm
-        )
+        elif needs_extraction_llm and not shares_existing_llm:
+            variable_extraction_llm = create_llm_service(
+                user_config,
+                correlation_id=self._mps_correlation_id,
+                tuning=service_tuning,
+                role="extraction",
+            )
+        else:
+            variable_extraction_llm = llm
 
         recording_router = None
         if self._has_recordings and self._fetch_recording_audio is not None:

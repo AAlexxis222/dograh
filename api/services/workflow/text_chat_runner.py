@@ -981,6 +981,8 @@ async def extract_text_chat_final_variables(
             user_config,
             correlation_id=correlation_id,
             usage_context="variable_extraction",
+            tuning=run_configs.get("service_tuning"),
+            role="extraction",
         )
 
         context = LLMContext()

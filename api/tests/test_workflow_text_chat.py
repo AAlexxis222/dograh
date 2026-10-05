@@ -2,7 +2,7 @@ import asyncio
 import copy
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from pipecat.processors.aggregators.llm_context import LLMSpecificMessage
@@ -1726,6 +1726,60 @@ async def test_final_extraction_refuses_a_run_from_another_organization(
     assert allowed["extracted_variables"] == {"ticket_number": "1054202"}
     assert refused == {}
     assert len(extraction_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_final_extraction_llm_carries_the_runs_service_tuning(
+    db_session,
+    async_session,
+    test_client_factory,
+):
+    """The final extraction client is built for the extraction role from the
+    run's service_tuning, like every extraction client of a live turn."""
+    user, workflow = await _create_user_and_workflow(
+        db_session,
+        async_session,
+        workflow_definition=_extraction_workflow_definition(),
+        suffix="tuned-extraction",
+    )
+    workflow_run = await _session_with_one_user_turn(
+        db_session, user, workflow, user_text="My ticket is 1054202."
+    )
+    text_session = await db_session.get_workflow_run_text_session(
+        workflow_run.id, organization_id=user.selected_organization_id
+    )
+    tuning = {"llm": {"temperature": 0.1}, "scope": {"extraction": True}}
+    create_llm = Mock(
+        side_effect=lambda *a, **k: MockLLMService(mock_steps=[], chunk_delay=0.001)
+    )
+
+    async def fake_extraction(_self, _variables, *_args, **_kwargs):
+        return {"ticket_number": "1054202"}
+
+    with (
+        patch(
+            "api.services.workflow.text_chat_runner.run_configurations_for",
+            return_value={"service_tuning": tuning},
+        ),
+        patch("api.services.workflow.text_chat_runner.create_llm_service", create_llm),
+        patch(
+            "api.services.workflow.pipecat_engine_variable_extractor."
+            "VariableExtractionManager._perform_extraction",
+            new=fake_extraction,
+        ),
+    ):
+        result = await extract_text_chat_final_variables(
+            workflow_run_id=workflow_run.id,
+            workflow_id=workflow.id,
+            organization_id=user.selected_organization_id,
+            checkpoint=text_session.checkpoint,
+            session_data=text_session.session_data,
+        )
+
+    assert result["extracted_variables"] == {"ticket_number": "1054202"}
+    assert create_llm.call_count == 1
+    assert create_llm.call_args.kwargs["tuning"] == tuning
+    assert create_llm.call_args.kwargs["role"] == "extraction"
 
 
 @pytest.mark.asyncio
