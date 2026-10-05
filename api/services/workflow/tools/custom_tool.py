@@ -400,9 +400,9 @@ async def execute_http_tool(
             }
         return result
 
-    # Get timeout
-    timeout_ms = config.get("timeout_ms", 5000)
-    timeout_seconds = timeout_ms / 1000
+    # Get timeout (the tool schema allows an explicit null: it means the default)
+    timeout_ms = config.get("timeout_ms")
+    timeout_seconds = (5000 if timeout_ms is None else timeout_ms) / 1000
 
     if preset_params is None:
         try:

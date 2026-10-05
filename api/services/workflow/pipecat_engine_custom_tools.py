@@ -249,67 +249,76 @@ class CustomToolManager:
             tools = await db_client.get_tools_by_uuids(tool_uuids, organization_id)
 
             for tool in tools:
-                if tool.category == ToolCategory.CALCULATOR.value:
-                    self._register_calculator_handler()
-                    logger.debug(
-                        f"Registered calculator tool handler "
-                        f"(tool_uuid: {tool.tool_uuid})"
-                    )
-                    continue
-
-                if tool.category == ToolCategory.MCP.value:
-                    session = self._agent.mcp_sessions.get(tool.tool_uuid)
-                    if session is None or not session.available:
-                        logger.warning(
-                            f"MCP tool '{tool.name}' ({tool.tool_uuid}) "
-                            f"unavailable; skipping handler registration"
+                try:
+                    if tool.category == ToolCategory.CALCULATOR.value:
+                        self._register_calculator_handler()
+                        logger.debug(
+                            f"Registered calculator tool handler "
+                            f"(tool_uuid: {tool.tool_uuid})"
                         )
                         continue
-                    allowed = (
-                        None
-                        if mcp_tool_filters is None
-                        else set(mcp_tool_filters.get(tool.tool_uuid, []))
-                    )
-                    mcp_schemas = session.function_schemas(allowed)
-                    for fs in mcp_schemas:
-                        self._agent.llm.register_function(
-                            fs.name,
-                            self._agent.bind_tool(
-                                self._engine, self._create_mcp_handler(session, fs.name)
-                            ),
-                            timeout_secs=session.call_timeout_secs,
+
+                    if tool.category == ToolCategory.MCP.value:
+                        session = self._agent.mcp_sessions.get(tool.tool_uuid)
+                        if session is None or not session.available:
+                            logger.warning(
+                                f"MCP tool '{tool.name}' ({tool.tool_uuid}) "
+                                f"unavailable; skipping handler registration"
+                            )
+                            continue
+                        allowed = (
+                            None
+                            if mcp_tool_filters is None
+                            else set(mcp_tool_filters.get(tool.tool_uuid, []))
                         )
-                    logger.debug(
-                        f"Registered {len(mcp_schemas)} MCP "
-                        f"handlers for tool '{tool.name}' ({tool.tool_uuid})"
+                        mcp_schemas = session.function_schemas(allowed)
+                        for fs in mcp_schemas:
+                            self._agent.llm.register_function(
+                                fs.name,
+                                self._agent.bind_tool(
+                                    self._engine,
+                                    self._create_mcp_handler(session, fs.name),
+                                ),
+                                timeout_secs=session.call_timeout_secs,
+                            )
+                        logger.debug(
+                            f"Registered {len(mcp_schemas)} MCP "
+                            f"handlers for tool '{tool.name}' ({tool.tool_uuid})"
+                        )
+                        continue
+
+                    schema = tool_to_function_schema(tool)
+                    function_name = schema["function"]["name"]
+
+                    # Create and register the handler
+                    handler, timeout_secs = self._create_handler(tool, function_name)
+                    # End-call and transfer-call tools are workflow-control
+                    # boundaries even though they do not necessarily select another
+                    # graph node. Give them the same ordering guarantees as an
+                    # explicit node-transition function.
+                    is_node_transition = tool.category in {
+                        ToolCategory.END_CALL.value,
+                        ToolCategory.TRANSFER_CALL.value,
+                        ToolCategory.TRANSFER_AGENT.value,
+                    }
+                    self._agent.llm.register_function(
+                        function_name,
+                        self._agent.bind_tool(self._engine, handler),
+                        timeout_secs=timeout_secs,
+                        is_node_transition=is_node_transition,
                     )
-                    continue
 
-                schema = tool_to_function_schema(tool)
-                function_name = schema["function"]["name"]
-
-                # Create and register the handler
-                handler, timeout_secs = self._create_handler(tool, function_name)
-                # End-call and transfer-call tools are workflow-control
-                # boundaries even though they do not necessarily select another
-                # graph node. Give them the same ordering guarantees as an
-                # explicit node-transition function.
-                is_node_transition = tool.category in {
-                    ToolCategory.END_CALL.value,
-                    ToolCategory.TRANSFER_CALL.value,
-                    ToolCategory.TRANSFER_AGENT.value,
-                }
-                self._agent.llm.register_function(
-                    function_name,
-                    self._agent.bind_tool(self._engine, handler),
-                    timeout_secs=timeout_secs,
-                    is_node_transition=is_node_transition,
-                )
-
-                logger.debug(
-                    f"Registered custom tool handler: {function_name} "
-                    f"(tool_uuid: {tool.tool_uuid})"
-                )
+                    logger.debug(
+                        f"Registered custom tool handler: {function_name} "
+                        f"(tool_uuid: {tool.tool_uuid})"
+                    )
+                except Exception as e:
+                    # One bad tool must not leave the node without the tools after
+                    # it (end_call and transfer among them).
+                    logger.error(
+                        f"Failed to register handler for tool '{tool.name}' "
+                        f"({tool.tool_uuid}): {e}"
+                    )
 
         except Exception as e:
             logger.error(f"Failed to register custom tool handlers: {e}")
@@ -339,9 +348,12 @@ class CustomToolManager:
             handler = self._create_transfer_call_handler(tool, function_name)
         else:
             timeout_ms = ((tool.definition or {}).get("config", {}) or {}).get(
-                "timeout_ms", 5000
+                "timeout_ms"
             )
-            timeout_secs = _parse_timeout_s(timeout_ms) / 1000
+            # The tool schema allows an explicit null: it means the default.
+            timeout_secs = (
+                _parse_timeout_s(5000 if timeout_ms is None else timeout_ms) / 1000
+            )
             handler = self._create_http_tool_handler(tool, function_name)
 
         return handler, timeout_secs

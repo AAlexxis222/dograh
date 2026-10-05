@@ -851,6 +851,39 @@ class TestExecuteHttpTool:
             assert call_kwargs["params"] == arguments
 
     @pytest.mark.asyncio
+    async def test_null_timeout_uses_the_default(self):
+        """The tool schema allows ``timeout_ms: null``; it means the default, not a crash."""
+        tool = MockToolModel(
+            tool_uuid="test-uuid",
+            name="Null timeout",
+            description="A tool saved without a timeout",
+            category="http_api",
+            definition={
+                "schema_version": 1,
+                "type": "http_api",
+                "config": {
+                    "method": "GET",
+                    "url": "https://api.example.com/x",
+                    "timeout_ms": None,
+                },
+            },
+        )
+
+        with patch(
+            "api.services.workflow.tools.custom_tool.httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.request.return_value = Mock(
+                status_code=200, json=Mock(return_value={"ok": True})
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await execute_http_tool(tool, {})
+
+        assert mock_client_class.call_args.kwargs["timeout"] == 5.0
+        assert result["status"] == "success"
+
+    @pytest.mark.asyncio
     async def test_timeout_error_handling(self):
         """Test that timeout errors are handled gracefully."""
         import httpx
@@ -1933,6 +1966,58 @@ class TestCustomToolManagerUnit:
             ]
             is True
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "timeout_ms, http_registered",
+        [(None, True), (0, False)],
+        ids=["null_means_default", "invalid_skips_only_that_tool"],
+    )
+    async def test_one_tool_timeout_does_not_unregister_the_next_tools(
+        self, timeout_ms, http_registered
+    ):
+        """A null timeout takes the default; an invalid one skips that tool only,
+        so the call-control tools after it (end_call) are still registered."""
+        from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
+
+        mock_engine = Mock()
+        mock_engine._get_organization_id = AsyncMock(return_value=1)
+        register = mock_engine.active_agent.llm.register_function = Mock()
+        manager = CustomToolManager(mock_engine)
+        http_tool = MockToolModel(
+            tool_uuid="http-uuid",
+            name="Lookup",
+            description="Look something up",
+            category="http_api",
+            definition={
+                "schema_version": 1,
+                "type": "http_api",
+                "config": {
+                    "method": "GET",
+                    "url": "https://api.example.com/x",
+                    "timeout_ms": timeout_ms,
+                },
+            },
+        )
+        end_call = MockToolModel(
+            tool_uuid="end-uuid",
+            name="end call",
+            description="End the call",
+            category="end_call",
+            definition={"schema_version": 1, "type": "end_call", "config": {}},
+        )
+
+        with patch(
+            "api.services.workflow.pipecat_engine_custom_tools.db_client.get_tools_by_uuids",
+            new=AsyncMock(return_value=[http_tool, end_call]),
+        ):
+            await manager.register_handlers([http_tool.tool_uuid, end_call.tool_uuid])
+
+        registered = {c.args[0]: c.kwargs for c in register.call_args_list}
+        assert "end_call" in registered
+        assert ("lookup" in registered) is http_registered
+        if http_registered:
+            assert registered["lookup"]["timeout_secs"] == 5.0
 
     @pytest.mark.asyncio
     async def test_transfer_call_renders_destination_from_initial_context(self):
