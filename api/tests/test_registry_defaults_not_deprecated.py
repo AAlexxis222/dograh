@@ -14,7 +14,7 @@ TODAY = dt.date(2026, 10, 6)
 # Defaults that still point to dead models; VOZ-N0-02 fixes them and removes this set.
 _FIXED_BY_N0_02 = {
     "AssemblyAISTTConfiguration",
-    "GoogleRealtimeLLMConfiguration",
+    # GoogleRealtimeLLMConfiguration: upstream #833 (merged in G0) moved its default to gemini-3.8-live.
     "GoogleVertexRealtimeLLMConfiguration",
     "GrokRealtimeLLMConfiguration",
     "OpenAISTTConfiguration",
