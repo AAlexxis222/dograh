@@ -14,9 +14,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 _VERSIONS = Path(__file__).resolve().parents[1] / "alembic" / "versions"
 
 
-def load_migration(revision: str):
+def migration_path(revision: str) -> Path:
     (path,) = _VERSIONS.glob(f"{revision}_*.py")
-    spec = importlib.util.spec_from_file_location(f"migration_{revision}", path)
+    return path
+
+
+def load_migration(revision: str):
+    spec = importlib.util.spec_from_file_location(
+        f"migration_{revision}", migration_path(revision)
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

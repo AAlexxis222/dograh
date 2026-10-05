@@ -6,8 +6,8 @@ snapshot and the org defaults document) still carries the retired value, which t
 reads as the min_words fallback — so migrated and unmigrated rows started turns differently.
 
 This runs after c4e21b7f80a9 (the merge revision below descends from it) and applies the same
-mapping to all four stores through `api.services.workflow.voz_bug_18`, the module the schema
-reader uses too. It also pins `turn_start_strategy: "default"` in every
+mapping to all four stores (a frozen copy of `api.services.workflow.voz_bug_18`, the module the
+schema reader uses; migrations do not import application code). It also pins `turn_start_strategy: "default"` in every
 WORKFLOW_CONFIGURATION_DEFAULTS org document that lacks it (VOZ-AC-B2-30).
 
 After each table's pass the candidate rows are read again and any row still holding the
@@ -27,8 +27,6 @@ from typing import Callable, Iterator, Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-from api.services.workflow.voz_bug_18 import backfill_turn_start, pin_org_default
-
 revision: str = "5be1d27c9a43"
 down_revision: Union[str, None] = "966eb3a3309b"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -41,8 +39,24 @@ _LEGACY = "provisional_vad"
 _ORG_DEFAULTS_KEY = "WORKFLOW_CONFIGURATION_DEFAULTS"
 
 
+# Frozen copy of api.services.workflow.voz_bug_18 as of this revision.
+_LEGACY_TO_CURRENT = {_LEGACY: "default"}
+_ORG_DEFAULT = "default"  # VOZ-AC-B2-30
+
+
+def backfill_turn_start(doc: dict) -> dict:
+    value = doc.get("turn_start_strategy")
+    if value in _LEGACY_TO_CURRENT:
+        doc["turn_start_strategy"] = _LEGACY_TO_CURRENT[value]
+    return doc
+
+
 def _org_defaults(doc: dict) -> dict:
-    return pin_org_default(backfill_turn_start(doc))
+    """Org defaults document: also pin the strategy when absent or an explicit null."""
+    backfill_turn_start(doc)
+    if doc.get("turn_start_strategy") is None:
+        doc["turn_start_strategy"] = _ORG_DEFAULT
+    return doc
 
 
 def _legacy(column: str) -> str:

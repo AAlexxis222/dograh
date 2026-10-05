@@ -1,6 +1,8 @@
 import json
 
-from api.services.configuration.override_keys import strip_secret_leaves
+from api.tests._migration_sql import load_migration, run_upgrade
+
+strip_secret_leaves = load_migration("d7e3a915c2b8").strip_secret_leaves
 
 SECRET = "sk-test-canary-123"
 
@@ -32,7 +34,6 @@ async def test_migration_strips_secrets_from_frozen_run_snapshots(
 
     from api.db.models import OrganizationModel, UserModel
     from api.enums import CallType, WorkflowRunMode
-    from api.tests._migration_sql import load_migration, run_upgrade
 
     org = OrganizationModel(provider_id="test-org-strip-runs")
     async_session.add(org)
