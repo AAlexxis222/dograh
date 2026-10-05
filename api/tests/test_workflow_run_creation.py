@@ -169,7 +169,7 @@ async def test_prepare_inputs_reports_the_callers_draft_intent(use_draft):
     draft of its own still transfers to drafts elsewhere, so this reports what
     was asked for rather than what was found.
     """
-    workflow_client = SimpleNamespace(get_draft_version=AsyncMock(return_value=None))
+    workflow_client = _workflow_client(get_draft_version=AsyncMock(return_value=None))
 
     run_inputs = await prepare_workflow_run_inputs(
         workflow_client,

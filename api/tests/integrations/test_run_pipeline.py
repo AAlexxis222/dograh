@@ -243,11 +243,7 @@ async def test_run_pipeline_reads_configuration_from_frozen_snapshot(
     the organization-level ``max_call_duration`` exists: the pinned definition
     carries an empty configuration and the workflow column carries the draft.
     """
-    from pipecat.extensions.voicemail.voicemail_detector import VoicemailDetector
-
-    from api.services.pipecat.pipeline_engine_callbacks_processor import (
-        PipelineEngineCallbacksProcessor,
-    )
+    from api.services.pipecat.processors.answer_supervisor import AnswerSupervisor
     from api.services.workflow.pipecat_engine import PipecatEngine
 
     workflow_run, user, workflow = workflow_run_setup
@@ -273,20 +269,22 @@ async def test_run_pipeline_reads_configuration_from_frozen_snapshot(
         )
     )
     captured_task: list = []
+    engines: list = []
+
+    def build_engine(*args, **kwargs):
+        engines.append(PipecatEngine(*args, **kwargs))
+        return engines[-1]
+
     audio_config = create_audio_config(WorkflowRunMode.SMALLWEBRTC.value)
     with (
         patch_run_pipeline_externals(captured_task),
         patch(
-            "api.services.pipecat.run_pipeline.PipecatEngine", wraps=PipecatEngine
+            "api.services.pipecat.run_pipeline.PipecatEngine", side_effect=build_engine
         ) as engine_cls,
         patch(
-            "api.services.pipecat.run_pipeline.VoicemailDetector",
-            wraps=VoicemailDetector,
-        ) as voicemail_cls,
-        patch(
-            "api.services.pipecat.run_pipeline.PipelineEngineCallbacksProcessor",
-            wraps=PipelineEngineCallbacksProcessor,
-        ) as callbacks_cls,
+            "api.services.pipecat.run_pipeline.AnswerSupervisor",
+            wraps=AnswerSupervisor,
+        ) as supervisor_cls,
     ):
         run_task = asyncio.create_task(
             _run_pipeline(
@@ -313,8 +311,8 @@ async def test_run_pipeline_reads_configuration_from_frozen_snapshot(
         await asyncio.wait_for(run_task, timeout=5.0)
 
     assert engine_cls.call_args.kwargs["context_compaction_enabled"] is False
-    voicemail_cls.assert_not_called()
+    supervisor_cls.assert_not_called()
     assert (
-        callbacks_cls.call_args.kwargs["max_call_duration_seconds"]
+        engines[0].call_monitor.max_call_duration_seconds
         == ORGANIZATION_MAX_CALL_DURATION
     )

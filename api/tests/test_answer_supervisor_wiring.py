@@ -322,6 +322,8 @@ async def test_saved_detector_settings_build_a_private_classifier_with_saved_ins
                 user_config,
                 correlation_id="test-run",
                 usage_context="voicemail_detection",
+                tuning=None,
+                role="voicemail",
             )
             provider_factory.assert_not_called()
         else:
@@ -330,6 +332,7 @@ async def test_saved_detector_settings_build_a_private_classifier_with_saved_ins
                 model="gpt-4.1",
                 api_key="test-key",
                 usage_context="voicemail_detection",
+                tuning=None,
             )
             workflow_factory.assert_not_called()
         # A completed ambiguous machine turn reaches the private inference path.
