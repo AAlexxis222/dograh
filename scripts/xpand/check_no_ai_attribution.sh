@@ -4,16 +4,17 @@
 # --stdin:    scans stdin (PR title, branch name) with the same pattern.
 set -euo pipefail
 arg="${1:?usage: check_no_ai_attribution.sh <base-ref>|--stdin}"
+head="${2:-HEAD}" # optional 2nd arg: scan <base-ref>..<head-ref> instead of ..HEAD
 pattern='claude|anthropic'
 
 if [[ "$arg" == "--stdin" ]]; then
   where="stdin"; text="$(cat)"
 # Not inside `$(... || true)`: an unknown ref must fail closed, not read as "0 hits".
-elif ! text="$(git log --format='%an%n%ae%n%cn%n%ce%n%B' "${arg}..HEAD" 2>&1)"; then
-  echo "code=attribution_check_failed where=${arg}..HEAD reason=git log failed: ${text} hint=fetch the base ref (fetch-depth: 0) and retry" >&2
+elif ! text="$(git log --format='%an%n%ae%n%cn%n%ce%n%B' "${arg}..${head}" 2>&1)"; then
+  echo "code=attribution_check_failed where=${arg}..${head} reason=git log failed: ${text} hint=fetch the base ref (fetch-depth: 0) and retry" >&2
   exit 1
 else
-  where="${arg}..HEAD"
+  where="${arg}..${head}"
 fi
 hits="$(grep -ciE "$pattern" <<<"$text" || true)"
 if [[ "$hits" != "0" ]]; then

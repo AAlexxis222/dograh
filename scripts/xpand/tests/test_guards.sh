@@ -19,18 +19,30 @@ expect_fail() { # <label> <cmd...>
   echo "PASS $label"
 }
 
+expect_pass() { # <label> <cmd...>
+  local label="$1"; shift
+  "$@" >/dev/null 2>&1 || { echo "FAIL: $label"; exit 1; }
+  echo "PASS $label"
+}
+
+expect_eq() { # <label> <actual> <expected>
+  [[ "$2" == "$3" ]] || { echo "FAIL: $1: got '$2', want '$3'"; exit 1; }
+  echo "PASS $1"
+}
+
 cd "$tmp" && git init -q -b main && git config user.email t@t && git config user.name t
 echo a > a.txt && git add a.txt && git commit -qm "base" && git branch base
 
 # --- check_no_ai_attribution.sh <base-ref>
 git checkout -q -b fix/attr
 echo b >> a.txt && git commit -qam "fix: clean change"
-"$here/check_no_ai_attribution.sh" base && echo "PASS clean range"
+expect_pass "clean range" "$here/check_no_ai_attribution.sh" base
 git commit -q --allow-empty -m "fix: x" -m "Co-Authored-By: $ai <noreply@$(echo "$vendor" | tr A-Z a-z).com>"
 expect_fail "trailer detected" "$here/check_no_ai_attribution.sh" base
 git reset -q --hard HEAD~1
 git commit -q --allow-empty -m "fix: y mentions $(echo "$vendor" | tr a-z A-Z) in the subject"
 expect_fail "case-insensitive mention detected" "$here/check_no_ai_attribution.sh" base
+git reset -q --hard HEAD~1
 expect_fail "unknown base ref fails closed" "$here/check_no_ai_attribution.sh" no-such-ref
 git -c user.name="$ai" commit -q --allow-empty -m "fix: z clean message"
 expect_fail "author name detected" "$here/check_no_ai_attribution.sh" base
@@ -38,18 +50,24 @@ git reset -q --hard HEAD~1
 GIT_COMMITTER_NAME="$ai" git commit -q --allow-empty -m "fix: w clean message"
 expect_fail "committer name detected" "$here/check_no_ai_attribution.sh" base
 git reset -q --hard HEAD~1
-printf 'fix/ok\nfix: clean title\n' | "$here/check_no_ai_attribution.sh" --stdin && echo "PASS clean title and branch"
+expect_pass "clean title and branch" bash -c "printf 'fix/ok\nfix: clean title\n' | '$here/check_no_ai_attribution.sh' --stdin"
 expect_fail "branch name detected via stdin" bash -c "echo fix/$ai-thing | '$here/check_no_ai_attribution.sh' --stdin"
+# head-ref argument: scan <base>..<ref> while HEAD itself is dirty (base-run workflow scans the fetched PR head)
+git commit -q --allow-empty -m "fix: v mentions $ai"
+expect_fail "head-ref argument scans the given ref, not HEAD" "$here/check_no_ai_attribution.sh" base HEAD
+git checkout -q -b fix/clean-ref HEAD~1
+expect_pass "head-ref argument: clean ref passes" "$here/check_no_ai_attribution.sh" base fix/clean-ref
+git checkout -q fix/attr && git reset -q --hard HEAD~1
 git checkout -q main
 
 # --- check_fix_against_g0.sh <upstream> [<fork-base>]
 git checkout -q -b fix/clean base
 echo c > c.txt && git add c.txt && git commit -qm "fix: new file"
-"$here/check_fix_against_g0.sh" HEAD base && echo "PASS clean fix, upstream = HEAD"
+expect_pass "clean fix, upstream = HEAD" "$here/check_fix_against_g0.sh" HEAD base
 
 git checkout -q -b up-other base
 echo u > u.txt && git add u.txt && git commit -qm "upstream: other file"
-"$here/check_fix_against_g0.sh" up-other base && echo "PASS clean fix vs non-conflicting upstream"
+expect_pass "clean fix vs non-conflicting upstream" "$here/check_fix_against_g0.sh" up-other base
 
 git checkout -q -b up-conflict base
 echo upstream-side > a.txt && git commit -qam "upstream: edits a.txt"
@@ -72,4 +90,51 @@ git checkout -q -b fork-base g0-base
 echo fork-side > api/routes/user.py && git commit -qam "fork base: edits user.py"
 git checkout -q -b fix/allowed-conflict-only fork-base
 echo d > d.txt && git add d.txt && git commit -qm "fix: unrelated file"
-"$here/check_fix_against_g0.sh" up-allowed fork-base && echo "PASS conflict only on an allowed file, clean fix"
+expect_pass "conflict only on an allowed file, clean fix" "$here/check_fix_against_g0.sh" up-allowed fork-base
+
+# --- pr-gate/reviewed-sha.sh <body> <head> <base-ref>
+# Each case builds its own repo: main (a.txt) -> pr branch with the reviewed commit r1.
+rs="$here/pr-gate/reviewed-sha.sh"
+mkpr() { # <dir>  -> repo with branch pr at r1, body.md naming r1 (visible Review section)
+  rm -rf "$1" && mkdir "$1" && cd "$1" && git init -q -b main && git config user.email t@t && git config user.name t
+  echo a > a.txt && git add a.txt && git commit -qm base
+  git checkout -q -b pr && echo r > r.txt && git add r.txt && git commit -qm "feat: reviewed"
+  r1="$(git rev-parse HEAD)"
+  printf '## Review
+VERDICT: SAFE TO MERGE
+REVIEWED: %s
+' "$r1" > body.md
+  git checkout -q main && echo m > m.txt && git add m.txt && git commit -qm "main: advances"
+  git checkout -q pr
+}
+sha_for() { bash "$rs" body.md "$(git rev-parse HEAD)" main; } # -> prints the sha the body must match
+
+mkpr "$tmp/rs1"
+expect_eq "reviewed-sha: REVIEWED = head accepted" "$(sha_for)" "$r1"
+
+mkpr "$tmp/rs2"; git merge -q --no-edit main
+expect_eq "reviewed-sha: clean merge of base after review accepted" "$(sha_for)" "$r1"
+
+mkpr "$tmp/rs3"
+cp body.md "$tmp/body3.md"
+printf '<!--
+REVIEWED: %s
+-->
+%s' "$(git rev-parse main)" "$(cat body.md)" > body.md
+git merge -q --no-edit main
+expect_eq "reviewed-sha: REVIEWED inside an HTML comment ignored" "$(sha_for)" "$r1"
+
+mkpr "$tmp/rs4"; git merge -q --no-commit --no-ff main && echo evil > evil.txt && git add evil.txt && git commit -qm "Merge main (with extra edit)"
+expect_eq "reviewed-sha: evil merge (extra edit) forces head" "$(sha_for)" "$(git rev-parse HEAD)"
+
+mkpr "$tmp/rs5"; git checkout -q -b other main && echo o > o.txt && git add o.txt && git commit -qm "other branch" && git checkout -q pr && git merge -q --no-edit other
+expect_eq "reviewed-sha: merge of a non-base branch forces head" "$(sha_for)" "$(git rev-parse HEAD)"
+
+mkpr "$tmp/rs6"; echo more > more.txt && git add more.txt && git commit -qm "feat: own commit after review"
+expect_eq "reviewed-sha: own commit after review forces head" "$(sha_for)" "$(git rev-parse HEAD)"
+
+mkpr "$tmp/rs7"
+git checkout -q main && echo main-side > r.txt && git add r.txt && git commit -qm "main: edits r.txt" && git checkout -q pr
+git merge -q main >/dev/null 2>&1 || true
+echo resolved > r.txt && git add r.txt && git commit -qm "Merge main (conflict resolved)"
+expect_eq "reviewed-sha: conflict-resolved merge forces head" "$(sha_for)" "$(git rev-parse HEAD)"

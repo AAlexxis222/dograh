@@ -8,7 +8,8 @@
 set -eo pipefail
 body="$1" head="$2" base="$3"
 out="$head"
-rev=$(grep -oiE '^ {0,3}\**REVIEWED:?\**:?[[:space:]]*[0-9a-f]{7,40}' "$body" | grep -oiE '[0-9a-f]{7,40}$' | head -1 || true)
+# Same rule as the gate: the single REVIEWED line in the visible "## Review" section (no comments/code).
+rev=$(node "$(dirname "$0")/check-body.mjs" "$body" --print-reviewed)
 if [ -n "$rev" ] && full=$(git rev-parse -q --verify "$rev^{commit}") \
    && git merge-base --is-ancestor "$full" "$head" \
    && [ -z "$(git rev-list --first-parent --no-merges "$full..$head")" ]; then

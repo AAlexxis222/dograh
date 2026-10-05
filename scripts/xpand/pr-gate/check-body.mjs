@@ -25,6 +25,15 @@ function sections(text, name) {
   return out
 }
 
+const REVIEWED_RE = /^ {0,3}\**REVIEWED:?\**:?\s*([0-9a-f]{7,40})\b/gim
+
+/** The sha on the visible "## Review" REVIEWED line, or null unless there is exactly one. */
+export function reviewedSha(body) {
+  const review = sections(visible(body ?? ''), 'Review')[0] ?? ''
+  const shas = [...review.matchAll(REVIEWED_RE)].map((m) => m[1])
+  return shas.length === 1 ? shas[0] : null
+}
+
 /** → list of problems; empty list = valid. headSha: when given, `REVIEWED: <sha>` must match it. */
 export function checkBody(body, { noAttribution = false, headSha = null } = {}) {
   const problems = []
@@ -38,7 +47,7 @@ export function checkBody(body, { noAttribution = false, headSha = null } = {}) 
   const review = sections(text, 'Review')[0] ?? ''
   // Exactly one verdict line and one sha line, each on its own line (bold allowed), outside code.
   const verdicts = [...review.matchAll(/^ {0,3}\**VERDICT:?\**:?\s*(SAFE TO MERGE|MERGE AFTER FIXES|DO NOT MERGE)\b/gim)].map((m) => m[1].toUpperCase())
-  const shas = [...review.matchAll(/^ {0,3}\**REVIEWED:?\**:?\s*([0-9a-f]{7,40})\b/gim)].map((m) => m[1])
+  const shas = [...review.matchAll(REVIEWED_RE)].map((m) => m[1])
   const hint = /VERDICT:/i.test(uncommented(body ?? '')) ? ' (VERDICT/REVIEWED must be plain lines, not inside a code block)' : ''
   const verdict = verdicts[0]
   if (review && verdicts.length === 0) problems.push(`"## Review" has no line "VERDICT: SAFE TO MERGE" from the adversarial review${hint}`)
@@ -59,6 +68,11 @@ if (process.argv[1]?.endsWith('check-body.mjs')) {
   const args = process.argv.slice(2)
   const file = args[0]
   if (!file) { console.error('usage: node check-body.mjs <body-file> [--no-attribution] [--head-sha <sha>]'); process.exit(2) }
+  if (args.includes('--print-reviewed')) {
+    const sha = reviewedSha(readFileSync(file, 'utf8'))
+    if (sha) console.log(sha)
+    process.exit(0)
+  }
   const shaAt = args.indexOf('--head-sha')
   const problems = checkBody(readFileSync(file, 'utf8'), {
     noAttribution: args.includes('--no-attribution'),
