@@ -48,20 +48,30 @@ async def test_proposed_frames_dropped_also_while_muted():
 # ``EndOfTurn``, and once more after it). In hybrid the start strategy reads interims
 # (``TranscriptionUserTurnStartStrategy(use_interim=True)``), so each repeat that reached the
 # aggregator would open a turn and cut the bot.
-SREPEAT = Scenario(
-    id="Srepeat",
-    flux=[
-        (0, "start", ""),
-        (800, "update", S.TEXT),
-        (2000, "update", S.TEXT),  # repeat after the local close, bot talking
-        (2400, "end", S.TEXT),
-        (2600, "update", S.TEXT),  # repeat after the final
-    ],
-    speaking=[(0, 1000)],
-    verdicts=[E.COMPLETE],
-    end_at=8000,
-    bot_speaking_at=1300,
-)
+def _late_update_scenario(id_: str, late_text: str) -> Scenario:
+    return Scenario(
+        id=id_,
+        flux=[
+            (0, "start", ""),
+            (800, "update", S.TEXT),
+            (2000, "update", late_text),  # after the local close, bot talking
+            (2400, "end", S.TEXT),
+            (2600, "update", late_text),  # after the final
+        ],
+        speaking=[(0, 1000)],
+        verdicts=[E.COMPLETE],
+        end_at=8000,
+        bot_speaking_at=1300,
+    )
+
+
+# Flux's late ``Update`` may also rewrite the last word or drop one (Opus review G0 #2): with
+# the local turn closed only an interim that adds words may reach the aggregator.
+LATE_UPDATES = [
+    _late_update_scenario("Srepeat", S.TEXT),
+    _late_update_scenario("Srewritten", "quiero reservar para el domingo"),
+    _late_update_scenario("Sshorter", "quiero reservar para el"),
+]
 
 
 def _interruptions_after_bot_started(r) -> int:
@@ -71,8 +81,9 @@ def _interruptions_after_bot_started(r) -> int:
 
 
 @pytest.mark.asyncio
-async def test_repeated_update_interim_after_local_close_opens_no_turn():
-    r = await run_scenario(SREPEAT, absorber=True)
+@pytest.mark.parametrize("scenario", LATE_UPDATES, ids=lambda sc: sc.id)
+async def test_late_update_interim_after_local_close_opens_no_turn(scenario):
+    r = await run_scenario(scenario, absorber=True)
     turns_opened = r.counts["UP:UserStartedSpeakingFrame"]
     assert turns_opened == 1, r.events
     assert _interruptions_after_bot_started(r) == 0, r.events

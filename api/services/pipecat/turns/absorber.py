@@ -403,13 +403,14 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
             previous = turn.last_interim
             turn.last_interim = frame.text
             turn.interim_frame = frame
+            # B2 log #2: after the local close, an ``Update`` that repeats, rewrites
+            # (``None``) or shortens the text would open a turn; only added words pass.
             if (
                 not self._local_open
                 and previous is not None
-                and token_delta(previous, frame.text) == ""
+                and not token_delta(previous, frame.text)
             ):
-                # B2 log #2: a repeated ``Update`` after the local close would open a turn.
-                self.stats["repeated_interim_dropped"] += 1
+                self.stats["late_interim_dropped"] += 1
                 return
             await self.push_frame(frame, direction)
             return
