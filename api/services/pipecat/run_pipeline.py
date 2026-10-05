@@ -103,6 +103,7 @@ from api.services.workflow.answer_classification_service import (
 from api.services.workflow.dto import ReactFlowDTO
 from api.services.workflow.initial_context import merge_external_initial_context
 from api.services.workflow.pipecat_engine import PipecatEngine
+from api.services.workflow.voz_bug_18 import resolve_turn_start
 from api.services.workflow.workflow_graph import WorkflowGraph
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
@@ -110,7 +111,6 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMAssistantAggregatorParams,
-    LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
@@ -266,6 +266,15 @@ def resolve_hybrid_turn(
     )
 
 
+def build_user_aggregator_params(**params) -> LLMUserAggregatorParams:
+    """Single construction point for user aggregator params.
+
+    Pipecat 1.12 turns EmptyUserTurnConfig ON by default; XPAND pins the pre-1.12
+    behaviour until a measured decision changes it (VOZ-AC-B2-28).
+    """
+    return LLMUserAggregatorParams(empty_user_turn=None, **params)
+
+
 def _resolve_turn_start_min_words(run_configs: dict) -> int:
     min_words = run_configs.get("turn_start_min_words")
     return max(
@@ -279,9 +288,7 @@ def _create_non_realtime_user_turn_start_strategies(
 ):
     """Return user turn start strategies for non-realtime pipelines."""
 
-    turn_start_strategy = run_configs.get(
-        "turn_start_strategy", DEFAULT_TURN_START_STRATEGY
-    )
+    turn_start_strategy = resolve_turn_start(run_configs)
     if turn_start_strategy not in ("default", "min_words"):
         turn_start_strategy = DEFAULT_TURN_START_STRATEGY
 
@@ -1111,9 +1118,7 @@ async def _run_pipeline_impl(
             run_configs,
             uses_external_turns=uses_external_turns,
         )
-        turn_start_strategy = run_configs.get(
-            "turn_start_strategy", DEFAULT_TURN_START_STRATEGY
-        )
+        turn_start_strategy = resolve_turn_start(run_configs)
         # Log the configured choice alongside the concrete strategies it selects.
         logger.info(
             f"[run {workflow_run_id}] Non-realtime interrupt strategy "
@@ -1136,7 +1141,7 @@ async def _run_pipeline_impl(
         uses_external_turns=uses_external_turns,
     )
 
-    user_params = LLMUserAggregatorParams(
+    user_params = build_user_aggregator_params(
         user_turn_strategies=user_turn_strategies,
         should_interrupt=engine.should_interrupt_user_turn,
         user_mute_strategies=user_mute_strategies,
@@ -1145,30 +1150,26 @@ async def _run_pipeline_impl(
         user_idle_timeout=0,
         vad_analyzer=user_vad_analyzer,
     )
-    if is_realtime:
-        context_aggregator = LLMContextAggregatorPair(
-            context,
-            assistant_params=assistant_params,
-            user_params=user_params,
-            # Live publishes final user transcripts before delegation starts.
-            realtime_service_mode=not (
+    # Hybrid turn mode swaps in the hybrid user aggregator (never set on realtime);
+    # otherwise this is the plain LLMContextAggregatorPair.
+    context_aggregator = build_context_aggregators(
+        context,
+        user_params=user_params,
+        assistant_params=assistant_params,
+        # Live publishes final user transcripts before delegation starts.
+        realtime_service_mode=(
+            not (
                 user_config.realtime.provider == ServiceProviders.OPENAI_REALTIME.value
                 and user_config.realtime.model == "gpt-live-1"
-            ),
-        )
-        user_context_aggregator, assistant_context_aggregator = context_aggregator
-    else:
-        # Hybrid turn mode swaps in the hybrid user aggregator; otherwise this is
-        # the plain LLMContextAggregatorPair.
-        context_aggregator = build_context_aggregators(
-            context,
-            user_params=user_params,
-            assistant_params=assistant_params,
-            realtime_service_mode=False,
-            hybrid=hybrid_turn is not None,
-        )
-        user_context_aggregator = context_aggregator.user()
-        assistant_context_aggregator = context_aggregator.assistant()
+            )
+            if is_realtime
+            else False
+        ),
+        hybrid=hybrid_turn is not None,
+    )
+    user_context_aggregator = context_aggregator.user()
+    assistant_context_aggregator = context_aggregator.assistant()
+    if not is_realtime:
         engine.greeting.bind(user_context_aggregator)
     turn_signal_absorber = (
         TurnSignalAbsorberProcessor(

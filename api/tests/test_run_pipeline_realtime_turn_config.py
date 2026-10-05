@@ -212,15 +212,17 @@ def test_external_turn_stt_honors_an_explicit_min_words_request():
     ],
     ids=["unset", "null", "retired"],
 )
-def test_non_realtime_defaults_to_two_word_interruptions(config, uses_external_turns):
+def test_non_realtime_unset_null_and_retired_resolve_to_default_strategy(
+    config, uses_external_turns
+):
+    # VOZ-AC-B2-30 / VOZ-BUG-18: org default is "default", not upstream's min_words.
     strategies = _create_non_realtime_user_turn_start_strategies(
         config,
         uses_external_turns=uses_external_turns,
     )
 
-    assert len(strategies) == 1
-    assert isinstance(strategies[0], MinWordsUserTurnStartStrategy)
-    assert strategies[0]._min_words == 2
+    assert len(strategies) in (1, 2)
+    assert not any(isinstance(s, MinWordsUserTurnStartStrategy) for s in strategies)
 
 
 @pytest.mark.parametrize("uses_external_turns", [False, True])
@@ -311,7 +313,7 @@ def test_workflow_config_can_override_user_turn_stop_timeout():
 async def test_default_min_words_with_provider_turn_markers(
     bot_speaking, text, send_interim, accepted
 ):
-    config = {}
+    config = {"turn_start_strategy": "min_words"}
     context = LLMContext()
     user = LLMUserAggregator(
         context,

@@ -30,7 +30,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMAssistantAggregatorParams,
-    LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.run_context import set_current_org_id
@@ -53,6 +53,7 @@ from api.services.pipecat.tracing_config import (
     build_remote_parent_context,
     get_trace_url,
 )
+from api.services.pipecat.turns.hybrid_user_aggregator import build_context_aggregators
 from api.services.pipecat.worker_runner import (
     run_pipeline_worker,
     wait_for_pipeline_worker_started,
@@ -702,8 +703,13 @@ async def execute_text_chat_pending_turn(
     node_transition_events = capture_processor.events
 
     assistant_params = LLMAssistantAggregatorParams()
-    context_aggregator = LLMContextAggregatorPair(
-        context, assistant_params=assistant_params
+    # Text chat has no turn detection: only the assistant half joins the pipeline.
+    context_aggregator = build_context_aggregators(
+        context,
+        user_params=LLMUserAggregatorParams(),
+        assistant_params=assistant_params,
+        realtime_service_mode=None,
+        hybrid=False,
     )
     assistant_context_aggregator = context_aggregator.assistant()
 
