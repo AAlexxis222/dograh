@@ -119,7 +119,11 @@ def fixture_engine():
     return SimpleNamespace(
         _current_node=node,
         active_agent=SimpleNamespace(current_node=node),
-        _queued_speech_mute_state="waiting",
+        speech_playback=SimpleNamespace(
+            pending={
+                "speech": SimpleNamespace(mute_user=True, done=False, started=False)
+            }
+        ),
         _mute_pipeline=False,
     )
 

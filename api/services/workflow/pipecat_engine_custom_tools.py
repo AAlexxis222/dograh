@@ -52,6 +52,23 @@ _TRANSFER_EXTERNAL_PBX_API_TIMEOUT_SECS = 30.0
 _TRANSFER_POST_HANDOFF_DELAY_SECS = 4.0
 
 
+def _parse_timeout_s(raw: object) -> float:
+    """Validate a configured tool timeout at the boundary.
+
+    Pipecat (>= 1.8) cancels a handler that outlives the ``timeout_secs`` it was
+    registered with, so a bad value must be rejected here: a non-numeric or
+    non-positive one would otherwise make registration raise, or cancel every
+    call to the tool at once.
+    """
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"tool timeout must be a number, got {raw!r}") from None
+    if value <= 0:
+        raise ValueError(f"tool timeout must be > 0, got {value}")
+    return value
+
+
 def _render_transfer_destination(
     destination_template: Any,
     call_context_vars: Optional[Dict[str, Any]],
@@ -324,7 +341,7 @@ class CustomToolManager:
             timeout_ms = ((tool.definition or {}).get("config", {}) or {}).get(
                 "timeout_ms", 5000
             )
-            timeout_secs = float(timeout_ms) / 1000
+            timeout_secs = _parse_timeout_s(timeout_ms) / 1000
             handler = self._create_http_tool_handler(tool, function_name)
 
         return handler, timeout_secs

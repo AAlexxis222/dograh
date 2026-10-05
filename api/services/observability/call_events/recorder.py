@@ -723,22 +723,21 @@ class CallEventRecorder:
 
     def _mute_snapshot(self) -> dict:
         """Everything that can explain why the user is (still) muted."""
-        queued_state = getattr(self._engine, "_queued_speech_mute_state", None)
-        if queued_state is None:
-            playback = getattr(self._engine, "speech_playback", None)
-            if playback is not None:
-                pending = [
-                    s for s in playback.pending.values() if s.mute_user and not s.done
-                ]
-                # Preserve the old idle/waiting/playing vocabulary using the
-                # current request-owned playback boundaries.
-                queued_state = (
-                    "playing"
-                    if any(s.started for s in pending)
-                    else "waiting"
-                    if pending
-                    else "idle"
-                )
+        queued_state = None
+        playback = getattr(self._engine, "speech_playback", None)
+        if playback is not None:
+            pending = [
+                s for s in playback.pending.values() if s.mute_user and not s.done
+            ]
+            # Preserve the old idle/waiting/playing vocabulary using the
+            # request-owned playback boundaries of the SpeechPlaybackTracker.
+            queued_state = (
+                "playing"
+                if any(s.started for s in pending)
+                else "waiting"
+                if pending
+                else "idle"
+            )
         return {
             "first_bot_complete_pending": not self._first_bot_completed,
             "queued_speech_state": str(queued_state) if queued_state else "unknown",

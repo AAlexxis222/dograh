@@ -6,6 +6,7 @@ pipecat event handlers, so no pipeline is needed.
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import create_autospec
 
 from pipecat.frames.frames import (
@@ -62,7 +63,11 @@ class _FakeEngine:
     """Engine attributes the observer snapshots, nothing else."""
 
     def __init__(self):
-        self._queued_speech_mute_state = "waiting"
+        self.speech_playback = SimpleNamespace(
+            pending={
+                "speech": SimpleNamespace(mute_user=True, done=False, started=False)
+            }
+        )
         self._mute_pipeline = False
         self._gathered_context = {"call_disposition": "completed"}
 
