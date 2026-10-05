@@ -48,15 +48,16 @@ async def test_proposed_frames_dropped_also_while_muted():
 # ``EndOfTurn``, and once more after it). In hybrid the start strategy reads interims
 # (``TranscriptionUserTurnStartStrategy(use_interim=True)``), so each repeat that reached the
 # aggregator would open a turn and cut the bot.
-def _late_update_scenario(id_: str, late_text: str) -> Scenario:
+def _late_update_scenario(id_: str, *late_texts: str) -> Scenario:
+    """``late_texts`` arrive in order after the local close (bot talking), and again after the final."""
     return Scenario(
         id=id_,
         flux=[
             (0, "start", ""),
             (800, "update", S.TEXT),
-            (2000, "update", late_text),  # after the local close, bot talking
+            *[(2000 + 150 * i, "update", t) for i, t in enumerate(late_texts)],
             (2400, "end", S.TEXT),
-            (2600, "update", late_text),  # after the final
+            *[(2600 + 150 * i, "update", t) for i, t in enumerate(late_texts)],
         ],
         speaking=[(0, 1000)],
         verdicts=[E.COMPLETE],
@@ -71,6 +72,8 @@ LATE_UPDATES = [
     _late_update_scenario("Srepeat", S.TEXT),
     _late_update_scenario("Srewritten", "quiero reservar para el domingo"),
     _late_update_scenario("Sshorter", "quiero reservar para el"),
+    # Shorter, then the dropped word restored: still nothing beyond the longest text seen.
+    _late_update_scenario("Sshorter_restored", "quiero reservar para el", S.TEXT),
 ]
 
 
@@ -88,3 +91,42 @@ async def test_late_update_interim_after_local_close_opens_no_turn(scenario):
     assert turns_opened == 1, r.events
     assert _interruptions_after_bot_started(r) == 0, r.events
     assert [m[1].strip() for m in r.messages] == [S.TEXT]
+
+
+@pytest.mark.asyncio
+async def test_late_interim_with_new_words_still_reaches_the_aggregator():
+    """The filter drops only what adds nothing: words beyond the mark are real speech."""
+    scenario = _late_update_scenario("Sextended", S.TEXT + " por la tarde")
+    r = await run_scenario(scenario, absorber=True)
+    assert r.counts["UP:UserStartedSpeakingFrame"] == 2, r.events
+
+
+# The shorter ``Update`` arrives while the local turn is still open (forwarded), and the word
+# comes back after the close: the mark is the longest text seen, not the last one forwarded.
+SHORTER_WHILE_OPEN = Scenario(
+    id="Sshorter_while_open",
+    flux=[
+        (0, "start", ""),
+        (700, "update", S.TEXT),
+        (850, "update", "quiero reservar para el"),
+        (2000, "update", S.TEXT),
+        (2400, "end", S.TEXT),
+        (2600, "update", S.TEXT),
+    ],
+    speaking=[(0, 1000)],
+    verdicts=[E.COMPLETE],
+    end_at=8000,
+    bot_speaking_at=1300,
+)
+
+
+@pytest.mark.asyncio
+async def test_mark_is_the_longest_text_not_the_last_forwarded():
+    r = await run_scenario(SHORTER_WHILE_OPEN, absorber=True)
+    keys = [key for _, key in r.events]
+    closed = keys.index("UP:UserStoppedSpeakingFrame")
+    # The restored word is not new: no interim reaches the aggregator after the close.
+    # (The final's tail beyond the promoted text is the final path's business, not this filter's.)
+    assert not [
+        k for k in keys[closed:] if k.startswith("DOWN:InterimTranscriptionFrame")
+    ], r.events

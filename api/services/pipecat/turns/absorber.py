@@ -67,6 +67,8 @@ from pipecat.utils.time import time_now_iso8601
 @dataclass
 class FluxTurn:
     last_interim: str | None = None
+    # Longest interim text of this Flux turn, the reference a late interim must extend.
+    high_water: str | None = None
     emitted: str | None = None  # text already sent downstream for this Flux turn
     final_seen: bool = False
     stop_seen: bool = False  # Flux's stop proposal seen before any final
@@ -400,18 +402,24 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
             return
         if isinstance(frame, InterimTranscriptionFrame):
             turn = self._turn_or_new()
-            previous = turn.last_interim
+            high_water = turn.high_water
             turn.last_interim = frame.text
             turn.interim_frame = frame
             # B2 log #2: after the local close, an ``Update`` that repeats, rewrites
-            # (``None``) or shortens the text would open a turn; only added words pass.
+            # (``None``) or shortens the text would open a turn, and so would one that
+            # restores words a shorter one dropped: only words beyond the longest text
+            # seen for this turn pass.
             if (
                 not self._local_open
-                and previous is not None
-                and not token_delta(previous, frame.text)
+                and high_water is not None
+                and not token_delta(high_water, frame.text)
             ):
                 self.stats["late_interim_dropped"] += 1
                 return
+            # A shorter interim (a prefix of the mark) does not lower it; an extension
+            # or a rewrite forwarded while the local turn is open replaces it.
+            if high_water is None or token_delta(frame.text, high_water) is None:
+                turn.high_water = frame.text
             await self.push_frame(frame, direction)
             return
         if isinstance(frame, TranscriptionFrame):
