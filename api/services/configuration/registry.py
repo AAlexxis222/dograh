@@ -1727,7 +1727,7 @@ class HuggingFaceSTTConfiguration(BaseSTTConfiguration):
     )
 
 
-ASSEMBLYAI_STT_MODELS = ["universal-3-6-pro"]
+ASSEMBLYAI_STT_MODELS = ["universal-3-5-pro"]
 ASSEMBLYAI_STT_LANGUAGES = ["en", "es", "de", "fr", "pt", "it"]
 
 
@@ -1736,7 +1736,7 @@ class AssemblyAISTTConfiguration(BaseSTTConfiguration):
     model_config = ASSEMBLYAI_PROVIDER_MODEL_CONFIG
     provider: Literal[ServiceProviders.ASSEMBLYAI] = ServiceProviders.ASSEMBLYAI
     model: str = Field(
-        default="universal-3-6-pro",
+        default="universal-3-5-pro",
         description="AssemblyAI realtime STT model.",
         json_schema_extra={"examples": ASSEMBLYAI_STT_MODELS},
     )

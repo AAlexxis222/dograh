@@ -110,3 +110,18 @@ def test_tts_1_dated_snapshots_and_gpt5_snapshots_match():
 def test_openai_stt_default_is_flagged_from_oct_2():
     assert status_for("openai", "gpt-4o-transcribe", today=TODAY).state == "warning"
     assert status_for("openai", "whisper-1", today=dt.date(2026, 10, 1)).state == "active"
+
+
+def test_assemblyai_offered_pro_models_are_recognised_by_pinned_pipecat():
+    from pipecat.services.assemblyai.stt import is_u3_pro_model
+
+    default = registry.AssemblyAISTTConfiguration.model_fields["model"].default
+    assert is_u3_pro_model(default), f"{default} is not a U3 Pro model for the pinned pipecat"
+    for m in registry.ASSEMBLYAI_STT_MODELS:
+        if m.startswith(("universal-3", "u3")):
+            assert is_u3_pro_model(m), f"{m} is offered but the pinned pipecat treats it as non-Pro"
+
+
+def test_vertex_realtime_default_location_is_eu():
+    cfg = registry.GoogleVertexRealtimeLLMConfiguration(project_id="p")
+    assert cfg.location == "eu"
