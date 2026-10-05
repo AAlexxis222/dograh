@@ -19,7 +19,7 @@ def test_lmnt_tts_configuration_defaults():
 
     assert config.provider == ServiceProviders.LMNT
     assert config.voice == "lily"
-    assert config.language == "en"
+    assert config.language == "es"
     assert config.model == "aurora"
     assert LMNT_TTS_MODELS == ["aurora", "blizzard"]
     assert "lily" in LMNT_TTS_VOICES

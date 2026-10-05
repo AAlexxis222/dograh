@@ -43,11 +43,11 @@ def test_cartesia_stt_configuration_exposes_ink_2_and_ink_whisper_languages():
 
     assert config.provider == ServiceProviders.CARTESIA
     assert config.model == "ink-whisper"
-    assert config.language == "en"
+    assert config.language == "es"
     assert CARTESIA_STT_MODELS == ["ink-2", "ink-whisper"]
-    assert CARTESIA_INK_2_STT_LANGUAGES == ("en",)
+    assert CARTESIA_INK_2_STT_LANGUAGES == ("en", "fr", "hi", "ja", "es")
     assert "es" in CARTESIA_INK_WHISPER_STT_LANGUAGES
-    assert language_schema["model_options"]["ink-2"] == ["en"]
+    assert language_schema["model_options"]["ink-2"] == ["en", "fr", "hi", "ja", "es"]
     assert "es" in language_schema["model_options"]["ink-whisper"]
 
 

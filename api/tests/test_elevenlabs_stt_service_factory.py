@@ -64,7 +64,7 @@ def test_elevenlabs_stt_configuration_exposes_defaults_and_languages():
 
     assert config.provider == ServiceProviders.ELEVENLABS
     assert config.model == "scribe_v2_realtime"
-    assert config.language == "en"
+    assert config.language == "es"
     assert config.base_url == "https://api.elevenlabs.io"
     assert ELEVENLABS_STT_MODELS == ("scribe_v2_realtime",)
     assert "auto" in ELEVENLABS_STT_LANGUAGES

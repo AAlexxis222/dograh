@@ -77,10 +77,10 @@ def test_create_cartesia_tts_service_passes_sonic_3_6_model():
     assert kwargs["settings"].model == "sonic-3.6"
 
 
-def test_cartesia_tts_configuration_default_language_is_english():
+def test_cartesia_tts_configuration_default_language_is_spanish():
     config = CartesiaTTSConfiguration(api_key="test-key")
 
-    assert config.language == "en"
+    assert config.language == "es"
 
 
 def test_create_cartesia_tts_service_passes_language_to_settings():

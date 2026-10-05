@@ -1,5 +1,5 @@
 CARTESIA_STT_MODELS = ["ink-2", "ink-whisper"]
-CARTESIA_INK_2_STT_LANGUAGES = ("en",)
+CARTESIA_INK_2_STT_LANGUAGES = ("en", "fr", "hi", "ja", "es")
 CARTESIA_INK_WHISPER_STT_LANGUAGES = (
     "en",
     "zh",
