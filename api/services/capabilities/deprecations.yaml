@@ -1,0 +1,143 @@
+# Single registry of model retirements and price changes (VOZ-AC-B1-80).
+# Fields: provider, kind, model_or_feature (str | list, fnmatch globs allowed), date (UTC, null for legacy),
+# effect (shutdown|price|legacy), replacement, warn_from (optional), source_url, read_at.
+# Dates/effects from spec v4 B1 §10 VOZ-AC-B1-80 (synthesis-voz-v4 §1.12); read_at = date of the recon pass
+# that read the source (research/voz-recon-2026-10/f1b-*.md, all 2026-10-02).
+entries:
+  - provider: elevenlabs
+    kind: tts
+    model_or_feature: [eleven_v4, eleven_v4_turbo]
+    date: 2026-10-12
+    effect: price   # end of launch promo, x3.6
+    replacement: null
+    source_url: https://elevenlabs.io/pricing/api
+    read_at: 2026-10-02
+  - provider: cartesia
+    kind: tts
+    model_or_feature: [sonic-2, sonic-turbo, sonic-3-2025-10-27]
+    date: 2026-10-20
+    effect: shutdown
+    replacement: sonic-3.6
+    source_url: https://docs.cartesia.ai/build-with-cartesia/tts-models/older-models.md
+    read_at: 2026-10-02
+  - provider: openai
+    kind: platform
+    model_or_feature: [v1/prompts, evals]
+    date: 2026-11-30
+    effect: shutdown
+    replacement: null
+    source_url: https://platform.openai.com/docs/deprecations
+    read_at: 2026-10-02
+  - provider: cartesia
+    kind: platform
+    model_or_feature: line-sdk-hosting
+    date: 2026-12-01
+    effect: shutdown
+    replacement: null
+    source_url: https://docs.cartesia.ai/changelog/2026.md
+    read_at: 2026-10-02
+  - provider: openai
+    kind: llm
+    model_or_feature: ["gpt-5-*-2025-08-07", "gpt-5-mini-2025-08-07", "gpt-5-nano-2025-08-07", "o3*"]
+    date: 2026-12-11
+    effect: shutdown
+    replacement: null
+    source_url: https://platform.openai.com/docs/deprecations
+    read_at: 2026-10-02
+  - provider: google
+    kind: tts
+    model_or_feature: gemini-tts-promo-pricing
+    date: 2026-12-31
+    effect: price   # promo pricing ends
+    replacement: null
+    source_url: https://ai.google.dev/gemini-api/docs/live-api
+    read_at: 2026-10-02
+  - provider: deepgram
+    kind: tts
+    model_or_feature: flux-tts-credit-offer
+    date: 2026-12-31
+    effect: price   # 1:1 credit offer ends
+    replacement: null
+    source_url: https://deepgram.com/pricing
+    read_at: 2026-10-02
+  - provider: openai
+    kind: tts
+    model_or_feature: [tts-1, tts-1-hd, "gpt-4o-mini-tts*"]
+    date: 2027-01-06
+    effect: shutdown
+    replacement: null   # no documented Spanish voice in OpenAI TTS (VOZ-AC-B1-83)
+    warn_from: 2026-10-02
+    source_url: https://platform.openai.com/docs/deprecations
+    read_at: 2026-10-02
+  - provider: openai
+    kind: realtime
+    model_or_feature: [gpt-realtime, gpt-realtime-mini, "gpt-audio*", "gpt-4o-realtime*"]
+    date: 2027-01-20
+    effect: shutdown
+    replacement: gpt-realtime-2.1 (or gpt-realtime-2.1-mini)
+    source_url: https://platform.openai.com/docs/deprecations
+    read_at: 2026-10-02
+  - provider: openai
+    kind: stt
+    model_or_feature: [whisper-1, "gpt-4o-transcribe*"]
+    date: 2027-02-26
+    effect: shutdown
+    replacement: gpt-transcribe (or gpt-live-transcribe)
+    source_url: https://platform.openai.com/docs/deprecations
+    read_at: 2026-10-02
+  - provider: openai
+    kind: llm
+    model_or_feature: [gpt-5.4-nano, gpt-5.1, gpt-5.3-codex]
+    date: 2027-04-01
+    effect: shutdown
+    replacement: null
+    source_url: https://platform.openai.com/docs/deprecations
+    read_at: 2026-10-02
+  - provider: google_realtime
+    kind: realtime
+    model_or_feature: [gemini-3.1-flash-live-preview, gemini-2.5-flash-native-audio-preview-12-2025]
+    date: null
+    effect: legacy
+    replacement: gemini-3.8-live
+    source_url: https://ai.google.dev/gemini-api/docs/live-api
+    read_at: 2026-10-02
+  - provider: google_vertex_realtime
+    kind: realtime
+    model_or_feature: ["google/gemini-live-2.5-flash-native-audio", gemini-2.5-flash-native-audio-preview-12-2025]
+    date: null
+    effect: legacy   # limited access since 2026-09-18, no shutdown date (f1b-google)
+    replacement: gemini-3.8-live
+    source_url: https://ai.google.dev/gemini-api/docs/live-api
+    read_at: 2026-10-02
+  - provider: grok_realtime
+    kind: realtime
+    model_or_feature: grok-voice-think-fast-1.0
+    date: null
+    effect: legacy   # absent from every official enum
+    replacement: grok-voice-latest
+    source_url: https://docs.x.ai/docs/guides/voice/agent
+    read_at: 2026-10-02
+  - provider: elevenlabs
+    kind: tts
+    model_or_feature: eleven_turbo_v2_5
+    date: null
+    effect: legacy
+    replacement: eleven_flash_v2_5
+    source_url: https://elevenlabs.io/docs/overview/models.md
+    read_at: 2026-10-02
+  - provider: assemblyai
+    kind: stt
+    model_or_feature: u3-rt-pro
+    date: null
+    effect: legacy   # alias of universal-3-5-pro, not in documented enum
+    replacement: universal-3-5-pro
+    source_url: https://www.assemblyai.com/changelog
+    read_at: 2026-10-02
+  - provider: speechmatics
+    kind: sdk
+    model_or_feature: voice-sdk
+    date: null
+    effect: legacy
+    replacement: null
+    source_url: https://speechmatics.featurebase.app/en/changelog
+    read_at: 2026-10-02
