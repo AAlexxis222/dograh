@@ -43,6 +43,17 @@ READ_PATTERN = re.compile(
     r"|get_definition_configurations_with_owner\("
 )
 
+# The live cascade (organization defaults read now) is resolved only where a run's document is
+# being built: everything else reads the run's frozen copy.
+LIVE_CASCADE_CALLERS = {
+    Path("services/configuration/cascade.py"),  # defines it
+    Path("services/workflow/run_creation.py"),  # freezes it at run creation
+    Path("services/quota_service.py"),  # pre-run check, before any run exists
+    Path("services/pipecat/agent_runtime_factory.py"),  # transfer destination
+    Path("services/campaign/campaign_call_dispatcher.py"),  # variant resolver
+}
+LIVE_CASCADE_PATTERN = re.compile(r"\bload_effective_workflow_configurations\(")
+
 
 def _python_files(*, exclude_stored_document_surfaces: bool):
     """Yield every runtime .py file under the API root.
@@ -98,4 +109,18 @@ def test_every_run_creator_freezes_the_effective_configuration():
                 missing.append(f"{relative}:{node.lineno}")
     assert missing == [], (
         f"create_workflow_run without effective_configurations=: {missing}"
+    )
+
+
+def test_only_known_callers_resolve_the_live_cascade():
+    violations = [
+        f"{relative}:{number}: {line.strip()}"
+        for path, relative in _python_files(exclude_stored_document_surfaces=False)
+        if relative not in LIVE_CASCADE_CALLERS
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if LIVE_CASCADE_PATTERN.search(line) and not line.lstrip().startswith("#")
+    ]
+    assert violations == [], (
+        "a running call reads the run's frozen configuration (run_configurations_for "
+        f"/ get_workflow_run_configurations), not the live cascade: {violations}"
     )
