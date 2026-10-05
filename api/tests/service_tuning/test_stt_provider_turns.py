@@ -37,13 +37,12 @@ TURN_CASES = [
         "AssemblyAISTTService",
     ),
     (
+        # pipecat 1.12 has no end-of-utterance or max_delay setting left; the
+        # one turn setting is the mode, and "external" is the value the gate
+        # lets in.
         "speechmatics",
         "enhanced",
-        {
-            "end_of_utterance_silence_trigger": 0.5,
-            "end_of_utterance_max_delay": 2.0,
-            "max_delay": 1.0,
-        },
+        {"turn_detection_mode": "external"},
         {},
         "SpeechmaticsSTTService",
     ),
@@ -88,9 +87,9 @@ def test_turn_knobs_reach_settings_and_ctor(provider, model, settings, ctor, cls
 
 # provider, tuning section, field, value that hands turns over, value that does not
 HANDOVER_CASES = [
-    # speechmatics/stt.py:550-554 (any mode but external) -> :915/:936 broadcast
-    # UserStarted/StoppedSpeakingFrame.
-    ("speechmatics", "settings", "turn_detection_mode", "adaptive", "external"),
+    # speechmatics/stt.py:557-563 (any mode but external) -> :974/:989 broadcast
+    # ProposedUserStarted/StoppedSpeakingFrame. 1.12 has only vad and external.
+    ("speechmatics", "settings", "turn_detection_mode", "vad", "external"),
     # gladia/stt.py:365-367; the broadcasts at :620-640 are guarded by enable_vad.
     ("gladia", "settings", "enable_vad", True, False),
     # sarvam/stt.py:815-826 broadcasts on the server's VAD events, :450 stops
@@ -124,22 +123,19 @@ def test_provider_turn_handover_is_a_named_422(
 
 # provider, field, a well-typed value. Whole fields, not values: these tune the
 # provider's own turn detection, which this build's forced mode overwrites or
-# ignores; the PUT is model-blind, so the set is too.
+# ignores; the PUT is model-blind, so it refuses the union over every model.
 FORCED_MODE_FIELDS = [
-    # assemblyai/stt.py:601-645 (_configure_pipecat_turn_mode) under
-    # vad_force_turn_endpoint=True, the only value the gate lets in: u3-rt-pro
-    # keeps min_turn_silence and overwrites max_turn_silence (:628-641),
-    # universal-streaming keeps max_turn_silence and overwrites the other two
-    # (:643-645). No single model honours all three.
+    # assemblyai/stt.py:612-656 (_configure_pipecat_turn_mode) under
+    # vad_force_turn_endpoint=True, the only value the gate lets in: the
+    # Universal-3 Pro models keep min_turn_silence and the threshold and
+    # overwrite max_turn_silence (:636-652), universal-streaming keeps
+    # max_turn_silence and overwrites the other two (:653-656). No single model
+    # honours all three.
     ("assemblyai", "end_of_turn_confidence_threshold", 0.6),
     ("assemblyai", "min_turn_silence", 200),
     ("assemblyai", "max_turn_silence", 1500),
-    # speechmatics: turn_detection_mode=external is the only mode the gate lets
-    # in, and its preset sets end_of_utterance_mode=EXTERNAL (speechmatics
-    # voice/_presets.py:165-176), under which the SDK's end-of-utterance timers
-    # (voice/_client.py:1463,1553-1560) never run.
-    ("speechmatics", "end_of_utterance_silence_trigger", 0.5),
-    ("speechmatics", "end_of_utterance_max_delay", 2.0),
+    # speechmatics has none since pipecat 1.12 (its end-of-utterance settings
+    # are gone from SpeechmaticsSTTSettings).
 ]
 
 
@@ -188,6 +184,6 @@ def test_speechmatics_turn_detection_mode_is_the_service_enum():
             audio_config(),
             tuning=tuning,
         )
-    # _build_config reads ``turn_detection_mode.value`` (speechmatics/stt.py:752),
+    # _handle_turn_detection_mode reads ``mode.value`` (speechmatics/stt.py:177-184),
     # which a plain string does not have.
     assert mock.call_args.kwargs["settings"].turn_detection_mode.value == "external"

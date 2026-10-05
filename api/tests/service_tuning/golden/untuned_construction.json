@@ -126,7 +126,11 @@
       "api_key": "k",
       "settings": {
         "__class__": "GoogleLLMSettings",
-        "extra": {},
+        "extra": {
+          "automatic_function_calling": {
+            "disable": true
+          }
+        },
         "filter_incomplete_user_turns": "NOT_GIVEN",
         "frequency_penalty": "NOT_GIVEN",
         "max_tokens": "NOT_GIVEN",
@@ -149,7 +153,11 @@
       "api_key": "k",
       "settings": {
         "__class__": "GoogleLLMSettings",
-        "extra": {},
+        "extra": {
+          "automatic_function_calling": {
+            "disable": true
+          }
+        },
         "filter_incomplete_user_turns": "NOT_GIVEN",
         "frequency_penalty": "NOT_GIVEN",
         "max_tokens": "NOT_GIVEN",
@@ -170,11 +178,15 @@
     "class": "DograhGoogleVertexLLMService",
     "kwargs": {
       "credentials": "c",
-      "location": "us-east4",
+      "location": "global",
       "project_id": "p",
       "settings": {
         "__class__": "GoogleVertexLLMSettings",
-        "extra": {},
+        "extra": {
+          "automatic_function_calling": {
+            "disable": true
+          }
+        },
         "filter_incomplete_user_turns": "NOT_GIVEN",
         "frequency_penalty": "NOT_GIVEN",
         "max_tokens": "NOT_GIVEN",
@@ -204,6 +216,7 @@
         "max_tokens": "NOT_GIVEN",
         "model": "llama-3.3-70b",
         "presence_penalty": "NOT_GIVEN",
+        "reasoning_effort": "NOT_GIVEN",
         "seed": "NOT_GIVEN",
         "system_instruction": "NOT_GIVEN",
         "temperature": 0.1,
@@ -426,6 +439,7 @@
     "class": "SarvamLLMService",
     "kwargs": {
       "api_key": "k",
+      "base_url": "https://api.sarvam.ai/v1",
       "settings": {
         "__class__": "SarvamLLMSettings",
         "extra": {},
@@ -545,10 +559,11 @@
         "proactivity": "NOT_GIVEN",
         "seed": "NOT_GIVEN",
         "system_instruction": "NOT_GIVEN",
-        "temperature": 0.7,
+        "temperature": "NOT_GIVEN",
         "thinking": "NOT_GIVEN",
         "top_k": "NOT_GIVEN",
         "top_p": "NOT_GIVEN",
+        "turn_coverage": "NOT_GIVEN",
         "user_turn_completion_config": "NOT_GIVEN",
         "vad": "NOT_GIVEN",
         "voice": "Puck"
@@ -559,7 +574,7 @@
     "class": "DograhGeminiLiveVertexLLMService",
     "kwargs": {
       "credentials": "c",
-      "location": "us-east4",
+      "location": "global",
       "project_id": "p",
       "settings": {
         "__class__": "GeminiLiveVertexLLMSettings",
@@ -581,6 +596,7 @@
         "thinking": "NOT_GIVEN",
         "top_k": "NOT_GIVEN",
         "top_p": "NOT_GIVEN",
+        "turn_coverage": "NOT_GIVEN",
         "user_turn_completion_config": "NOT_GIVEN",
         "vad": "NOT_GIVEN",
         "voice": "Charon"
@@ -606,15 +622,27 @@
             "input": {
               "format": null,
               "transcription": {
+                "keyterms": null,
                 "language_hint": null,
                 "model": "grok-transcribe"
-              }
+              },
+              "transport": null
             },
             "output": null
           },
+          "id": null,
           "instructions": null,
+          "model": null,
+          "object": null,
+          "reasoning": null,
+          "replace": null,
+          "resumption": null,
           "tools": null,
           "turn_detection": {
+            "idle_timeout_ms": null,
+            "prefix_padding_ms": null,
+            "silence_duration_ms": null,
+            "threshold": null,
             "type": "server_vad"
           },
           "voice": "ara"
@@ -762,7 +790,8 @@
         "extra": {},
         "language": "en-US",
         "model": "NOT_GIVEN",
-        "profanity": "NOT_GIVEN"
+        "profanity": "NOT_GIVEN",
+        "segmentation_silence_timeout_ms": "NOT_GIVEN"
       }
     }
   },
@@ -806,9 +835,12 @@
         "language_hints": "NOT_GIVEN",
         "min_confidence": "NOT_GIVEN",
         "model": "flux-general-en",
-        "numerals": "NOT_GIVEN"
+        "numerals": "NOT_GIVEN",
+        "profanity_filter": "NOT_GIVEN",
+        "redact": "NOT_GIVEN"
       },
-      "should_interrupt": false
+      "should_interrupt": false,
+      "url": "wss://api.deepgram.com/v2/listen"
     }
   },
   "stt.deepgram/flux-multi": {
@@ -831,15 +863,19 @@
         ],
         "min_confidence": "NOT_GIVEN",
         "model": "flux-general-multi",
-        "numerals": "NOT_GIVEN"
+        "numerals": "NOT_GIVEN",
+        "profanity_filter": "NOT_GIVEN",
+        "redact": "NOT_GIVEN"
       },
-      "should_interrupt": false
+      "should_interrupt": false,
+      "url": "wss://api.deepgram.com/v2/listen"
     }
   },
   "stt.deepgram/nova": {
     "class": "DeepgramSTTService",
     "kwargs": {
       "api_key": "test-key",
+      "base_url": "https://api.deepgram.com",
       "sample_rate": 16000,
       "settings": {
         "__class__": "DeepgramSTTSettings",
@@ -862,7 +898,8 @@
         "replace": "NOT_GIVEN",
         "search": "NOT_GIVEN",
         "smart_format": "NOT_GIVEN",
-        "utterance_end_ms": "NOT_GIVEN"
+        "utterance_end_ms": "NOT_GIVEN",
+        "version": "NOT_GIVEN"
       },
       "should_interrupt": false
     }
@@ -889,7 +926,9 @@
         ],
         "min_confidence": "NOT_GIVEN",
         "model": "flux-general-multi",
-        "numerals": "NOT_GIVEN"
+        "numerals": "NOT_GIVEN",
+        "profanity_filter": "NOT_GIVEN",
+        "redact": "NOT_GIVEN"
       },
       "should_interrupt": false
     }
@@ -928,6 +967,7 @@
         "min_silence_duration_ms": "NOT_GIVEN",
         "min_speech_duration_ms": "NOT_GIVEN",
         "model": "scribe_v2_realtime",
+        "no_verbatim": "NOT_GIVEN",
         "vad_silence_threshold_secs": "NOT_GIVEN",
         "vad_threshold": "NOT_GIVEN"
       },
@@ -969,6 +1009,8 @@
       "sample_rate": 16000,
       "settings": {
         "__class__": "GoogleSTTSettings",
+        "adaptation": "NOT_GIVEN",
+        "denoiser_config": "NOT_GIVEN",
         "enable_automatic_punctuation": "NOT_GIVEN",
         "enable_interim_results": "NOT_GIVEN",
         "enable_spoken_emojis": "NOT_GIVEN",
@@ -1012,6 +1054,7 @@
       "settings": {
         "__class__": "OpenAISTTSettings",
         "extra": {},
+        "keywords": "NOT_GIVEN",
         "language": "NOT_GIVEN",
         "model": "gpt-4o-transcribe",
         "prompt": "NOT_GIVEN",
@@ -1027,6 +1070,7 @@
       "settings": {
         "__class__": "OpenAISTTSettings",
         "extra": {},
+        "keywords": "NOT_GIVEN",
         "language": "NOT_GIVEN",
         "model": "gpt-4o-transcribe",
         "prompt": "NOT_GIVEN",
@@ -1055,7 +1099,6 @@
         "num_initial_ignored_frames": "NOT_GIVEN",
         "positive_speech_threshold": "NOT_GIVEN",
         "pre_speech_pad_frames": "NOT_GIVEN",
-        "prompt": "NOT_GIVEN",
         "start_speech_volume_threshold": "NOT_GIVEN",
         "vad_signals": "NOT_GIVEN"
       }
@@ -1093,6 +1136,7 @@
       "settings": {
         "__class__": "SpeachesSTTSettings",
         "extra": {},
+        "keywords": "NOT_GIVEN",
         "language": "en",
         "model": "whisper-1",
         "prompt": "NOT_GIVEN",
@@ -1116,27 +1160,18 @@
         ],
         "domain": "NOT_GIVEN",
         "enable_diarization": "NOT_GIVEN",
-        "end_of_utterance_max_delay": "NOT_GIVEN",
-        "end_of_utterance_silence_trigger": "NOT_GIVEN",
+        "enable_partials": "NOT_GIVEN",
         "extra": {},
-        "extra_params": "NOT_GIVEN",
-        "focus_mode": "NOT_GIVEN",
-        "focus_speakers": "NOT_GIVEN",
-        "ignore_speakers": "NOT_GIVEN",
-        "include_partials": "NOT_GIVEN",
         "known_speakers": "NOT_GIVEN",
         "language": "en",
-        "max_delay": "NOT_GIVEN",
         "max_speakers": "NOT_GIVEN",
-        "model": "NOT_GIVEN",
-        "operating_point": "enhanced",
+        "model": "linden-1",
+        "operating_point": "NOT_GIVEN",
         "prefer_current_speaker": "NOT_GIVEN",
         "punctuation_overrides": "NOT_GIVEN",
         "speaker_active_format": "NOT_GIVEN",
-        "speaker_passive_format": "NOT_GIVEN",
         "speaker_sensitivity": "NOT_GIVEN",
-        "split_sentences": "NOT_GIVEN",
-        "turn_detection_mode": "NOT_GIVEN"
+        "turn_detection_mode": "external"
       }
     }
   },
@@ -1147,6 +1182,7 @@
       "region": "eastus",
       "settings": {
         "__class__": "AzureTTSSettings",
+        "effect": "NOT_GIVEN",
         "emphasis": "NOT_GIVEN",
         "extra": {},
         "force_locale": "NOT_GIVEN",
@@ -1158,6 +1194,7 @@
         "style": "NOT_GIVEN",
         "style_degree": "NOT_GIVEN",
         "voice": "es-ES-ElviraNeural",
+        "voice_parameters": "NOT_GIVEN",
         "volume": "NOT_GIVEN"
       },
       "silence_time_s": 1.0,
@@ -1284,11 +1321,13 @@
     "class": "DeepgramTTSService",
     "kwargs": {
       "api_key": "test-key",
+      "base_url": "wss://api.deepgram.com",
       "settings": {
         "__class__": "DeepgramTTSSettings",
         "extra": {},
         "language": "NOT_GIVEN",
         "model": "NOT_GIVEN",
+        "speed": "NOT_GIVEN",
         "voice": "aura-2-thalia-en"
       },
       "silence_time_s": 1.0,
@@ -1436,40 +1475,6 @@
         "speaking_rate": 1.1,
         "temperature": "NOT_GIVEN",
         "voice": "Ashley"
-      },
-      "silence_time_s": 1.0,
-      "skip_aggregator_types": [
-        "recording_router",
-        "recording"
-      ],
-      "text_filters": [
-        {
-          "__class__": "XMLFunctionTagFilter",
-          "_compiled_patterns": [
-            "<function=[^/>]*\\s*/\\s*>",
-            "<function=.*?</function>"
-          ],
-          "_default_patterns": [
-            "<function=[^/>]*\\s*/\\s*>",
-            "<function=.*?</function>"
-          ],
-          "_preserve_whitespace": true
-        }
-      ]
-    }
-  },
-  "tts.lmnt": {
-    "class": "LmntTTSService",
-    "kwargs": {
-      "api_key": "test-key",
-      "output_format": "raw",
-      "sample_rate": 16000,
-      "settings": {
-        "__class__": "LmntTTSSettings",
-        "extra": {},
-        "language": "es",
-        "model": "aurora",
-        "voice": "lily"
       },
       "silence_time_s": 1.0,
       "skip_aggregator_types": [
@@ -1660,6 +1665,7 @@
         "__class__": "SmallestTTSSettings",
         "extra": {},
         "language": "es",
+        "math_notation": "NOT_GIVEN",
         "model": "lightning_v2",
         "speed": 1.1,
         "voice": "emily"

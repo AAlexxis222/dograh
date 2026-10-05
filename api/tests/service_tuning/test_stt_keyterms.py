@@ -56,14 +56,10 @@ CASES = [
         "Marbella",
         "SpeachesSTTService",
     ),
-    (
-        ServiceProviders.SARVAM.value,
-        "saarika:v2",
-        "prompt",
-        "Marbella",
-        "SarvamSTTService",
-    ),
 ]
+# Sarvam has no case: pipecat 1.12 moved ``prompt`` off SarvamSTTSettings onto
+# SarvamRealtimeSTTSettings (sarvam/stt.py:908-930), a service this factory
+# does not build, so the service this factory builds has no biasing field.
 
 
 @pytest.mark.parametrize("provider,model,key,value,cls", CASES)
@@ -124,7 +120,7 @@ def test_speechmatics_additional_vocab_is_coerced_from_json():
         )
     entry = mock.call_args.kwargs["settings"].additional_vocab[0]
     # VoiceAgentConfig does not validate on assignment, so a raw dict would
-    # reach the Speechmatics SDK unconverted (speechmatics/stt.py:775).
+    # reach the Speechmatics SDK unconverted (speechmatics/stt.py:892).
     assert entry.content == "Marbella"
 
 

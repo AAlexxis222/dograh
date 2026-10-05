@@ -272,7 +272,14 @@ def test_control_no_drop_logs_nothing(warnings):
 
 
 def test_nova_split_is_derived_from_the_specs_table(monkeypatch):
-    assert service_factory._nova_shared_settings() == {"numerals", "keyterm"}
+    # Flux gained profanity_filter and redact in pipecat 1.12
+    # (deepgram/flux/stt_base.py:171-172), both wire parameters Nova already had.
+    assert service_factory._nova_shared_settings() == {
+        "numerals",
+        "keyterm",
+        "profanity_filter",
+        "redact",
+    }
     assert service_factory._nova_ctor_allowed() == {"mip_opt_out", "tag"}
     # If the table changes, the split follows it.
     monkeypatch.setattr(
@@ -289,6 +296,8 @@ def test_nova_split_is_derived_from_the_specs_table(monkeypatch):
     assert service_factory._nova_shared_settings() == {
         "numerals",
         "keyterm",
+        "profanity_filter",
+        "redact",
         "eot_threshold",
     }
     assert service_factory._nova_ctor_allowed() == {"mip_opt_out", "tag", "extra_kw"}

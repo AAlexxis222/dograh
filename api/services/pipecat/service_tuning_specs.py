@@ -23,13 +23,18 @@ import types
 import typing
 from collections.abc import Callable
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from functools import cache
 from typing import Any, Literal
 
 from google.genai.types import ProactivityConfig, SafetySetting, ThinkingConfig
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAISTTSettings
+from pipecat.services.assemblyai.stt import (
+    U3_PRO_MODEL_PREFIXES,
+    AssemblyAISTTService,
+    AssemblyAISTTSettings,
+)
 from pipecat.services.aws.llm import AWSBedrockLLMSettings
 from pipecat.services.azure.llm import AzureLLMSettings
 from pipecat.services.azure.stt import AzureSTTSettings
@@ -366,20 +371,20 @@ SPECS[("stt", "assemblyai")] = TuningSpec(
     ctor_types={"vad_force_turn_endpoint": bool},
 )
 # ``operating_point`` is excluded for the same reason: for Speechmatics it *is*
-# the model — the factory derives it from ``user_config.stt.model`` and the
-# service writes it back into ``settings.model`` (speechmatics/stt.py:512).
-# ``extra_params`` is excluded as a second ``extra``: _build_config splats it
-# onto the SDK config by hasattr (speechmatics/stt.py:795-799), which would
-# re-open every name this row excludes, operating_point included.
+# the model (a deprecated alias of ``model``) — the factory derives it from
+# ``user_config.stt.model`` and ``_resolve_model`` (speechmatics/stt.py:129-153)
+# raises when the two differ. pipecat 1.12 dropped ``extra_params`` and the
+# end-of-utterance / ``split_sentences`` fields, so there is no second ``extra``
+# left to close here.
 SPECS[("stt", "speechmatics")] = TuningSpec(
     "stt",
     "speechmatics",
     SpeechmaticsSTTSettings,
-    # ``extra_params`` is gone from pipecat 1.12; VOZ-G0-09 re-derives this row.
     _fields(SpeechmaticsSTTSettings, "operating_point"),
     # Both lists are handed to the SDK config, which does not validate on
-    # assignment (speechmatics/stt.py:772-775); ``SpeakerIdentifier`` is a
-    # dataclass, so an unknown key was a TypeError at run creation (#12).
+    # assignment; both entries are SDK dataclasses (``speechmatics.agent_stt``
+    # ``AdditionalVocabEntry``, ``speechmatics.rt`` ``SpeakerIdentifier``), so an
+    # unknown key was a TypeError at run creation (#12).
     settings_models={
         "additional_vocab": list[AdditionalVocabEntry],
         "known_speakers": list[SpeakerIdentifier],
@@ -908,8 +913,9 @@ while everything stays declared so the knobs keep one name.
 
 _TURN_HANDOVER = "hands turn detection to the provider"
 _PROVIDER_TURN_KNOBS: dict[tuple[str, str, str, str], Callable[[Any], bool]] = {
-    # Any mode but EXTERNAL (speechmatics/stt.py:550-554) makes the service
-    # broadcast the turn frames at :915/:936.
+    # Any mode but EXTERNAL (speechmatics/stt.py:557-563) makes the service
+    # broadcast the turn frames at :974/:989. pipecat 1.12 has only VAD and
+    # EXTERNAL.
     ("stt", "speechmatics", "settings", "turn_detection_mode"): (
         lambda v: v != "external"
     ),
@@ -919,42 +925,80 @@ _PROVIDER_TURN_KNOBS: dict[tuple[str, str, str, str], Callable[[Any], bool]] = {
     # honouring pipecat's VAD frames and :641 drops the flush signal. Sarvam
     # never even recommends external strategies, so nothing would notice.
     ("stt", "sarvam", "settings", "vad_signals"): lambda v: v is True,
-    # assemblyai/stt.py:664-666; :1128-1133 and :1194-1196 emit turn frames
-    # only in AssemblyAI's own turn-detection mode.
+    # assemblyai/stt.py:669-679; :1140 and :1202 emit turn frames only in
+    # AssemblyAI's own turn-detection mode.
     ("stt", "assemblyai", "ctor", "vad_force_turn_endpoint"): lambda v: v is False,
 }
-# Whole fields, any value: they tune the provider's own turn detection, and
-# the one mode the gate above lets through overwrites or ignores them. The
-# PUT cannot see the model, so this set is model-blind by design until the
-# turn PR decides per model at build time.
-_PROVIDER_TURN_FIELDS: frozenset[tuple[str, str, str, str]] = frozenset(
-    {
-        # assemblyai/stt.py:601-645 (_configure_pipecat_turn_mode), under
-        # vad_force_turn_endpoint=True: on u3-rt-pro max_turn_silence is
-        # overwritten with min_turn_silence and the threshold is left to the
-        # API (:628-641, min_turn_silence survives); on universal-streaming
-        # the threshold and min_turn_silence are overwritten (:643-645,
-        # max_turn_silence survives). No single model honours all three.
-        ("stt", "assemblyai", "settings", "end_of_turn_confidence_threshold"),
-        ("stt", "assemblyai", "settings", "min_turn_silence"),
-        ("stt", "assemblyai", "settings", "max_turn_silence"),
-        # turn_detection_mode=external loads a preset with
-        # end_of_utterance_mode=EXTERNAL (speechmatics voice/_presets.py:
-        # 165-176), under which the SDK's end-of-utterance timers
-        # (voice/_client.py:1463,1553-1560) never run.
-        ("stt", "speechmatics", "settings", "end_of_utterance_silence_trigger"),
-        ("stt", "speechmatics", "settings", "end_of_utterance_max_delay"),
-    }
-)
+# Whole settings, any value: they tune the provider's own turn detection, and
+# the one mode the gate above lets through overwrites or ignores them. Keyed by
+# ``(provider, model_pattern)`` because which settings that mode ignores
+# depends on the model; ``model_pattern`` is an ``fnmatch`` pattern over the
+# model id and ``*`` is the default for a model no other pattern names. Every
+# entry is an STT *setting* name (no ctor kwarg is a turn-tuning field).
+# ``provider_turn_fields`` is the one reader: the PUT cannot see the model
+# (ServiceTuning carries none), so it asks without one and gets the union —
+# the old model-blind behaviour — and a caller that does know the model gets
+# only what that model ignores.
+_PROVIDER_TURN_FIELDS: dict[tuple[str, str], frozenset[str]] = {
+    # assemblyai/stt.py:612-656 (_configure_pipecat_turn_mode), under
+    # vad_force_turn_endpoint=True, the only value the gate lets in. Every
+    # Universal-3 Pro model (the prefixes pipecat itself gates on,
+    # stt.py:68-90) overwrites max_turn_silence with min_turn_silence
+    # (:636-652) and leaves the other two alone.
+    **{
+        ("assemblyai", f"{prefix}*"): frozenset({"max_turn_silence"})
+        for prefix in U3_PRO_MODEL_PREFIXES
+    },
+    # universal-streaming-* overwrites the threshold (1.0) and min_turn_silence
+    # (160) and keeps max_turn_silence (:653-656). No single model ignores all
+    # three, which is why the PUT, being model-blind, refuses all three.
+    ("assemblyai", "*"): frozenset(
+        {"end_of_turn_confidence_threshold", "min_turn_silence"}
+    ),
+    # speechmatics has none since pipecat 1.12: ``end_of_utterance_silence_trigger``
+    # and ``end_of_utterance_max_delay`` are no longer Settings fields, and the
+    # only turn setting left, ``turn_detection_mode``, is a value gate above.
+}
+
+
+def provider_turn_fields(provider: str, model: str | None = None) -> frozenset[str]:
+    """Settings ``provider``'s forced turn mode ignores, for ``model``.
+
+    ``model=None`` is "any model": the union over every pattern, which is what
+    a caller that cannot see the model (the PUT) must refuse.
+    """
+    rows = [
+        (pattern, names)
+        for (row_provider, pattern), names in _PROVIDER_TURN_FIELDS.items()
+        if row_provider == provider
+    ]
+    if model is None:
+        matched = [names for _, names in rows]
+    else:
+        matched = [
+            names
+            for pattern, names in rows
+            if pattern != "*" and fnmatchcase(model, pattern)
+        ] or [names for pattern, names in rows if pattern == "*"]
+    return frozenset().union(*matched)
 
 
 def _provider_turn_error(
-    kind: str, provider: str, section: str, name: str, value: Any
+    kind: str,
+    provider: str,
+    section: str,
+    name: str,
+    value: Any,
+    model: str | None = None,
 ) -> str | None:
     if PROVIDER_TURN_DETECTION_AVAILABLE:
         return None
     path = f"{kind}.{provider}.{section}.{name}"
-    if (kind, provider, section, name) in _PROVIDER_TURN_FIELDS:
+    if (
+        kind == "stt"
+        and section == "settings"
+        and name in provider_turn_fields(provider, model)
+    ):
         return (
             f"{path}: only read when the provider owns turn detection "
             "(PROVIDER_TURN_DETECTION_AVAILABLE), not wired in this build (turn PR)"
