@@ -148,7 +148,8 @@ def test_retired_turn_start_strategy_loads_as_default():
         }
     )
 
-    assert config.turn_start_strategy == DEFAULT_TURN_START_STRATEGY
+    # VOZ-BUG-18: same value the backfill writes ("default"), not the min_words fallback.
+    assert config.turn_start_strategy == "default"
     # The retired companion key is not a field any more; extra="allow" keeps it
     # rather than rejecting the row, and nothing reads it.
     assert not hasattr(type(config), "provisional_vad_pause_secs")
