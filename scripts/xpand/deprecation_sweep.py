@@ -7,7 +7,9 @@ From the repo root (both forms work; the DB URL must use an async driver, e.g. p
 
 One line per hit: <code> where=<kind>#<id>:<path> state=<state> date=<date|none> reason=... hint=...
 Exit 1 if there is a shutdown (or unstructured) hit within the horizon, 0 if there are none or only legacy ones,
-2 if DATABASE_URL is missing. Reuses api.services.capabilities.deprecations; nothing is written to the DB.
+2 if DATABASE_URL is missing. The horizon must reach the shutdown date: run it with
+--horizon-days >= days until the date (e.g. 14 on or after 2026-10-06 for the 2026-10-20 Cartesia shutdown);
+a shorter horizon reports nothing for that model. Reuses api.services.capabilities.deprecations; nothing is written to the DB.
 
 Two passes per table, erring on the side of reporting: a structured walk over {provider, model} pairs (JSON
 strings are decoded), and a raw-text regex built from the registry that catches what the walk cannot
@@ -114,8 +116,9 @@ def build_text_regex(patterns: Iterable[str]) -> str:
 
 
 def with_unstructured(hits: list[Hit], text_rows: Iterable[tuple[str, int]]) -> list[Hit]:
-    """Add an ``unstructured`` hit for each (kind, row_id) the text regex found but the structured walk did not."""
-    seen = {(h.kind, h.row_id) for h in hits}
+    """Add an ``unstructured`` hit for each (kind, row_id) the text regex found but the structured walk did not
+    report as shutdown (a legacy-only structured hit must not hide a provider-less retiring model in the same row)."""
+    seen = {(h.kind, h.row_id) for h in hits if h.state == "shutdown"}
     extra = [
         Hit(kind, row_id, "<raw-json-text>", "?", "?", "unstructured",
             "a retiring or legacy model id appears in the row but not inside a {provider, model} pair",

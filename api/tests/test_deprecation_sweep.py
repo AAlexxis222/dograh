@@ -130,6 +130,14 @@ def test_row_missed_by_structured_walk_becomes_unstructured_hit():
     assert "reason=" in line and "hint=" in line
 
 
+def test_legacy_structured_hit_does_not_hide_provider_less_shutdown_in_same_row():
+    doc = {"model_overrides": {"stt": {"provider": "assemblyai", "model": "u3-rt-pro"}, "tts": {"model": "sonic-2"}}}
+    structured = find_deprecated_usage([("workflow_definition", 107, doc)], today=TODAY, horizon_days=14)
+    assert [h.state for h in structured] == ["legacy"]
+    merged = with_unstructured(structured, [("workflow_definition", 107)])
+    assert [h.state for h in merged] == ["legacy", "unstructured"]
+
+
 def test_lines_carry_state_and_date():
     docs = [("workflow", 1, {"tts": {"provider": "cartesia", "model": "sonic-2"}}),
             ("workflow", 2, {"realtime": {"provider": "grok_realtime", "model": "grok-voice-think-fast-1.0"}})]
