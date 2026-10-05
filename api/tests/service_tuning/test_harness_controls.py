@@ -121,9 +121,11 @@ def test_control_untuned_tts_pushes_no_silence_and_keeps_todays_silence_time():
 # «expose ≠ change» for every construction site (#15)
 #
 # ``golden/untuned_construction.json`` is ``_golden.capture()`` run against
-# the base commit ``ac8ed47d`` (a throwaway ``git worktree`` of it, the
-# capture module loaded by path so both trees ran the same code; the worktree
-# was removed afterwards). Every provider the factory builds, one case per
+# the base commit (a throwaway ``git worktree`` of it, the capture module
+# loaded by path so both trees ran the same code; the worktree was removed
+# afterwards). First ``ac8ed47d``; re-taken at upstream ``6c6cc6cb`` (pipecat
+# 1.12) in VOZ-G0-09, where the only differences from this branch are the
+# declared ones below. Every provider the factory builds, one case per
 # model- or language-dependent branch, with ``tuning=None``. The kwargs each
 # service class receives today must be the golden's, except for the changes
 # this branch declares — listed below, and checked to be *exactly* the diff,

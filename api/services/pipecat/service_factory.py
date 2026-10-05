@@ -1017,13 +1017,15 @@ def create_stt_service(
                 coerce_settings(
                     plan,
                     {
-                        # _build_config reads .value off the mode
-                        # (speechmatics/stt.py:752); the vocabulary and speaker
-                        # lists are handed to the SDK config, which does not
-                        # validate on assignment (:772-775).
+                        # _handle_turn_detection_mode reads .value off the
+                        # mode (speechmatics/stt.py:177-184); the vocabulary and
+                        # speaker lists are handed to the SDK config as they
+                        # are (:251-252, :892). Both entry types are SDK
+                        # dataclasses since pipecat 1.12.
                         "turn_detection_mode": TurnDetectionMode,
                         "additional_vocab": lambda entries: [
-                            AdditionalVocabEntry.model_validate(e) for e in entries
+                            AdditionalVocabEntry(**e) if isinstance(e, dict) else e
+                            for e in entries
                         ],
                         "known_speakers": lambda entries: [
                             SpeakerIdentifier(**e) if isinstance(e, dict) else e
