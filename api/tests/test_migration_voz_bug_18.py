@@ -1,6 +1,6 @@
-"""VOZ-BUG-18 (G0 §3.2 S3): upstream's migration rewrites only workflows/definitions and writes "default",
-while unknown values fall back to DEFAULT_TURN_START_STRATEGY = min_words. Migrated and unmigrated rows
-must resolve to the SAME start strategy."""
+"""VOZ-BUG-18 (G0 §3.2 S3): upstream's migration rewrites only workflows/definitions and writes "default";
+5be1d27c9a43 applies the same mapping to every store. Migrated and unmigrated rows must resolve to the
+SAME start strategy."""
 
 import json
 from types import SimpleNamespace
@@ -10,11 +10,6 @@ from sqlalchemy import text
 
 from api.services.workflow.voz_bug_18 import backfill_turn_start, resolve_turn_start
 from api.tests._migration_sql import load_migration, run_upgrade
-
-
-def test_migrated_and_unmigrated_rows_resolve_the_same():
-    migrated = backfill_turn_start({"turn_start_strategy": "provisional_vad"})
-    assert resolve_turn_start(migrated) == resolve_turn_start({}) == "default"
 
 
 def test_backfill_is_idempotent():
@@ -27,16 +22,6 @@ def test_backfill_preserves_explicit_min_words():
         backfill_turn_start({"turn_start_strategy": "min_words"})["turn_start_strategy"]
         == "min_words"
     )
-
-
-def test_count_before_equals_after():  # VOZ-AC-B9-38
-    docs = [
-        {"turn_start_strategy": "provisional_vad"},
-        {},
-        {"turn_start_strategy": "min_words"},
-    ]
-    after = [backfill_turn_start(dict(d)) for d in docs]
-    assert len(after) == len(docs) and "provisional_vad" not in str(after)
 
 
 # ---- 5be1d27c9a43 on real SQL ---------------------------------------------------------------
@@ -126,3 +111,73 @@ async def test_double_encoded_legacy_documents_are_migrated(async_session, seede
             decoded = _decoded(doc)
             assert decoded["turn_start_strategy"] == "default", (table, doc)
             assert decoded["max_call_duration"] == 600, (table, doc)
+
+
+async def _row_counts(session) -> dict[str, int]:
+    tables = (
+        "organization_configurations",
+        "workflow_runs",
+        "workflows",
+        "workflow_definitions",
+    )
+    return {
+        t: (await session.execute(text(f"SELECT count(*) FROM {t}"))).scalar_one()
+        for t in tables
+    }
+
+
+async def test_migrated_and_unmigrated_rows_resolve_the_same(async_session, seeded):
+    """Rows the backfill rewrites and rows it leaves alone start turns the same way."""
+    stores = _stores(seeded)
+    unmigrated = [{}, {"turn_start_strategy": None}, {}, {}]
+    for (table, column, where), doc in zip(stores, unmigrated):
+        await _set(async_session, table, column, where, doc)
+    await run_upgrade(async_session, load_migration("5be1d27c9a43"))
+    # VOZ-AC-B2-30: the org defaults document is pinned, not left to the schema default.
+    (org_doc,) = await _docs(async_session, *stores[0])
+    assert org_doc["turn_start_strategy"] == "default"
+    untouched = [
+        resolve_turn_start(doc)
+        for table, column, where in stores
+        for doc in await _docs(async_session, table, column, where)
+    ]
+
+    for table, column, where in stores:
+        await _set(async_session, table, column, where, _LEGACY)
+    await run_upgrade(async_session, load_migration("5be1d27c9a43"))
+    migrated = [
+        resolve_turn_start(doc)
+        for table, column, where in stores
+        for doc in await _docs(async_session, table, column, where)
+    ]
+
+    assert set(untouched) == set(migrated) == {"default"}
+
+
+async def test_count_before_equals_after(async_session, seeded):  # VOZ-AC-B9-38
+    """Same row count per table, and no row left that the backfill still has to rewrite."""
+    for table, column, where in _stores(seeded):
+        await _set(async_session, table, column, where, _LEGACY)
+    before = await _row_counts(async_session)
+
+    await run_upgrade(async_session, load_migration("5be1d27c9a43"))
+
+    assert await _row_counts(async_session) == before
+    for table, column, where in _stores(seeded):
+        for doc in await _docs(async_session, table, column, where):
+            assert _decoded(doc)["turn_start_strategy"] != "provisional_vad", table
+
+
+async def test_backfill_aborts_when_rows_still_need_the_rewrite(async_session, seeded):
+    """The guard counts rows still needing the rewrite after the pass and aborts on any."""
+    for table, column, where in _stores(seeded):
+        await _set(async_session, table, column, where, _LEGACY)
+    migration = load_migration("5be1d27c9a43")
+    # A transform that leaves the value in place: every legacy row is still pending afterwards.
+    migration._TARGETS = tuple(
+        (table, column, where, lambda doc: doc, pending)
+        for table, column, where, _transform, pending in migration._TARGETS
+    )
+
+    with pytest.raises(RuntimeError, match="still need the rewrite"):
+        await run_upgrade(async_session, migration)
