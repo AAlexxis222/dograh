@@ -15,8 +15,10 @@ jobs:
       - run: bash scripts/xpand/tests/test_guards.sh
       - run: node --test scripts/xpand/pr-gate/pr-gate.test.mjs
       - run: bash scripts/xpand/check_no_ai_attribution.sh upstream/main
-      # Every PR into the fork base, except the G0 PR itself (it is the one that resolves those conflicts);
-      # the exemption holds only for a same-repo branch, so a fork PR cannot reuse the branch name to skip the check.
+      # Every PR into the fork base, except the G0 PR itself (it is the one that resolves those conflicts).
+      # This file is the PR's own copy, so the exemption is not a security boundary (a PR can edit it); the real
+      # guarantee is required status checks plus human review. The same-repo condition only stops a fork PR
+      # from skipping the check just by reusing the branch name.
       - if: github.base_ref == 'feat/foundations-base' && !(github.head_ref == 'feat/foundations-base-sync' && github.event.pull_request.head.repo.full_name == github.repository)
         env:
           FORK_BASE: origin/${{ github.base_ref }}

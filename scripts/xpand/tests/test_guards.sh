@@ -44,7 +44,8 @@ git commit -q --allow-empty -m "fix: y mentions $(echo "$vendor" | tr a-z A-Z) i
 expect_fail "case-insensitive mention detected" "$here/check_no_ai_attribution.sh" base
 git reset -q --hard HEAD~1
 expect_fail "unknown base ref fails closed" "$here/check_no_ai_attribution.sh" no-such-ref
-git -c user.name="$ai" commit -q --allow-empty -m "fix: z clean message"
+# author only (committer stays clean), so the %an%n%ae part of the format is what is being proven
+GIT_AUTHOR_NAME="$ai" GIT_AUTHOR_EMAIL="a@a.test" git commit -q --allow-empty -m "fix: z clean message"
 expect_fail "author name detected" "$here/check_no_ai_attribution.sh" base
 git reset -q --hard HEAD~1
 GIT_COMMITTER_NAME="$ai" git commit -q --allow-empty -m "fix: w clean message"
@@ -52,12 +53,22 @@ expect_fail "committer name detected" "$here/check_no_ai_attribution.sh" base
 git reset -q --hard HEAD~1
 expect_pass "clean title and branch" bash -c "printf 'fix/ok\nfix: clean title\n' | '$here/check_no_ai_attribution.sh' --stdin"
 expect_fail "branch name detected via stdin" bash -c "echo fix/$ai-thing | '$here/check_no_ai_attribution.sh' --stdin"
-# head-ref argument: scan <base>..<ref> while HEAD itself is dirty (base-run workflow scans the fetched PR head)
+# head-ref argument (base-run workflow scans the fetched PR head, never HEAD): both directions must bite
+git checkout -q -b fix/dirty-ref
 git commit -q --allow-empty -m "fix: v mentions $ai"
-expect_fail "head-ref argument scans the given ref, not HEAD" "$here/check_no_ai_attribution.sh" base HEAD
-git checkout -q -b fix/clean-ref HEAD~1
-expect_pass "head-ref argument: clean ref passes" "$here/check_no_ai_attribution.sh" base fix/clean-ref
-git checkout -q fix/attr && git reset -q --hard HEAD~1
+git checkout -q fix/attr   # HEAD clean, dirty ref given
+expect_fail "head-ref argument: dirty ref fails while HEAD is clean" "$here/check_no_ai_attribution.sh" base fix/dirty-ref
+git checkout -q fix/dirty-ref   # HEAD dirty, clean ref given
+expect_pass "head-ref argument: clean ref passes while HEAD is dirty" "$here/check_no_ai_attribution.sh" base fix/attr
+# exclude argument: an upstream-style commit with a trailer inside the range, plus own clean commits
+git checkout -q -b up-trailer base
+git commit -q --allow-empty -m "upstream: x" -m "Co-Authored-By: $ai <noreply@$(echo "$vendor" | tr A-Z a-z).com>"
+git checkout -q -b fix/own-on-upstream
+git commit -q --allow-empty -m "fix: own clean commit"
+expect_fail "upstream trailer in range fails when not excluded" "$here/check_no_ai_attribution.sh" base fix/own-on-upstream
+expect_pass "upstream trailer in range passes when upstream ref excluded" "$here/check_no_ai_attribution.sh" base fix/own-on-upstream up-trailer
+git commit -q --allow-empty -m "fix: own dirty $ai"
+expect_fail "own dirty commit still fails with upstream excluded" "$here/check_no_ai_attribution.sh" base fix/own-on-upstream up-trailer
 git checkout -q main
 
 # --- check_fix_against_g0.sh <upstream> [<fork-base>]
@@ -116,11 +127,14 @@ mkpr "$tmp/rs2"; git merge -q --no-edit main
 expect_eq "reviewed-sha: clean merge of base after review accepted" "$(sha_for)" "$r1"
 
 mkpr "$tmp/rs3"
-cp body.md "$tmp/body3.md"
-printf '<!--
+# old REVIEWED line inside an HTML comment INSIDE the Review section: only visible() keeps it from winning
+printf '## Review
+<!--
 REVIEWED: %s
 -->
-%s' "$(git rev-parse main)" "$(cat body.md)" > body.md
+VERDICT: SAFE TO MERGE
+REVIEWED: %s
+' "$(git rev-parse main)" "$r1" > body.md
 git merge -q --no-edit main
 expect_eq "reviewed-sha: REVIEWED inside an HTML comment ignored" "$(sha_for)" "$r1"
 

@@ -33,8 +33,10 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          git fetch -q origin "refs/pull/$PR/head"
-          bash scripts/xpand/check_no_ai_attribution.sh "origin/$BASE_REF" FETCH_HEAD
+          git fetch -q origin "refs/pull/$PR/head:refs/xpand/pr-head"
+          # Upstream commits legitimately carry vendor co-author trailers: exclude them, as xpand-guards.yml does.
+          git fetch -q https://github.com/dograh-hq/dograh.git main:refs/xpand/upstream-main
+          bash scripts/xpand/check_no_ai_attribution.sh "origin/$BASE_REF" refs/xpand/pr-head refs/xpand/upstream-main
       - name: Check PR description (pr-ready sections, verdict, REVIEWED sha, no attribution)
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
