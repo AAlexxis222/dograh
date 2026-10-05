@@ -57,11 +57,15 @@ _ORG_MODEL_CONFIGURATION_KEY = "MODEL_CONFIGURATION_V2"
 _TARGETS: tuple[tuple[str, str], ...] = (
     (
         "workflows",
-        "SELECT t.id, t.organization_id, t.workflow_configurations FROM workflows t",
+        (
+            "SELECT t.id, t.organization_id, t.workflow_configurations, "
+            "json_typeof(t.workflow_configurations) = 'string' FROM workflows t"
+        ),
     ),
     (
         "workflow_definitions",
-        "SELECT t.id, w.organization_id, t.workflow_configurations "
+        "SELECT t.id, w.organization_id, t.workflow_configurations, "
+        "json_typeof(t.workflow_configurations) = 'string' "
         "FROM workflow_definitions t LEFT JOIN workflows w ON w.id = t.workflow_id",
     ),
 )
@@ -175,8 +179,8 @@ class _OrgSections:
 
 
 def _candidates(conn, table: str, select: str):
-    """Keyset-paged ``(id, organization id, document)``; a row that is not a JSON object is
-    skipped and logged."""
+    """Keyset-paged ``(id, organization id, document, stored as a JSON string)``; a row that is
+    not a JSON object is skipped and logged."""
     last_id = 0
     while True:
         rows = conn.execute(
@@ -189,7 +193,7 @@ def _candidates(conn, table: str, select: str):
         ).fetchall()
         if not rows:
             return
-        for row_id, organization_id, raw in rows:
+        for row_id, organization_id, raw, double_encoded in rows:
             last_id = row_id
             doc = _load(raw)
             if doc is None:
@@ -197,25 +201,30 @@ def _candidates(conn, table: str, select: str):
                     "VOZ-G0-11 %s id=%d: not a JSON object, skipped", table, row_id
                 )
                 continue
-            yield row_id, organization_id, doc
+            yield row_id, organization_id, doc, double_encoded
 
 
-def _write(conn, table: str, row_id: int, doc: dict) -> None:
+def _write(conn, table: str, row_id: int, doc: dict, double_encoded: bool) -> None:
+    # The runtime reads a JSON-string document as no document at all; writing it back decoded
+    # would switch its settings on, so it keeps its encoding.
+    stored = json.dumps(json.dumps(doc)) if double_encoded else json.dumps(doc)
     conn.execute(
         sa.text(f"UPDATE {table} SET workflow_configurations = :doc WHERE id = :id"),
-        {"doc": json.dumps(doc), "id": row_id},
+        {"doc": stored, "id": row_id},
     )
 
 
 def _strip_table(conn, table: str, select: str, org_sections) -> int:
     total = 0
-    for row_id, organization_id, doc in _candidates(conn, table, select):
+    for row_id, organization_id, doc, double_encoded in _candidates(
+        conn, table, select
+    ):
         copies = _true_copies(doc, org_sections(organization_id))
         if not copies:
             continue
         for section, leaf in copies:
             section.pop(leaf, None)
-        _write(conn, table, row_id, doc)
+        _write(conn, table, row_id, doc, double_encoded)
         logger.info(
             "VOZ-G0-11 %s id=%d: copied keys removed=%d", table, row_id, len(copies)
         )
@@ -230,7 +239,7 @@ def upgrade() -> None:
         total = _strip_table(conn, table, select, org_sections)
         left = sum(
             len(_true_copies(doc, org_sections(organization_id)))
-            for _, organization_id, doc in _candidates(conn, table, select)
+            for _, organization_id, doc, _ in _candidates(conn, table, select)
         )
         logger.info(
             "VOZ-G0-11 %s: copied keys removed=%d still stored=%d", table, total, left

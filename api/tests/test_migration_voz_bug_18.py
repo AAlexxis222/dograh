@@ -132,6 +132,24 @@ async def test_double_encoded_legacy_documents_are_migrated(async_session, seede
             assert decoded["max_call_duration"] == 600, (table, doc)
 
 
+@pytest.mark.parametrize("stored", [_LEGACY, {"max_call_duration": 600}])
+async def test_a_double_encoded_document_keeps_its_encoding(
+    async_session, seeded, stored
+):
+    """The runtime reads a document stored as a JSON string as no document at all
+    (cascade.normalize_root_nulls), so its settings are off today. Writing the rewrite back
+    decoded would switch them on at deploy; the rewrite must keep the encoding."""
+    for table, column, where in _stores(seeded):
+        await _set(async_session, table, column, where, json.dumps(stored))
+
+    await run_upgrade(async_session, load_migration("5be1d27c9a43"))
+
+    for table, column, where in _stores(seeded):
+        for doc in await _docs(async_session, table, column, where):
+            assert isinstance(doc, str), (table, doc)
+            assert resolve_turn_start(json.loads(doc)) == "default", (table, doc)
+
+
 async def _row_counts(session) -> dict[str, int]:
     tables = (
         "organization_configurations",
