@@ -1415,8 +1415,13 @@ def _detached_session_snapshot(text_session):
     )
 
 
-async def _session_with_one_user_turn(db_session, user, workflow, *, user_text: str):
-    """A run whose checkpoint already holds a completed user turn."""
+async def _session_with_one_user_turn(
+    db_session, user, workflow, *, user_text: str, freeze_configuration: bool = False
+):
+    """A run whose checkpoint already holds a completed user turn.
+
+    ``freeze_configuration`` stores the cascade on the run, as production run
+    creation does."""
     # Re-fetch so the definition relationships are eager-loaded, as the route does.
     loaded_workflow = await db_session.get_workflow(
         workflow.id, organization_id=user.selected_organization_id
@@ -1437,6 +1442,9 @@ async def _session_with_one_user_turn(db_session, user, workflow, *, user_text: 
         initial_context=run_inputs.initial_context,
         definition_id=run_inputs.definition_id,
         use_draft=run_inputs.use_draft,
+        effective_configurations=(
+            run_inputs.effective_configurations if freeze_configuration else None
+        ),
     )
     await db_session.ensure_workflow_run_text_session(
         workflow_run.id,
@@ -1718,6 +1726,61 @@ async def test_final_extraction_refuses_a_run_from_another_organization(
     assert allowed["extracted_variables"] == {"ticket_number": "1054202"}
     assert refused == {}
     assert len(extraction_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_final_extraction_reads_the_runs_frozen_configuration(
+    db_session,
+    async_session,
+    test_client_factory,
+):
+    """Final extraction uses the configuration frozen when the run was created:
+    a value set only in the organization layer reaches it, and an organization
+    edit made after creation does not."""
+    user, workflow = await _create_user_and_workflow(
+        db_session,
+        async_session,
+        workflow_definition=_extraction_workflow_definition(),
+        suffix="frozen-extraction",
+    )
+    defaults_key = OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value
+    await db_session.upsert_configuration(
+        user.selected_organization_id, defaults_key, {"max_call_duration": 987}
+    )
+    workflow_run = await _session_with_one_user_turn(
+        db_session,
+        user,
+        workflow,
+        user_text="My ticket is 1054202.",
+        freeze_configuration=True,
+    )
+    await db_session.upsert_configuration(
+        user.selected_organization_id, defaults_key, {"max_call_duration": 654}
+    )
+    text_session = await db_session.get_workflow_run_text_session(
+        workflow_run.id, organization_id=user.selected_organization_id
+    )
+    seen_configurations = []
+
+    async def fake_model_configuration(*, organization_id, workflow_configurations):
+        seen_configurations.append(workflow_configurations)
+        return SimpleNamespace(llm=None)  # ends extraction right after the read
+
+    with patch(
+        "api.services.configuration.ai_model_configuration."
+        "get_effective_ai_model_configuration_for_workflow",
+        new=fake_model_configuration,
+    ):
+        result = await extract_text_chat_final_variables(
+            workflow_run_id=workflow_run.id,
+            workflow_id=workflow.id,
+            organization_id=user.selected_organization_id,
+            checkpoint=text_session.checkpoint,
+            session_data=text_session.session_data,
+        )
+
+    assert result == {}
+    assert [c.get("max_call_duration") for c in seen_configurations] == [987]
 
 
 @pytest.mark.asyncio

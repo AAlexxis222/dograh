@@ -957,7 +957,7 @@ async def extract_text_chat_final_variables(
         # the turn path does for every other text-chat span.
         set_current_org_id(organization_id)
 
-        run_configs = workflow_run.definition.workflow_configurations or {}
+        run_configs = run_configurations_for(workflow_run)
         user_config = await get_effective_ai_model_configuration_for_workflow(
             organization_id=organization_id,
             workflow_configurations=run_configs,

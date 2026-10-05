@@ -18,6 +18,7 @@ from typing import Any, Callable
 from loguru import logger
 
 from api.db import db_client
+from api.services.configuration.cascade import load_effective_workflow_configurations
 from api.services.configuration.registry import ServiceProviders
 from api.services.pipecat.agent_generation_processor import (
     AgentGenerationProcessor,
@@ -142,7 +143,16 @@ class AgentRuntimeFactory:
         """
         visit_id = visit_id or new_visit_id()
         workflow, definition = await self.resolve_destination(workflow_id)
-        run_configs = definition.workflow_configurations or {}
+        # The destination runs its own definition, so the call's frozen
+        # document does not apply; it gets the same cascade (organization
+        # defaults under its definition) a run of that agent would freeze.
+        run_configs = (
+            await load_effective_workflow_configurations(
+                db_client,
+                organization_id=self._organization_id,
+                definition_id=definition.id,
+            )
+        ).effective
 
         from api.services.configuration.ai_model_configuration import (
             get_effective_ai_model_configuration_for_workflow,

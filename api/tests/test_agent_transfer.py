@@ -1675,6 +1675,54 @@ async def test_destination_version_follows_the_call(use_draft, draft, expected_i
 
 
 @pytest.mark.asyncio
+async def test_destination_configuration_comes_through_the_cascade():
+    """The destination agent runs with its definition's cascade, not its raw
+    stored document: a value set only in the organization layer reaches it."""
+    published = _definition(998, "published", 4)
+    workflow = SimpleNamespace(
+        id=251,
+        name="Billing",
+        organization_id=7,
+        released_definition=published,
+        current_definition=published,
+    )
+    factory = _destination_factory(use_draft=False)
+    seen_configurations = []
+
+    async def fake_model_configuration(*, organization_id, workflow_configurations):
+        seen_configurations.append(workflow_configurations)
+        # Realtime stops the build right after the configuration is read.
+        return SimpleNamespace(is_realtime=True, realtime=object())
+
+    with (
+        patch(
+            "api.services.pipecat.agent_runtime_factory.db_client",
+            SimpleNamespace(
+                get_workflow=AsyncMock(return_value=workflow),
+                get_draft_version=AsyncMock(return_value=None),
+                get_definition_configurations_with_owner=AsyncMock(
+                    return_value=({}, 7)
+                ),
+                get_configuration_value=AsyncMock(
+                    return_value={"max_call_duration": 987}
+                ),
+            ),
+        ) as fake_db,
+        patch(
+            "api.services.configuration.ai_model_configuration."
+            "get_effective_ai_model_configuration_for_workflow",
+            new=fake_model_configuration,
+        ),
+        pytest.raises(AgentBuildError) as stopped,
+    ):
+        await factory.build(workflow_id=251)
+
+    assert stopped.value.reason == "destination_is_realtime"
+    assert [c.get("max_call_duration") for c in seen_configurations] == [987]
+    fake_db.get_definition_configurations_with_owner.assert_awaited_once_with(998)
+
+
+@pytest.mark.asyncio
 async def test_inactive_source_output_is_dropped_but_usage_is_collected():
     from pipecat.metrics.metrics import TTFBMetricsData, TTSUsageMetricsData
 
