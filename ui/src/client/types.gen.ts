@@ -3010,7 +3010,7 @@ export type GoogleVertexRealtimeLlmConfiguration = {
     /**
      * Location
      *
-     * GCP region for the Vertex AI endpoint (e.g. 'global').
+     * GCP region for the Vertex AI endpoint (e.g. 'eu', 'global').
      */
     location?: string;
     /**
