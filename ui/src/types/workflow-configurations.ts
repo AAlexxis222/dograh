@@ -19,8 +19,17 @@ export type AmbientNoiseConfiguration = Omit<
 
 export type TurnStopStrategy = NonNullable<GeneratedWorkflowConfigurationDefaults["turn_stop_strategy"]>;
 export type TurnStartStrategy = NonNullable<GeneratedWorkflowConfigurationDefaults["turn_start_strategy"]>;
-export const DEFAULT_TURN_START_MIN_WORDS = 3;
-export const DEFAULT_PROVISIONAL_VAD_PAUSE_SECS = 1.5;
+export const DEFAULT_TURN_START_STRATEGY: TurnStartStrategy = 'min_words';
+export const DEFAULT_TURN_START_MIN_WORDS = 2;
+
+// "provisional_vad" was retired. Definitions saved before then still carry it,
+// so map it onto the option the backend now resolves such a value to, rather
+// than handing the select a value it has no entry for.
+function coerceTurnStartStrategy(value: string): TurnStartStrategy {
+    return TURN_START_STRATEGY_OPTIONS.some(o => o.value === value)
+        ? (value as TurnStartStrategy)
+        : DEFAULT_TURN_START_STRATEGY;
+}
 
 export const TURN_START_STRATEGY_OPTIONS: Array<{
     value: TurnStartStrategy;
@@ -29,35 +38,47 @@ export const TURN_START_STRATEGY_OPTIONS: Array<{
 }> = [
     {
         value: 'default',
-        label: 'Default',
-        description: 'Use the platform default: external STT turn signals when available, otherwise local VAD.',
+        label: 'Voice activity',
+        description: 'Interrupt when the STT provider or local voice activity detection signals speech.',
     },
     {
         value: 'min_words',
         label: 'Minimum words',
         description: 'Wait for a minimum number of transcribed words before interrupting bot speech.',
     },
-    {
-        value: 'provisional_vad',
-        label: 'Provisional VAD',
-        description: 'Pause bot audio on voice activity, then confirm the interruption with transcription.',
-    },
 ];
 
-export interface VoicemailDetectionConfiguration {
+export interface AnswerMessage {
+    text?: string;
+    recording_id?: string;
+    recording_pk?: number;
+}
+
+export interface AnswerSupervisorSettings {
+    listening_window_ms?: number;
+    human_utterance_max_ms?: number;
+    machine_utterance_cap_ms?: number;
+    classify_budget_ms?: number;
+    screening_wait_ms?: number;
+    max_screening_rearms?: number;
+    voicemail_action?: 'hangup' | 'leave_message';
+    voicemail_message?: AnswerMessage;
+    screening_message?: AnswerMessage;
+}
+
+export interface VoicemailDetectionConfiguration extends AnswerSupervisorSettings {
     enabled: boolean;
     use_workflow_llm: boolean;
     provider?: string;
     model?: string;
     api_key?: string;
-    system_prompt?: string;
-    long_speech_timeout: number;  // seconds cutoff for long speech detection
+    system_prompt?: string;  // Overrides the built-in classifier instructions
 }
 
 export const DEFAULT_VOICEMAIL_DETECTION_CONFIGURATION: VoicemailDetectionConfiguration = {
     enabled: false,
     use_workflow_llm: true,
-    long_speech_timeout: 8.0,
+    voicemail_action: 'hangup',
 };
 
 export interface TranscriptConfiguration {
@@ -113,10 +134,10 @@ type WorkflowConfigurationBase = Omit<
     | "smart_turn_stop_secs"
     | "turn_start_strategy"
     | "turn_start_min_words"
-    | "provisional_vad_pause_secs"
     | "turn_stop_strategy"
     | "dictionary"
     | "context_compaction_enabled"
+    | "tts_cache_enabled"
     | "call_dispositions"
     | "text_chat_inactivity_timeout_seconds"
     | "external_pbx_field_mappings"
@@ -134,12 +155,12 @@ export type WorkflowConfigurations = WorkflowConfigurationBase & {
     smart_turn_stop_secs: number;  // Timeout in seconds for incomplete turn detection
     turn_start_strategy: TurnStartStrategy;  // Strategy for detecting start of user turn/interruption
     turn_start_min_words: number;  // Minimum transcribed words required for minimum-word interruptions
-    provisional_vad_pause_secs: number;  // Seconds to pause bot output while awaiting transcript confirmation
     turn_stop_strategy: TurnStopStrategy;  // Strategy for detecting end of user turn
     dictionary?: string;  // Comma-separated words for voice agent to listen for
     voicemail_detection?: VoicemailDetectionConfiguration;
     transcript_configuration: TranscriptConfiguration;
     context_compaction_enabled: boolean;  // Summarize context on node transitions to remove stale tool calls
+    tts_cache_enabled: boolean;
     call_dispositions: CallDispositionOption[];  // Allowed terminal business outcomes
     text_chat_inactivity_timeout_seconds?: number;  // End inactive text chats after this many seconds
     external_pbx_field_mappings: ExternalPBXFieldMapping[];

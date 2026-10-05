@@ -127,6 +127,8 @@ export const useWorkflowState = ({
     const [configurationLoadError, setConfigurationLoadError] = useState<string | null>(null);
     const [defaultCallDispositions, setDefaultCallDispositions] =
         useState<CallDispositionOption[]>([]);
+    const [defaultAnswerClassifierPrompt, setDefaultAnswerClassifierPrompt] =
+        useState<string>("");
     const [textChatInactivityTimeoutConstraints, setTextChatInactivityTimeoutConstraints] =
         useState<TextChatInactivityTimeoutConstraints | null>(null);
     const [widgetTextDefaults, setWidgetTextDefaults] = useState<WidgetTexts | null>(null);
@@ -211,6 +213,7 @@ export const useWorkflowState = ({
             }
             setConfigurationState(resolveWorkflowConfigurations(layers.data));
             setDefaultCallDispositions(envelope.data.default_call_dispositions ?? []);
+            setDefaultAnswerClassifierPrompt(envelope.data.default_answer_classifier_prompt ?? "");
             setTextChatInactivityTimeoutConstraints(envelope.data.text_chat_inactivity_timeout_constraints);
             setWidgetTextDefaults(envelope.data.widget_text_defaults);
             // Counts only, never the document.
@@ -688,6 +691,7 @@ export const useWorkflowState = ({
         configurationLoadError,
         reloadConfiguration,
         defaultCallDispositions,
+        defaultAnswerClassifierPrompt,
         textChatInactivityTimeoutConstraints,
         widgetTextDefaults,
         setNodes,

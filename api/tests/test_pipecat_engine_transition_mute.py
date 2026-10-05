@@ -125,6 +125,7 @@ async def _build_engine_and_pipeline(
     )
 
     task = PipelineWorker(pipeline, params=PipelineParams(), enable_rtvi=False)
+    engine.call_worker = task
     engine.set_task(task)
     _engines_under_test.append(engine)
 

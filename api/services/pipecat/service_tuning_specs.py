@@ -42,8 +42,8 @@ from pipecat.services.cartesia.tts import (
     GenerationConfig,
 )
 from pipecat.services.cartesia.turns.stt import CartesiaTurnsSTTService
-from pipecat.services.deepgram.flux.base import DeepgramFluxSTTSettings
 from pipecat.services.deepgram.flux.stt import DeepgramFluxSTTService
+from pipecat.services.deepgram.flux.stt_base import DeepgramFluxSTTSettings
 from pipecat.services.deepgram.stt import DeepgramSTTService, DeepgramSTTSettings
 from pipecat.services.deepgram.tts import DeepgramTTSSettings
 from pipecat.services.dograh.flux.stt import DograhFluxSTTService
@@ -68,7 +68,6 @@ from pipecat.services.groq.llm import GroqLLMSettings
 from pipecat.services.huggingface.llm import HuggingFaceLLMSettings
 from pipecat.services.huggingface.stt import HuggingFaceSTTSettings
 from pipecat.services.inworld.tts import InworldTTSSettings
-from pipecat.services.lmnt.tts import LmntTTSSettings
 from pipecat.services.minimax.llm import MiniMaxLLMSettings
 from pipecat.services.minimax.tts import MiniMaxTTSSettings
 from pipecat.services.openai.base_llm import OpenAILLMSettings
@@ -376,7 +375,8 @@ SPECS[("stt", "speechmatics")] = TuningSpec(
     "stt",
     "speechmatics",
     SpeechmaticsSTTSettings,
-    _fields(SpeechmaticsSTTSettings, "operating_point", "extra_params"),
+    # ``extra_params`` is gone from pipecat 1.12; VOZ-G0-09 re-derives this row.
+    _fields(SpeechmaticsSTTSettings, "operating_point"),
     # Both lists are handed to the SDK config, which does not validate on
     # assignment (speechmatics/stt.py:772-775); ``SpeakerIdentifier`` is a
     # dataclass, so an unknown key was a TypeError at run creation (#12).
@@ -501,16 +501,13 @@ SPECS[("tts", "smallest")] = TuningSpec(
 SPECS[("tts", "google")] = TuningSpec(
     "tts", "google", GoogleTTSSettings, _fields(GoogleTTSSettings)
 )
-# Deepgram and LMNT declare no TTS settings of their own beyond the identity
-# fields the registry owns, so both allow-lists are empty today; the rows exist
-# so the providers are known (a misspelt knob is "unknown setting", not
+# Deepgram declares no TTS settings of its own beyond the identity fields the
+# registry owns, so its allow-list is empty today; the row exists so the
+# provider is known (a misspelt knob is "unknown setting", not
 # "unknown provider") and so a field added upstream is honoured by the branch,
 # which already routes through ``build_settings``.
 SPECS[("tts", "deepgram")] = TuningSpec(
     "tts", "deepgram", DeepgramTTSSettings, _fields(DeepgramTTSSettings)
-)
-SPECS[("tts", "lmnt")] = TuningSpec(
-    "tts", "lmnt", LmntTTSSettings, _fields(LmntTTSSettings)
 )
 # ``user_instructions`` is the one field Camb declares beyond the identity
 # ones (camb/tts.py:142-153); the request timeout is a constructor argument.

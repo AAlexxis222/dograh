@@ -408,7 +408,7 @@ export interface components {
              * @default http_api
              * @enum {string}
              */
-            category: "http_api" | "end_call" | "transfer_call" | "calculator" | "native" | "integration" | "mcp";
+            category: "http_api" | "end_call" | "transfer_call" | "transfer_agent" | "calculator" | "native" | "integration" | "mcp";
             /**
              * Icon
              * @description Lucide icon identifier.
@@ -425,7 +425,7 @@ export interface components {
              * Definition
              * @description Typed tool definition.
              */
-            definition: components["schemas"]["HttpApiToolDefinition"] | components["schemas"]["EndCallToolDefinition"] | components["schemas"]["TransferCallToolDefinition"] | components["schemas"]["CalculatorToolDefinition"] | components["schemas"]["McpToolDefinition"];
+            definition: components["schemas"]["HttpApiToolDefinition"] | components["schemas"]["EndCallToolDefinition"] | components["schemas"]["TransferCallToolDefinition"] | components["schemas"]["TransferAgentToolDefinition"] | components["schemas"]["CalculatorToolDefinition"] | components["schemas"]["McpToolDefinition"];
         };
         /** CreateWorkflowRequest */
         CreateWorkflowRequest: {
@@ -559,6 +559,12 @@ export interface components {
             created_by: number;
             /** Is Active */
             is_active: boolean;
+            /**
+             * Has Live Content
+             * @description Whether agents can currently retrieve this document's content. Stays true while an edited document is re-indexed or after its re-index fails, because the previous version keeps serving until a new one succeeds.
+             * @default false
+             */
+            has_live_content: boolean;
         };
         /**
          * EndCallConfig
@@ -712,6 +718,13 @@ export interface components {
             body_template?: {
                 [key: string]: unknown;
             } | null;
+            /**
+             * Body Format
+             * @description Encoding of the POST, PUT, and PATCH request body: 'json' sends application/json, 'form' sends application/x-www-form-urlencoded.
+             * @default json
+             * @enum {string}
+             */
+            body_format: "json" | "form";
         };
         /**
          * HttpApiToolDefinition
@@ -783,21 +796,6 @@ export interface components {
              */
             preset_parameters?: components["schemas"]["PresetToolParameter"][] | null;
         };
-        /** HybridTurnConfiguration */
-        HybridTurnConfiguration: {
-            /**
-             * Wait Ms
-             * @description Milliseconds to wait for the STT's own end-of-turn after the local VAD stop before promoting the last interim. 0 promotes immediately (recommended).
-             * @default 0
-             */
-            wait_ms: number;
-            /**
-             * Hold Ms
-             * @description How long a final transcript that arrives with no local turn open is held for the next local turn before being delivered as a message of its own.
-             * @default 1500
-             */
-            hold_ms: number;
-        };
         /** InitiateCallRequest */
         InitiateCallRequest: {
             /** Workflow Id */
@@ -810,32 +808,6 @@ export interface components {
             telephony_configuration_id?: number | null;
             /** From Phone Number Id */
             from_phone_number_id?: number | null;
-        };
-        /**
-         * LLMScope
-         * @description Which secondary LLM instances the ``llm`` tuning also applies to.
-         */
-        LLMScope: {
-            /**
-             * Inference
-             * @default false
-             */
-            inference: boolean;
-            /**
-             * Extraction
-             * @default false
-             */
-            extraction: boolean;
-            /**
-             * Voicemail
-             * @default false
-             */
-            voicemail: boolean;
-            /**
-             * Filler
-             * @default false
-             */
-            filler: boolean;
         };
         /**
          * McpToolConfig
@@ -1107,21 +1079,6 @@ export interface components {
          * @enum {string}
          */
         PropertyType: "string" | "number" | "boolean" | "options" | "multi_options" | "fixed_collection" | "json" | "tool_refs" | "document_refs" | "recording_ref" | "credential_ref" | "mention_textarea" | "url";
-        /** ProviderTuning */
-        ProviderTuning: {
-            /** Settings */
-            settings?: {
-                [key: string]: unknown;
-            };
-            /** Ctor */
-            ctor?: {
-                [key: string]: unknown;
-            };
-            /** Options */
-            options?: {
-                [key: string]: unknown;
-            };
-        };
         /**
          * RecordingListResponseSchema
          * @description Response schema for list of recordings.
@@ -1170,26 +1127,6 @@ export interface components {
             created_at: string;
             /** Is Active */
             is_active: boolean;
-        };
-        /** ServiceTuning */
-        ServiceTuning: {
-            /** Stt */
-            stt?: {
-                [key: string]: components["schemas"]["ProviderTuning"];
-            };
-            /** Tts */
-            tts?: {
-                [key: string]: components["schemas"]["ProviderTuning"];
-            };
-            /** Llm */
-            llm?: {
-                [key: string]: components["schemas"]["ProviderTuning"];
-            };
-            /** Realtime */
-            realtime?: {
-                [key: string]: components["schemas"]["ProviderTuning"];
-            };
-            scope?: components["schemas"]["LLMScope"];
         };
         /**
          * ToolParameter
@@ -1253,21 +1190,77 @@ export interface components {
             updated_at: string | null;
             created_by?: components["schemas"]["CreatedByResponse"] | null;
         };
-        /** TranscriptConfiguration */
-        TranscriptConfiguration: {
+        /**
+         * TransferAgentConfig
+         * @description Configuration for Transfer Agent tools.
+         *
+         *     One tool, one destination. An agent that can hand the caller to several
+         *     places gets several of these tools, and the model chooses between them the
+         *     way it chooses between any other tools -- by their names and descriptions.
+         *     That keeps the routing decision in the one place the model already reasons
+         *     about, and leaves nothing to configure here but where the call goes.
+         *
+         *     Most of how a handoff sounds is fixed: the caller hears a ringer while the
+         *     next agent is prepared. The handover line is configurable because it is
+         *     caller-facing and Dograh runs in more than one language, and so is whether
+         *     the next agent opens with its greeting, because an agent that greets
+         *     callers on its own number should not re-introduce itself mid-conversation.
+         */
+        TransferAgentConfig: {
             /**
-             * Include End Timestamps
-             * @default false
+             * Workflow Id
+             * @description Id of the Dograh agent to transfer to. Must be in the same organization, and must not be a speech-to-speech agent.
              */
-            include_end_timestamps: boolean;
-        } & {
-            [key: string]: unknown;
+            workflow_id: number;
+            /**
+             * Message
+             * @description Spoken by the current agent, in its own voice, before the caller is handed over. Supports template variables. Leave empty to hand over without saying anything.
+             * @default Let me connect you with the right person. One moment please.
+             */
+            message: string;
+            /**
+             * Play Greeting
+             * @description Whether the destination agent opens with its Start Call greeting. When false, it skips the greeting and opens with a reply generated from the handover note, continuing the conversation instead of introducing itself.
+             * @default true
+             */
+            play_greeting: boolean;
+        };
+        /**
+         * TransferAgentToolDefinition
+         * @description Tool definition for Transfer Agent tools.
+         */
+        TransferAgentToolDefinition: {
+            /**
+             * Schema Version
+             * @description Schema version.
+             * @default 1
+             */
+            schema_version: number;
+            /**
+             * @description Tool type. (enum property replaced by openapi-typescript)
+             * @enum {string}
+             */
+            type: "transfer_agent";
+            /** @description Transfer Agent configuration. */
+            config: components["schemas"]["TransferAgentConfig"];
         };
         /**
          * TransferCallConfig
          * @description Configuration for Transfer Call tools.
          */
         TransferCallConfig: {
+            /**
+             * Introduction Enabled
+             * @description Play a generated introduction in the agent's voice to both parties before connecting them. Supported for Twilio calls with a TTS provider. Realtime speech-to-speech agents and synthesis failures skip the introduction.
+             * @default false
+             */
+            introduction_enabled: boolean;
+            /**
+             * Introduction Prompt
+             * @description Instructions for the transfer introduction, including language.
+             * @default Briefly introduce this caller to the person receiving the transfer. Include their reason for calling, essential details, and any explicit language preference. Use the caller's preferred language. Keep it to one sentence, at most 25 words. Do not invent details.
+             */
+            introduction_prompt: string;
             /**
              * Destination Source
              * @description Whether the destination is static/template, resolved by HTTP, or selected by ordered gathered/initial-context mapping rules.
@@ -1338,18 +1331,6 @@ export interface components {
             /** @description Transfer Call configuration. */
             config: components["schemas"]["TransferCallConfig"];
         };
-        /** TurnConfiguration */
-        TurnConfiguration: {
-            /**
-             * Source
-             * @default auto
-             * @enum {string}
-             */
-            source: "auto" | "stt" | "local";
-            hybrid?: components["schemas"]["HybridTurnConfiguration"];
-        } & {
-            [key: string]: unknown;
-        };
         /** UpdateWorkflowRequest */
         UpdateWorkflowRequest: {
             /** Name */
@@ -1377,23 +1358,6 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
-        /**
-         * VoicemailDetectionConfiguration
-         * @description Shadow section read by run_pipeline (``voicemail_detection.enabled``)
-         *     and masked/merged by the secrets registry (``api_key``). Provider-specific
-         *     keys (``provider``, ``model``, ``use_workflow_llm``…) pass through.
-         */
-        VoicemailDetectionConfiguration: {
-            /**
-             * Enabled
-             * @default false
-             */
-            enabled: boolean;
-            /** Api Key */
-            api_key?: string | null;
-        } & {
-            [key: string]: unknown;
-        };
         /** WorkflowConfigurationDefaults */
         WorkflowConfigurationDefaults: {
             ambient_noise_configuration?: components["schemas"]["AmbientNoiseConfigurationDefaults"];
@@ -1414,20 +1378,15 @@ export interface components {
             smart_turn_stop_secs: number;
             /**
              * Turn Start Strategy
-             * @default default
+             * @default min_words
              * @enum {string}
              */
-            turn_start_strategy: "default" | "min_words" | "provisional_vad";
+            turn_start_strategy: "default" | "min_words";
             /**
              * Turn Start Min Words
-             * @default 3
+             * @default 2
              */
             turn_start_min_words: number;
-            /**
-             * Provisional Vad Pause Secs
-             * @default 1.5
-             */
-            provisional_vad_pause_secs: number;
             /**
              * Turn Stop Strategy
              * @default transcription
@@ -1445,6 +1404,12 @@ export interface components {
              */
             context_compaction_enabled: boolean;
             /**
+             * Tts Cache Enabled
+             * @description Reuse generated speech for repeated phrases. Supports MiniMax TTS.
+             * @default false
+             */
+            tts_cache_enabled: boolean;
+            /**
              * Call Dispositions
              * @description Allowed business outcomes for terminal call classification. Each entry defines the exact stored code and the criteria for selecting it.
              */
@@ -1458,27 +1423,6 @@ export interface components {
             external_pbx_field_mappings?: components["schemas"]["ExternalPBXFieldMapping"][];
             /** External Pbx Lead Headers */
             external_pbx_lead_headers?: string[];
-            voicemail_detection?: components["schemas"]["VoicemailDetectionConfiguration"];
-            transcript_configuration?: components["schemas"]["TranscriptConfiguration"];
-            /** @description Provider knobs applied on top of the model configuration: {stt|tts|llm|realtime: {provider|_all: {settings, ctor, options}}, scope}. Keys are validated against the provider's real settings; explicit null means 'provider default' and is only accepted on nullable fields. */
-            service_tuning?: components["schemas"]["ServiceTuning"] | null;
-            /** User Turn Stop Timeout */
-            user_turn_stop_timeout?: number | null;
-            /** @description Turn-detection controls: {source: auto|stt|local, hybrid: {wait_ms, hold_ms}}. source=local with a server-turn STT enables the hybrid (local analyzer over the STT's transcription). */
-            turn?: components["schemas"]["TurnConfiguration"] | null;
-            /** Model Overrides */
-            model_overrides?: {
-                [key: string]: unknown;
-            } | null;
-            /** Model Configuration V2 Override */
-            model_configuration_v2_override?: {
-                [key: string]: unknown;
-            } | null;
-            /**
-             * Call Dispositions Extend Org
-             * @default false
-             */
-            call_dispositions_extend_org: boolean;
         } & {
             [key: string]: unknown;
         };
@@ -1571,9 +1515,7 @@ export type HttpValidationError = components['schemas']['HTTPValidationError'];
 export type HttpApiConfig = components['schemas']['HttpApiConfig'];
 export type HttpApiToolDefinition = components['schemas']['HttpApiToolDefinition'];
 export type HttpTransferResolverConfig = components['schemas']['HttpTransferResolverConfig'];
-export type HybridTurnConfiguration = components['schemas']['HybridTurnConfiguration'];
 export type InitiateCallRequest = components['schemas']['InitiateCallRequest'];
-export type LlmScope = components['schemas']['LLMScope'];
 export type McpToolConfig = components['schemas']['McpToolConfig'];
 export type McpToolDefinition = components['schemas']['McpToolDefinition'];
 export type NodeCategory = components['schemas']['NodeCategory'];
@@ -1587,19 +1529,16 @@ export type PropertyOption = components['schemas']['PropertyOption'];
 export type PropertyRendererOptions = components['schemas']['PropertyRendererOptions'];
 export type PropertySpec = components['schemas']['PropertySpec'];
 export type PropertyType = components['schemas']['PropertyType'];
-export type ProviderTuning = components['schemas']['ProviderTuning'];
 export type RecordingListResponseSchema = components['schemas']['RecordingListResponseSchema'];
 export type RecordingResponseSchema = components['schemas']['RecordingResponseSchema'];
-export type ServiceTuning = components['schemas']['ServiceTuning'];
 export type ToolParameter = components['schemas']['ToolParameter'];
 export type ToolResponse = components['schemas']['ToolResponse'];
-export type TranscriptConfiguration = components['schemas']['TranscriptConfiguration'];
+export type TransferAgentConfig = components['schemas']['TransferAgentConfig'];
+export type TransferAgentToolDefinition = components['schemas']['TransferAgentToolDefinition'];
 export type TransferCallConfig = components['schemas']['TransferCallConfig'];
 export type TransferCallToolDefinition = components['schemas']['TransferCallToolDefinition'];
-export type TurnConfiguration = components['schemas']['TurnConfiguration'];
 export type UpdateWorkflowRequest = components['schemas']['UpdateWorkflowRequest'];
 export type ValidationError = components['schemas']['ValidationError'];
-export type VoicemailDetectionConfiguration = components['schemas']['VoicemailDetectionConfiguration'];
 export type WorkflowConfigurationDefaults = components['schemas']['WorkflowConfigurationDefaults'];
 export type WorkflowListResponse = components['schemas']['WorkflowListResponse'];
 export type WorkflowResponse = components['schemas']['WorkflowResponse'];
