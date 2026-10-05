@@ -116,8 +116,23 @@ _TARGETS: tuple[
 )
 
 
+def _load(raw):
+    """The driver may hand back text; a document stored double-encoded needs a second decode.
+    Anything that does not decode to a JSON object is ``None`` (a JSON string scalar is a
+    candidate, and may hold no JSON at all)."""
+    for _ in range(2):
+        if not isinstance(raw, str):
+            break
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    return raw if isinstance(raw, dict) else None
+
+
 def _documents(conn, table: str, column: str, where: str) -> Iterator[tuple[int, dict]]:
-    """Keyset-paged ``(id, document)`` of the candidate rows that hold a JSON object."""
+    """Keyset-paged ``(id, document)`` of the candidate rows that hold a JSON object; any other
+    row is logged and skipped, by the pass and by the guard alike."""
     last_id = 0
     while True:
         rows = conn.execute(
@@ -132,9 +147,16 @@ def _documents(conn, table: str, column: str, where: str) -> Iterator[tuple[int,
             return
         for row_id, raw in rows:
             last_id = row_id
-            doc = json.loads(raw) if isinstance(raw, str) else raw
-            if isinstance(doc, dict):
-                yield row_id, doc
+            doc = _load(raw)
+            if doc is None:
+                logger.warning(
+                    "VOZ-BUG-18 %s.%s id=%d: not a JSON object, skipped",
+                    table,
+                    column,
+                    row_id,
+                )
+                continue
+            yield row_id, doc
 
 
 def _backfill(conn, table: str, column: str, where: str, transform) -> int:

@@ -99,6 +99,25 @@ def _stores(ids):
     ]
 
 
+@pytest.mark.parametrize("scalar", ["not json", ""])
+async def test_a_string_that_is_not_json_is_skipped_not_fatal(
+    async_session, seeded, scalar
+):
+    """Review r1 F3: a JSON string scalar is a candidate (it may be a double-encoded document);
+    one that does not decode must be skipped, or the deploy's `alembic upgrade head` aborts."""
+    stores = _stores(seeded)
+    for table, column, where in stores[1:3]:  # runs, workflows
+        await _set(async_session, table, column, where, scalar)
+    await _set(async_session, *stores[3], _LEGACY)  # definitions still migrate
+
+    await run_upgrade(async_session, load_migration("5be1d27c9a43"))
+
+    for table, column, where in stores[1:3]:
+        assert await _docs(async_session, table, column, where) == [scalar]
+    (definition,) = await _docs(async_session, *stores[3])
+    assert definition["turn_start_strategy"] == "default"
+
+
 async def test_double_encoded_legacy_documents_are_migrated(async_session, seeded):
     """Fable-3: a document stored as a JSON string hides the key from `->>`; it must still migrate."""
     for table, column, where in _stores(seeded):
