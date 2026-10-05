@@ -44,8 +44,17 @@ def _org_defaults(doc: dict) -> dict:
     return pin_org_default(backfill_turn_start(doc))
 
 
+def _legacy(column: str) -> str:
+    # The columns are `json`, not `jsonb`: `->>` extracts text and renders a JSON null as SQL NULL.
+    # A document stored double-encoded is a JSON string, where `->>` sees no key: it is a
+    # candidate too and the transform decides on the decoded document.
+    return (
+        f"{column}->>'turn_start_strategy' = '{_LEGACY}' "
+        f"OR json_typeof({column}) = 'string'"
+    )
+
+
 # (table, json column, extra SQL filter selecting candidate rows, row transform).
-# The columns are `json`, not `jsonb`: `->>` extracts text and renders a JSON null as SQL NULL.
 # Org documents are few, so every one of them is a candidate (the pin may apply to a missing key).
 _TARGETS: tuple[tuple[str, str, str, Callable[[dict], dict]], ...] = (
     (
@@ -57,19 +66,19 @@ _TARGETS: tuple[tuple[str, str, str, Callable[[dict], dict]], ...] = (
     (
         "workflow_runs",
         "effective_configurations",
-        f"effective_configurations->>'turn_start_strategy' = '{_LEGACY}'",
+        _legacy("effective_configurations"),
         backfill_turn_start,
     ),
     (
         "workflows",
         "workflow_configurations",
-        f"workflow_configurations->>'turn_start_strategy' = '{_LEGACY}'",
+        _legacy("workflow_configurations"),
         backfill_turn_start,
     ),
     (
         "workflow_definitions",
         "workflow_configurations",
-        f"workflow_configurations->>'turn_start_strategy' = '{_LEGACY}'",
+        _legacy("workflow_configurations"),
         backfill_turn_start,
     ),
 )
