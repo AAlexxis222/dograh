@@ -19,13 +19,13 @@ export type AmbientNoiseConfiguration = Omit<
 
 export type TurnStopStrategy = NonNullable<GeneratedWorkflowConfigurationDefaults["turn_stop_strategy"]>;
 export type TurnStartStrategy = NonNullable<GeneratedWorkflowConfigurationDefaults["turn_start_strategy"]>;
-export const DEFAULT_TURN_START_STRATEGY: TurnStartStrategy = 'min_words';
+export const DEFAULT_TURN_START_STRATEGY: TurnStartStrategy = 'default';
 export const DEFAULT_TURN_START_MIN_WORDS = 2;
 
 // "provisional_vad" was retired. Definitions saved before then still carry it,
-// so map it onto the option the backend now resolves such a value to, rather
-// than handing the select a value it has no entry for.
-function coerceTurnStartStrategy(value: string): TurnStartStrategy {
+// so map it onto the option the backend now resolves such a value to ("default",
+// VOZ-BUG-18), rather than handing the select a value it has no entry for.
+export function coerceTurnStartStrategy(value: string): TurnStartStrategy {
     return TURN_START_STRATEGY_OPTIONS.some(o => o.value === value)
         ? (value as TurnStartStrategy)
         : DEFAULT_TURN_START_STRATEGY;

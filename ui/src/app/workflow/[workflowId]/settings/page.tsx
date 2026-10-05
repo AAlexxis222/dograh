@@ -58,6 +58,7 @@ import {
 import {
     type AmbientNoiseConfiguration,
     type CallDispositionOption,
+    coerceTurnStartStrategy,
     DEFAULT_TURN_START_MIN_WORDS,
     DEFAULT_VOICEMAIL_DETECTION_CONFIGURATION,
     type ExternalPBXFieldMapping,
@@ -335,7 +336,7 @@ function GeneralSection({
     );
     const [smartTurnStopSecs, setSmartTurnStopSecs] = useState(effective.smart_turn_stop_secs);
     const [turnStartStrategy, setTurnStartStrategy] = useState<TurnStartStrategy>(
-        effective.turn_start_strategy,
+        coerceTurnStartStrategy(effective.turn_start_strategy),
     );
     const [turnStartMinWords, setTurnStartMinWords] = useState(
         effective.turn_start_min_words,
@@ -405,7 +406,7 @@ function GeneralSection({
             case leafKey(GENERAL_LEAVES.maxUserIdleTimeout): setMaxUserIdleTimeout(value as number); break;
             case leafKey(GENERAL_LEAVES.userTurnStopTimeout): setUserTurnStopTimeout(value as number | undefined); break;
             case leafKey(GENERAL_LEAVES.smartTurnStopSecs): setSmartTurnStopSecs(value as number); break;
-            case leafKey(GENERAL_LEAVES.turnStartStrategy): setTurnStartStrategy(value as TurnStartStrategy); break;
+            case leafKey(GENERAL_LEAVES.turnStartStrategy): setTurnStartStrategy(coerceTurnStartStrategy(String(value))); break;
             case leafKey(GENERAL_LEAVES.turnStartMinWords): setTurnStartMinWords(value as number); break;
             case leafKey(GENERAL_LEAVES.turnStopStrategy): setTurnStopStrategy(value as TurnStopStrategy); break;
             case leafKey(GENERAL_LEAVES.contextCompactionEnabled): setContextCompactionEnabled(Boolean(value)); break;
