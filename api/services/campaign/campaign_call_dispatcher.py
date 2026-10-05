@@ -21,7 +21,6 @@ from api.services.campaign.errors import (
     ConcurrentSlotAcquisitionError,
 )
 from api.services.campaign.traffic_split import campaign_split, pick_variant
-from api.services.configuration.cascade import load_effective_workflow_configurations
 from api.services.quota_service import authorize_workflow_run_start
 from api.services.workflow.initial_context import merge_external_initial_context
 from api.services.workflow.run_creation import prepare_workflow_run_inputs
@@ -33,18 +32,6 @@ if TYPE_CHECKING:
     # chain and create a circular import. Runtime calls below lazy-import the
     # factory helpers inside methods instead.
     from api.services.telephony.base import TelephonyProvider
-
-
-async def resolve_run_configurations_for_variant(
-    organization_id: int, *, definition_id: int
-) -> dict:
-    """The configuration a campaign run freezes for a traffic-split variant:
-    the cascade resolved over the variant's own definition, never the
-    workflow's published one."""
-    resolved = await load_effective_workflow_configurations(
-        db_client, organization_id=organization_id, definition_id=definition_id
-    )
-    return resolved.effective
 
 
 class CampaignCallDispatcher:

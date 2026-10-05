@@ -50,7 +50,6 @@ LIVE_CASCADE_CALLERS = {
     Path("services/workflow/run_creation.py"),  # freezes it at run creation
     Path("services/quota_service.py"),  # pre-run check, before any run exists
     Path("services/pipecat/agent_runtime_factory.py"),  # transfer destination
-    Path("services/campaign/campaign_call_dispatcher.py"),  # variant resolver
 }
 LIVE_CASCADE_PATTERN = re.compile(r"\bload_effective_workflow_configurations\(")
 
