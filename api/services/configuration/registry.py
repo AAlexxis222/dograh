@@ -654,7 +654,7 @@ class SarvamLLMConfiguration(BaseLLMConfiguration):
     )
 
 
-OPENAI_REALTIME_MODELS = ["gpt-realtime-2"]
+OPENAI_REALTIME_MODELS = ["gpt-realtime-2", "gpt-realtime-2.1", "gpt-realtime-2.1-mini"]
 # ISO 639-1 codes accepted by the Realtime API's input_audio_transcription.
 # Not exhaustive — the field allows custom input.
 OPENAI_REALTIME_LANGUAGES = [
@@ -716,7 +716,7 @@ class OpenAIRealtimeLLMConfiguration(BaseLLMConfiguration):
     )
 
 
-GROK_REALTIME_MODELS = ["grok-voice-think-fast-1.0"]
+GROK_REALTIME_MODELS = ["grok-voice-latest", "grok-voice-think-fast-2.0"]
 GROK_REALTIME_VOICES = ["ara", "rex", "sal", "eve", "leo"]
 ULTRAVOX_REALTIME_MODELS = ["ultravox-v0.7", "fixie-ai/ultravox"]
 
@@ -726,7 +726,7 @@ class GrokRealtimeLLMConfiguration(BaseLLMConfiguration):
     model_config = GROK_REALTIME_PROVIDER_MODEL_CONFIG
     provider: Literal[ServiceProviders.GROK_REALTIME] = ServiceProviders.GROK_REALTIME
     model: str = Field(
-        default="grok-voice-think-fast-1.0",
+        default="grok-voice-latest",
         description="Grok realtime voice-agent model.",
         json_schema_extra={
             "examples": GROK_REALTIME_MODELS,
@@ -770,7 +770,7 @@ class GoogleRealtimeLLMConfiguration(BaseLLMConfiguration):
         ServiceProviders.GOOGLE_REALTIME
     )
     model: str = Field(
-        default="gemini-3.1-flash-live-preview",
+        default="gemini-3.8-live",
         description="Gemini Live model on Google AI Studio (not Vertex).",
         json_schema_extra={
             "examples": GOOGLE_REALTIME_MODELS,
@@ -808,7 +808,7 @@ class GoogleVertexRealtimeLLMConfiguration(BaseLLMConfiguration):
         ServiceProviders.GOOGLE_VERTEX_REALTIME
     )
     model: str = Field(
-        default="google/gemini-live-2.5-flash-native-audio",
+        default="gemini-3.8-live",
         description="Vertex AI publisher/model identifier.",
         json_schema_extra={
             "examples": GOOGLE_VERTEX_REALTIME_MODELS,
@@ -839,8 +839,8 @@ class GoogleVertexRealtimeLLMConfiguration(BaseLLMConfiguration):
     )
     project_id: str = Field(description="Google Cloud project ID for Vertex AI.")
     location: str = Field(
-        default="global",
-        description="GCP region for the Vertex AI endpoint (e.g. 'global').",
+        default="eu",
+        description="GCP region for the Vertex AI endpoint (e.g. 'eu', 'global').",
     )
     credentials: str | None = Field(
         default=None,
@@ -864,7 +864,7 @@ class AzureRealtimeLLMConfiguration(BaseLLMConfiguration):
     model_config = AZURE_REALTIME_PROVIDER_MODEL_CONFIG
     provider: Literal[ServiceProviders.AZURE_REALTIME] = ServiceProviders.AZURE_REALTIME
     model: str = Field(
-        default="gpt-realtime",
+        default="gpt-realtime-2.1",
         description="Azure OpenAI realtime deployment name.",
         json_schema_extra={
             "examples": AZURE_REALTIME_MODELS,
@@ -1534,7 +1534,7 @@ class CartesiaSTTConfiguration(BaseSTTConfiguration):
     )
 
 
-OPENAI_STT_MODELS = ["gpt-4o-transcribe"]
+OPENAI_STT_MODELS = ["gpt-transcribe"]
 
 
 @register_stt
@@ -1542,7 +1542,7 @@ class OpenAISTTConfiguration(BaseSTTConfiguration):
     model_config = OPENAI_PROVIDER_MODEL_CONFIG
     provider: Literal[ServiceProviders.OPENAI] = ServiceProviders.OPENAI
     model: str = Field(
-        default="gpt-4o-transcribe",
+        default="gpt-transcribe",
         description="OpenAI transcription model.",
         json_schema_extra={"examples": OPENAI_STT_MODELS},
     )
@@ -1727,7 +1727,7 @@ class HuggingFaceSTTConfiguration(BaseSTTConfiguration):
     )
 
 
-ASSEMBLYAI_STT_MODELS = ["u3-rt-pro"]
+ASSEMBLYAI_STT_MODELS = ["universal-3-6-pro"]
 ASSEMBLYAI_STT_LANGUAGES = ["en", "es", "de", "fr", "pt", "it"]
 
 
@@ -1736,7 +1736,7 @@ class AssemblyAISTTConfiguration(BaseSTTConfiguration):
     model_config = ASSEMBLYAI_PROVIDER_MODEL_CONFIG
     provider: Literal[ServiceProviders.ASSEMBLYAI] = ServiceProviders.ASSEMBLYAI
     model: str = Field(
-        default="u3-rt-pro",
+        default="universal-3-6-pro",
         description="AssemblyAI realtime STT model.",
         json_schema_extra={"examples": ASSEMBLYAI_STT_MODELS},
     )

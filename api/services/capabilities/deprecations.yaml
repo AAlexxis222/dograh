@@ -77,6 +77,15 @@ entries:
     warn_from: 2026-10-02
     source_url: https://platform.openai.com/docs/deprecations
     read_at: 2026-10-02
+  - provider: openai
+    kind: service   # the whole OpenAITTSService: no 1:1 replacement, kept only for existing workflows (VOZ-AC-B1-83, VOZ-D7 option C)
+    model_or_feature: tts
+    date: 2027-01-06
+    effect: shutdown
+    replacement: null
+    warn_from: 2026-10-02
+    source_url: https://platform.openai.com/docs/deprecations
+    read_at: 2026-10-02
   # Registry provider keys are openai_realtime / azure_realtime (ServiceProviders), not "openai".
   # No "gpt-realtime*" glob: it would also flag the replacement gpt-realtime-2.1 and the registry default gpt-realtime-2;
   # dated snapshots are covered by the "-20*" globs (gpt-realtime-2025-08-28, gpt-realtime-mini-2025-12-15).

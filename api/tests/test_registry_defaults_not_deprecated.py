@@ -2,6 +2,7 @@
 
 import datetime as dt
 import inspect
+from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
@@ -11,17 +12,6 @@ from api.services.configuration import registry
 
 TODAY = dt.date(2026, 10, 6)
 
-# Defaults that still point to dead models; VOZ-N0-02 fixes them and removes this set.
-_FIXED_BY_N0_02 = {
-    "AssemblyAISTTConfiguration",
-    "GoogleRealtimeLLMConfiguration",
-    "GoogleVertexRealtimeLLMConfiguration",
-    "GrokRealtimeLLMConfiguration",
-    "OpenAISTTConfiguration",
-    "OpenAITTSService",
-}
-
-
 def _configs():
     for name, cls in inspect.getmembers(registry, inspect.isclass):
         if issubclass(cls, BaseModel) and cls.__module__ == registry.__name__ and "model" in cls.model_fields \
@@ -29,16 +19,26 @@ def _configs():
             yield name, cls
 
 
-@pytest.mark.parametrize(
-    "name,cls",
-    [
-        pytest.param(n, c, marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason="fixed by VOZ-N0-02"))
-        if n in _FIXED_BY_N0_02
-        else (n, c)
-        for n, c in _configs()
-    ],
-)
+_DEFAULTS_DIR = Path(registry.__file__).parent
+
+
+def _service_deprecated_as_a_whole(cls) -> bool:
+    """True when deprecations.yaml retires the class's whole service (``kind: service``, no 1:1 replacement)."""
+    provider = str(getattr(cls.model_fields["provider"].default, "value", cls.model_fields["provider"].default))
+    service_types = {t.name.lower() for t, by_provider in registry.REGISTRY.items() if by_provider.get(cls.model_fields["provider"].default) is cls}
+    return any(
+        e["kind"] == "service" and e["provider"] == provider and e["model_or_feature"] in service_types
+        for e in load_deprecations()
+    )
+
+
+@pytest.mark.parametrize("name,cls", list(_configs()))
 def test_registry_defaults_not_deprecated(name, cls):
+    if _service_deprecated_as_a_whole(cls):
+        # Kept only for existing workflows (VOZ-AC-B1-83): it must not be a default anywhere.
+        offenders = [p.name for p in _DEFAULTS_DIR.glob("defaults*.py") if name in p.read_text(encoding="utf-8")]
+        assert not offenders, f"{name} is deprecated as a service but is a default in {offenders}"
+        return
     provider = str(getattr(cls.model_fields["provider"].default, "value", cls.model_fields["provider"].default))
     model = cls.model_fields["model"].default
     status = status_for(provider, model, today=TODAY)

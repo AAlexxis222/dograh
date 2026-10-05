@@ -268,7 +268,7 @@ class TestRealtimeOverride:
                 "realtime": {
                     "provider": "grok_realtime",
                     "api_key": "xai-key",
-                    "model": "grok-voice-think-fast-1.0",
+                    "model": "grok-voice-latest",
                     "voice": "Sal",
                 }
             },

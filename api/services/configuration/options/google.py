@@ -8,7 +8,7 @@ GOOGLE_VERTEX_MODELS = (
     "gemini-3.5-flash-lite",
 )
 
-GOOGLE_REALTIME_MODELS = ("gemini-3.1-flash-live-preview",)
+GOOGLE_REALTIME_MODELS = ("gemini-3.8-live",)
 GOOGLE_REALTIME_VOICES = ("Puck", "Charon", "Kore", "Fenrir", "Aoede")
 GOOGLE_REALTIME_LANGUAGES = (
     "ar",
@@ -38,7 +38,7 @@ GOOGLE_REALTIME_LANGUAGES = (
     "zh",
 )
 
-GOOGLE_VERTEX_REALTIME_MODELS = ("google/gemini-live-2.5-flash-native-audio",)
+GOOGLE_VERTEX_REALTIME_MODELS = ("gemini-3.8-live",)
 GOOGLE_VERTEX_REALTIME_VOICES = GOOGLE_REALTIME_VOICES
 GOOGLE_VERTEX_REALTIME_LANGUAGES = GOOGLE_REALTIME_LANGUAGES
 
