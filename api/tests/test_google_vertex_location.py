@@ -64,11 +64,9 @@ def _build_realtime(location):
             credentials=None,
         )
     )
-    target = (
-        "api.services.pipecat.realtime.gemini_live_vertex."
-        "DograhGeminiLiveVertexLLMService"
-    )
-    with patch(target) as mock:
+    with patch(
+        "api.services.pipecat.service_factory.DograhGeminiLiveVertexLLMService"
+    ) as mock:
         create_realtime_llm_service(user_config, _audio_config())
     mock.assert_called_once()
     return mock.call_args.kwargs["location"]

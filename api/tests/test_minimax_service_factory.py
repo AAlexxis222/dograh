@@ -167,6 +167,7 @@ class TestMiniMaxTTSServiceFactory:
                 provider=ServiceProviders.OPENAI.value,
                 api_key="test-key",
                 model="tts-1",
+                voice="alloy",
             )
         )
         with (
