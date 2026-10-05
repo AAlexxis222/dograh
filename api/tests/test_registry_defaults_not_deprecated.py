@@ -31,7 +31,7 @@ def _configs():
 @pytest.mark.parametrize(
     "name,cls",
     [
-        pytest.param(n, c, marks=pytest.mark.xfail(strict=True, reason="fixed by VOZ-N0-02"))
+        pytest.param(n, c, marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason="fixed by VOZ-N0-02"))
         if n in _FIXED_BY_N0_02
         else (n, c)
         for n, c in _configs()
@@ -58,3 +58,8 @@ def test_shutdown_is_blocking_from_24h_before_date():
 def test_every_entry_has_source_and_read_at():
     for e in load_deprecations():
         assert e["source_url"].startswith("http") and e["read_at"], e
+
+
+def test_legacy_entry_has_no_date_and_is_legacy():
+    s = status_for("grok_realtime", "grok-voice-think-fast-1.0", today=TODAY)
+    assert s.state == "legacy" and "grok-voice-latest" in s.hint
