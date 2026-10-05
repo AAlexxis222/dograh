@@ -7,9 +7,14 @@ def _default(cls_name: str, field: str):
 
 
 def test_azure_speech_region_defaults_to_westeurope():
-    regions = [c.model_fields["region"].default for c in vars(registry).values()
-               if isinstance(c, type) and hasattr(c, "model_fields") and "region" in getattr(c, "model_fields", {})
-               and "azure" in c.__name__.lower()]
+    regions = [
+        c.model_fields["region"].default
+        for c in vars(registry).values()
+        if isinstance(c, type)
+        and hasattr(c, "model_fields")
+        and "region" in getattr(c, "model_fields", {})
+        and "azure" in c.__name__.lower()
+    ]
     assert regions and all(r == "westeurope" for r in regions)
 
 
@@ -24,9 +29,15 @@ ENGLISH_DEFAULT_EXEMPT = {
 
 
 def test_tts_defaults_are_not_english_only():
-    english = [n for n, c in vars(registry).items() if isinstance(c, type) and hasattr(c, "model_fields")
-               and "language" in getattr(c, "model_fields", {}) and str(c.model_fields["language"].default).startswith("en")
-               and n not in ENGLISH_DEFAULT_EXEMPT]
+    english = [
+        n
+        for n, c in vars(registry).items()
+        if isinstance(c, type)
+        and hasattr(c, "model_fields")
+        and "language" in getattr(c, "model_fields", {})
+        and str(c.model_fields["language"].default).startswith("en")
+        and n not in ENGLISH_DEFAULT_EXEMPT
+    ]
     assert not english, f"TTS/STT defaults still English: {english}"
 
 

@@ -1112,7 +1112,7 @@ export type CartesiaSttConfiguration = {
     /**
      * Language
      *
-     * ISO 639-1 language code. ink-2 currently supports English only.
+     * ISO 639-1 language code. ink-2 supports en, fr, hi, ja and es.
      */
     language?: string;
 };
@@ -1138,7 +1138,7 @@ export type CartesiaTtsConfiguration = {
     /**
      * Voice
      *
-     * Cartesia voice UUID from your Cartesia dashboard.
+     * Cartesia voice UUID from your Cartesia dashboard. Default is provisional: not yet verified as a Castilian Spanish voice.
      */
     voice?: string;
     /**
@@ -3543,7 +3543,7 @@ export type InworldTtsConfiguration = {
     /**
      * Voice
      *
-     * Inworld voice ID. Use Ashley for the default warm English voice, or a workspace voice ID for a cloned/custom voice.
+     * Inworld voice ID. Ashley is the default (an English voice, unverified for Spanish); use a workspace voice ID for a cloned/custom voice.
      */
     voice?: string;
     /**
