@@ -107,7 +107,7 @@ class Scenario:
     end_at: (
         int  # when to stop the pipeline (>= last event + 6500 for ghost-turn window)
     )
-    start: str = "default"  # "default" | "min_words"
+    start: str = "default"  # "default" | "min_words" | "min_words_only"
     mute_until_bot: bool = False
     bot_speaking_at: int | None = None
     end_kwargs: dict = field(default_factory=dict)  # passed to emit_end_of_turn
@@ -183,6 +183,9 @@ class Tap(FrameProcessor):
 def _start_strategies(kind: str):
     if kind == "min_words":
         return [MinWordsUserTurnStartStrategy(min_words=3), VADUserTurnStartStrategy()]
+    if kind == "min_words_only":
+        # What production runs for min_words, hybrid included (run_pipeline.py:293-298): no VAD.
+        return [MinWordsUserTurnStartStrategy(min_words=3)]
     return [TranscriptionUserTurnStartStrategy(), VADUserTurnStartStrategy()]  # rp:189
 
 

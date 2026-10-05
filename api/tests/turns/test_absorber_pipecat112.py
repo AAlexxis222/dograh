@@ -130,3 +130,35 @@ async def test_mark_is_the_longest_text_not_the_last_forwarded():
     assert not [
         k for k in keys[closed:] if k.startswith("DOWN:InterimTranscriptionFrame")
     ], r.events
+
+
+# Review r1 F2: the late filter is for interims after a local turn CLOSED. Before the local turn
+# opens (production min_words: MinWords(3) alone, no VAD) a Flux revision must not freeze the
+# interims that follow, or MinWords never sees 3 words and the barge-in waits for the final.
+REVISION_BEFORE_OPEN = Scenario(
+    id="Srevision_before_open",
+    flux=[
+        (100, "start", ""),
+        (300, "update", "eh espera"),
+        (500, "update", "espera un"),  # Flux revises the first word
+        (700, "update", "espera un momento"),
+        (900, "update", "espera un momento por"),
+        (2500, "end", "espera un momento por favor"),
+    ],
+    speaking=[(100, 2300)],
+    verdicts=[E.COMPLETE],
+    end_at=9000,
+    start="min_words_only",
+    bot_speaking_at=0,
+)
+
+
+@pytest.mark.asyncio
+async def test_revision_before_the_local_turn_opens_does_not_delay_the_barge_in():
+    r = await run_scenario(REVISION_BEFORE_OPEN, absorber=True)
+    interruptions = [
+        t
+        for t, key in r.events
+        if key == "UP:InterruptionFrame" and t > REVISION_BEFORE_OPEN.bot_speaking_at
+    ]
+    assert interruptions and interruptions[0] < 1000, (interruptions, r.absorber_stats)

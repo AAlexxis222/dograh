@@ -69,6 +69,8 @@ class FluxTurn:
     last_interim: str | None = None
     # Longest interim text of this Flux turn, the reference a late interim must extend.
     high_water: str | None = None
+    # A local turn closed while this Flux turn was live: from then on interims are late.
+    local_closed: bool = False
     emitted: str | None = None  # text already sent downstream for this Flux turn
     final_seen: bool = False
     stop_seen: bool = False  # Flux's stop proposal seen before any final
@@ -354,6 +356,8 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
                 await self._release_held_into_turn()
             elif isinstance(frame, UserStoppedSpeakingFrame):
                 self._local_open = False
+                if self._turn is not None:
+                    self._turn.local_closed = True
                 await self._cancel_wait()
             elif isinstance(frame, VADUserStoppedSpeakingFrame):
                 await self._on_local_vad_stop()
@@ -408,9 +412,11 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
             # B2 log #2: after the local close, an ``Update`` that repeats, rewrites
             # (``None``) or shortens the text would open a turn, and so would one that
             # restores words a shorter one dropped: only words beyond the longest text
-            # seen for this turn pass.
+            # seen for this turn pass. Before any local close nothing is late: the
+            # interims are what opens the local turn (min_words counts them).
             if (
                 not self._local_open
+                and turn.local_closed
                 and high_water is not None
                 and not token_delta(high_water, frame.text)
             ):
