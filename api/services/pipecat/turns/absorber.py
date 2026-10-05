@@ -1,10 +1,16 @@
 """``TurnSignalAbsorberProcessor`` — the hybrid turn mode (spec §6.1.1, ratified form F1).
 
-Sits right behind a server-turn STT (Deepgram Flux, Dograh-Flux, Cartesia ink-2) when
-``turn.source=local``. The STT transcribes; the local VAD + analyzer decide the turns:
+Sits at point B, right above the user aggregator (below the answer supervisor, which reads
+the raw proposals), when ``turn.source=local`` runs over a server-turn STT (Deepgram Flux,
+Dograh-Flux, Cartesia ink-2). The STT transcribes; the local VAD + analyzer decide the turns:
 
-* Flux's own ``UserStarted/StoppedSpeakingFrame`` (its StartOfTurn/EndOfTurn) are swallowed
-  so they never reach the aggregator's turn controller.
+* The STT's own turn proposals (Pipecat 1.12 ``ProposedUserStarted/StoppedSpeakingFrame``,
+  Flux's StartOfTurn/EndOfTurn) are discarded, under mute too, so they never reach the
+  aggregator's turn controller: one that did would leave ``_user_speaking`` set and keep the
+  local close from finalizing.
+* An interim is forwarded only with a local turn open or when it adds words: Flux repeats the
+  same text in its ``Update`` interims, and with the local turn closed a repeat would open a
+  new turn (the start strategy reads interims) and cut the bot.
 * On the local VAD stop, with a local turn open, the last interim is *promoted* as a
   ``TranscriptionFrame(finalized=False)`` so the local stop strategy has text to close on.
   A second local turn inside the same Flux turn gets only the token delta.
@@ -14,8 +20,9 @@ Sits right behind a server-turn STT (Deepgram Flux, Dograh-Flux, Cartesia ink-2)
   nothing emitted and no local turn open → held ``hold_ms`` for the next local turn, then
   delivered as a message of its own (D-13). A *second* final of the same Flux turn never
   replaces: what it does not extend is appended as a message of its own.
-* State is indexed by Flux turn and reset on Flux's *next* StartOfTurn, never on its
-  UserStopped, which overtakes its own final (spike 8a, S10).
+* State is indexed by Flux turn and reset on Flux's *next* StartOfTurn proposal, never on its
+  stop proposal (in 1.7 the stop overtook its own final, spike 8a S10; in 1.12 it is a
+  ControlFrame that follows the final, and a second final may still extend the turn).
 
 Measured in the 8a spike (``docs/2026-09-09-8a-hybrid-turn-viability`` in the XPAND voice
 repo): without this processor the aggregator sees two sets of turn signals and, with a
@@ -44,6 +51,8 @@ from pipecat.frames.frames import (
     Frame,
     InterimTranscriptionFrame,
     InterruptionFrame,
+    ProposedUserStartedSpeakingFrame,
+    ProposedUserStoppedSpeakingFrame,
     TranscriptionFrame,
     UserMuteStartedFrame,
     UserMuteStoppedFrame,
@@ -60,7 +69,7 @@ class FluxTurn:
     last_interim: str | None = None
     emitted: str | None = None  # text already sent downstream for this Flux turn
     final_seen: bool = False
-    stop_seen: bool = False  # Flux's own UserStopped seen (it overtakes the final)
+    stop_seen: bool = False  # Flux's stop proposal seen before any final
     interim_frame: InterimTranscriptionFrame | None = field(default=None, repr=False)
 
 
@@ -138,17 +147,6 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
         # set for text that never left (spike red team §7).
         turn.emitted = text
         self.stats["promoted"] += 1
-
-    async def _swallow_turn_signal(
-        self, frame: Frame, direction: FrameDirection, key: str
-    ):
-        if self._muted:
-            # The aggregator suppresses these itself while muted (agg:1085-1094); passing
-            # them through keeps the mute path observable (README 8a §5.3-4).
-            self.stats["passthrough_muted_signal"] += 1
-            await self.push_frame(frame, direction)
-            return
-        self.stats[key] += 1
 
     async def _wait_then_promote(self) -> None:
         await asyncio.sleep(self._wait_s)
@@ -381,11 +379,10 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
             await self.push_frame(frame, direction)
             return
 
-        # DOWNSTREAM: STT-originated frames.
-        if isinstance(frame, UserStartedSpeakingFrame):
-            # Flux's StartOfTurn is the single reset point (§5.3-8/13): not the
-            # UserStopped handler, since Flux's UserStopped overtakes its own final
-            # (S10), and not the final either, since a second one may still extend it.
+        # DOWNSTREAM: STT-originated frames. Both proposals are discarded, also under mute.
+        if isinstance(frame, ProposedUserStartedSpeakingFrame):
+            # Flux's StartOfTurn is the single reset point (§5.3-8/13): not the stop
+            # proposal, and not the final either, since a second one may still extend it.
             if (
                 self._turn is not None
                 and self._turn.stop_seen
@@ -394,21 +391,26 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
                 self.stats["turn_closed_without_final"] += 1
             await self._cancel_wait()
             self._turn = FluxTurn()
-            await self._swallow_turn_signal(
-                frame, direction, "swallowed_UserStartedSpeakingFrame"
-            )
+            self.stats["discarded_ProposedUserStartedSpeakingFrame"] += 1
             return
-        if isinstance(frame, UserStoppedSpeakingFrame):
+        if isinstance(frame, ProposedUserStoppedSpeakingFrame):
             if self._turn is not None and not self._turn.final_seen:
                 self._turn.stop_seen = True
-            await self._swallow_turn_signal(
-                frame, direction, "swallowed_UserStoppedSpeakingFrame"
-            )
+            self.stats["discarded_ProposedUserStoppedSpeakingFrame"] += 1
             return
         if isinstance(frame, InterimTranscriptionFrame):
             turn = self._turn_or_new()
+            previous = turn.last_interim
             turn.last_interim = frame.text
             turn.interim_frame = frame
+            if (
+                not self._local_open
+                and previous is not None
+                and token_delta(previous, frame.text) == ""
+            ):
+                # B2 log #2: a repeated ``Update`` after the local close would open a turn.
+                self.stats["repeated_interim_dropped"] += 1
+                return
             await self.push_frame(frame, direction)
             return
         if isinstance(frame, TranscriptionFrame):

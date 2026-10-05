@@ -1,5 +1,6 @@
-"""STT stub reproducing Deepgram Flux's frame-emission CALL PATTERN (spec §1.1), not a
-pre-ordered frame list. Metadata frame identical to Flux: ttfs 0.0 + External strategies."""
+"""STT stub reproducing Deepgram Flux's frame-emission CALL PATTERN in Pipecat 1.12
+(``pipecat/src/pipecat/services/deepgram/flux/stt_base.py``), not a pre-ordered frame list.
+Metadata frame identical to Flux: ttfs 0.0 + External strategies."""
 
 import asyncio
 from collections.abc import AsyncGenerator
@@ -7,11 +8,11 @@ from collections.abc import AsyncGenerator
 from pipecat.frames.frames import (
     Frame,
     InterimTranscriptionFrame,
+    ProposedUserStartedSpeakingFrame,
+    ProposedUserStoppedSpeakingFrame,
     StartFrame,
     STTMetadataFrame,
     TranscriptionFrame,
-    UserStartedSpeakingFrame,
-    UserStoppedSpeakingFrame,
 )
 from pipecat.services.stt_service import STTService
 from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
@@ -28,15 +29,13 @@ class FluxStub(STTService):
 
     @property
     def supports_ttfs(self) -> bool:
-        return False  # flux/stt.py:243-247
+        return False
 
     def service_metadata_frame(self) -> STTMetadataFrame:
         frame = (
             super().service_metadata_frame()
         )  # ttfs_p99_latency == 0.0 (stt_service.py:554-561)
-        frame.user_turn_strategies = (
-            ExternalUserTurnStrategies()
-        )  # flux/base.py:237-247
+        frame.user_turn_strategies = ExternalUserTurnStrategies()  # stt_base.py:308-320
         return frame
 
     async def start(self, frame: StartFrame):
@@ -51,18 +50,26 @@ class FluxStub(STTService):
         t = self._timeline.now_ms() if self._timeline.t0 is not None else -1.0
         self.emitted.append((t, kind, text))
 
-    async def emit_start_of_turn(self) -> None:
-        # flux/base.py:690-691 — broadcast only; Dograh passes should_interrupt=False.
-        self._log("StartOfTurn")
-        await self.broadcast_frame(UserStartedSpeakingFrame)
+    async def _push_partial(self, text: str) -> None:
+        # stt_base.py:970-975 (``_push_partial_transcript``): blank text pushes nothing.
+        if text:
+            await self.push_frame(
+                InterimTranscriptionFrame(text, "", time_now_iso8601())
+            )
 
-    async def emit_eager(self, text: str) -> None:
-        # flux/base.py:832
-        self._log("EagerEndOfTurn", text)
-        await self.push_frame(InterimTranscriptionFrame(text, "", time_now_iso8601()))
+    async def emit_start_of_turn(self, text: str = "") -> None:
+        # stt_base.py:801-820 — a proposal (broadcast) plus the first words, if any.
+        self._log("StartOfTurn", text)
+        await self.broadcast_frame(ProposedUserStartedSpeakingFrame)
+        await self._push_partial(text)
+
+    async def emit_update(self, text: str) -> None:
+        # stt_base.py:948-968 — every Update is an interim, repeats included.
+        self._log("Update", text)
+        await self._push_partial(text)
 
     async def emit_turn_resumed(self) -> None:
-        self._log("TurnResumed")  # flux/base.py:698-709 — nothing reaches the pipeline
+        self._log("TurnResumed")  # stt_base.py:822-834 — nothing reaches the pipeline
 
     async def emit_end_of_turn(
         self,
@@ -71,11 +78,10 @@ class FluxStub(STTService):
         yield_between_final_and_stop: bool = False,
         suppress_transcript: bool = False,
     ) -> None:
-        # flux/base.py:766-794 — final (unless min_confidence drops it) then UserStopped.
-        # Default (False): nothing between the two, the spec §1.1 idealisation. True mimics
-        # the real service's `await self._handle_transcription(...)` (flux/base.py:792) and
-        # `await self.stop_processing_metrics()` (:793) that sit before the broadcast (:794),
-        # with one loop yield (red team F15 / register M5).
+        # stt_base.py:867-922 — final (unless min_confidence drops it), then the stop
+        # proposal: a ControlFrame, so it stays BEHIND the final (frames.py:1393-1405).
+        # True mimics the ``await self._handle_transcription(...)`` that sits between the two
+        # (:920), with one loop yield.
         self._log("EndOfTurn", text)
         if not suppress_transcript:
             await self.push_frame(
@@ -83,4 +89,4 @@ class FluxStub(STTService):
             )
         if yield_between_final_and_stop:
             await asyncio.sleep(0)
-        await self.broadcast_frame(UserStoppedSpeakingFrame)
+        await self.broadcast_frame(ProposedUserStoppedSpeakingFrame)

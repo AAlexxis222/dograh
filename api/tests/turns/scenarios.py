@@ -10,7 +10,7 @@ TEXT = "quiero reservar para el sábado"
 # --- R1 double close: Flux's final lands after the local VAD stop (1000 ms) ------------------
 S1 = Scenario(
     id="S1",
-    flux=[(0, "start", ""), (800, "eager", TEXT), (1400, "end", TEXT)],
+    flux=[(0, "start", ""), (800, "update", TEXT), (1400, "end", TEXT)],
     speaking=[(0, 1000)],
     verdicts=[E.COMPLETE],
     end_at=8000,
@@ -18,7 +18,7 @@ S1 = Scenario(
 
 S2 = Scenario(
     id="S2",
-    flux=[(0, "start", ""), (800, "eager", TEXT), (900, "end", TEXT)],
+    flux=[(0, "start", ""), (800, "update", TEXT), (900, "end", TEXT)],
     speaking=[(0, 1000)],
     verdicts=[E.COMPLETE],
     end_at=8000,
@@ -26,7 +26,7 @@ S2 = Scenario(
 
 S3 = Scenario(
     id="S3",
-    flux=[(0, "start", ""), (800, "eager", TEXT), (1000, "end", TEXT)],
+    flux=[(0, "start", ""), (800, "update", TEXT), (1000, "end", TEXT)],
     speaking=[(0, 1000)],
     verdicts=[E.COMPLETE],
     end_at=8000,
@@ -38,18 +38,18 @@ S4 = Scenario(
     speaking=[(0, 1000)],
     verdicts=[E.COMPLETE],
     end_at=8000,
-)  # no eager
+)  # no interim
 
 S8 = Scenario(
     id="S8",
-    flux=[(0, "start", ""), (800, "eager", TEXT), (1900, "end", TEXT)],
+    flux=[(0, "start", ""), (800, "update", TEXT), (1900, "end", TEXT)],
     speaking=[(0, 1000)],
     verdicts=[E.COMPLETE],
     end_at=8500,
 )  # orphan final
 
 # --- R2 partial interim promoted while the sentence is still unfinished ---------------------
-# The user pauses mid-sentence: Flux emits an EagerEndOfTurn with only the first half, then
+# The user pauses mid-sentence: Flux sends an Update with only the first half, then
 # TurnResumed, and the final with the whole sentence lands one second later.
 PART = "quiero reservar para el"
 
@@ -57,7 +57,7 @@ S5 = Scenario(
     id="S5",
     flux=[
         (0, "start", ""),
-        (700, "eager", PART),
+        (700, "update", PART),
         (1200, "resumed", ""),
         (2400, "end", TEXT),
     ],
@@ -70,7 +70,7 @@ S5B = Scenario(
     id="S5b",
     flux=[
         (0, "start", ""),
-        (700, "eager", PART),
+        (700, "update", PART),
         (1200, "resumed", ""),
         (2400, "end", TEXT),
     ],
@@ -82,7 +82,7 @@ S5B = Scenario(
 # --- R3 barge-in: the user talks over the bot -----------------------------------------------
 S6 = Scenario(
     id="S6",
-    flux=[(0, "start", ""), (800, "eager", TEXT), (1400, "end", TEXT)],
+    flux=[(0, "start", ""), (800, "update", TEXT), (1400, "end", TEXT)],
     speaking=[(60, 1000)],
     verdicts=[E.COMPLETE],
     end_at=8000,
@@ -93,8 +93,8 @@ S7 = Scenario(
     id="S7",
     flux=[
         (0, "start", ""),
-        (300, "eager", "quiero"),
-        (800, "eager", TEXT),
+        (300, "update", "quiero"),
+        (800, "update", TEXT),
         (1400, "end", TEXT),
     ],
     speaking=[(60, 1000)],
@@ -112,10 +112,10 @@ S9B = Scenario(
     id="S9b",
     flux=[
         (0, "start", ""),
-        (800, "eager", TEXT),
+        (800, "update", TEXT),
         (1400, "end", TEXT),
         (9000, "start", ""),
-        (9800, "eager", TEXT),
+        (9800, "update", TEXT),
         (10400, "end", TEXT),
     ],
     speaking=[(0, 1000), (9000, 10000)],
@@ -127,12 +127,12 @@ S9B = Scenario(
 
 S11 = Scenario(
     id="S11",
-    flux=[(0, "start", ""), (800, "eager", TEXT), (1400, "end", TEXT)],
+    flux=[(0, "start", ""), (800, "update", TEXT), (1400, "end", TEXT)],
     speaking=[(800, 1000)],
     verdicts=[E.COMPLETE],
     end_at=8000,
     bot_speaking_at=-500,
-)  # interruption and eager interim on the same deadline: queue flush vs text
+)  # interruption and Update interim on the same deadline: queue flush vs text
 
 # --- D-13: a final with no interim and no local turn (the local VAD never fired) ------------
 SGHOST = Scenario(
@@ -154,7 +154,7 @@ SREWRITE = Scenario(
     id="Srewrite",
     flux=[
         (0, "start", ""),
-        (700, "eager", PART),
+        (700, "update", PART),
         (1200, "resumed", ""),
         (2400, "end", REWRITE_FINAL),
     ],

@@ -20,6 +20,8 @@ from pipecat.frames.frames import (
     Frame,
     InterimTranscriptionFrame,
     InterruptionFrame,
+    ProposedUserStartedSpeakingFrame,
+    ProposedUserStoppedSpeakingFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
     UserMuteStartedFrame,
@@ -79,6 +81,8 @@ TEXT_FRAMES = (
 )
 
 WATCHED = (
+    ProposedUserStartedSpeakingFrame,
+    ProposedUserStoppedSpeakingFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
     InterruptionFrame,
@@ -97,7 +101,7 @@ WATCHED = (
 @dataclass
 class Scenario:
     id: str
-    flux: list[tuple[int, str, str]]  # (t_ms, "start"|"eager"|"resumed"|"end", text)
+    flux: list[tuple[int, str, str]]  # (t_ms, "start"|"update"|"resumed"|"end", text)
     speaking: list[tuple[int, int]]  # VAD speech windows [a, b) in ms
     verdicts: list[EndOfTurnState]
     end_at: (
@@ -231,10 +235,10 @@ async def run_scenario(
     wait_ms: int = 0,
     hold_ms: int = 1500,
     vad_jitter_ms: int = 0,
-    voicemail_detector=None,
+    answer_supervisor=None,
 ) -> Result:
-    """``voicemail_detector``: optional pipecat ``VoicemailDetector``, inserted where
-    ``build_pipeline`` puts it — right below the absorber, above the aggregator."""
+    """``answer_supervisor``: optional ``AnswerSupervisor``, inserted and bound where
+    ``build_pipeline``/``run_pipeline`` put it — point B, right above the absorber."""
     offset = _timeline_offset(sc)
     timeline = Timeline(offset_ms=offset)
     counts: Counter = Counter()
@@ -302,14 +306,15 @@ async def run_scenario(
     llm = ContextCapturingMockLLM()
     tts = MockTTSService(mock_audio_duration_ms=3000, frame_delay=0)
     processors = [transport.input(), stub]
+    if answer_supervisor is not None:
+        answer_supervisor.bind(user_agg)
+        processors.append(answer_supervisor)
     absorber_processor = None
     if absorber:
         absorber_processor = TurnSignalAbsorberProcessor(
             wait_ms=wait_ms, hold_ms=hold_ms
         )
         processors.append(absorber_processor)
-    if voicemail_detector is not None:
-        processors.append(voicemail_detector.detector())
     processors += [
         Tap(timeline, counts, events),
         user_agg,
@@ -326,8 +331,8 @@ async def run_scenario(
     for t_ms, kind, text in sc.flux:
         if kind == "start":
             timeline.at(t_ms, stub.emit_start_of_turn)
-        elif kind == "eager":
-            timeline.at(t_ms, lambda text=text: stub.emit_eager(text))
+        elif kind == "update":
+            timeline.at(t_ms, lambda text=text: stub.emit_update(text))
         elif kind == "resumed":
             timeline.at(t_ms, stub.emit_turn_resumed)
         elif kind == "end":

@@ -1,6 +1,6 @@
 """turn.source=local with a server-turn STT wires the hybrid: local strategies, the absorber
-right behind the STT, the hybrid aggregator. Everything else is exactly today's pipeline
-(spec §1.3 'expose ≠ change')."""
+at point B (right above the user aggregator, below the answer supervisor), the hybrid
+aggregator. Everything else is exactly today's pipeline (spec §1.3 'expose ≠ change')."""
 
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.turns.user_start import (
@@ -117,29 +117,28 @@ def _named(name: str) -> FrameProcessor:
     return FrameProcessor(name=name)
 
 
-class _VoicemailDetector:
-    """The two processors ``build_pipeline`` asks a detector for."""
+class _AnswerSupervisor(FrameProcessor):
+    """The supervisor is a processor that hands ``build_pipeline`` its context gate."""
 
-    def detector(self):
-        return _named("voicemail")
+    def __init__(self):
+        super().__init__(name="answer_supervisor")
 
     def llm_gate(self):
         return _named("llm_gate")
 
 
-def _build(absorber, voicemail_detector=None):
+def _build(absorber, answer_supervisor=None):
     return build_pipeline(
         _Transport(),
         _named("stt"),
         _named("audio"),
-        _named("llm"),
-        _named("tts"),
         _named("user_agg"),
         _named("assistant_agg"),
-        _named("callbacks"),
+        _named("monitor"),
+        [_named("generation")],
         _named("metrics"),
         _named("funnel"),
-        voicemail_detector=voicemail_detector,
+        answer_supervisor=answer_supervisor,
         turn_signal_absorber=absorber,
     )
 
@@ -153,17 +152,48 @@ def _names(pipeline) -> list[str]:
     ]
 
 
-def test_absorber_sits_right_behind_the_stt():
-    pipeline = _build(TurnSignalAbsorberProcessor())
-    assert _names(pipeline)[:4] == ["in", "funnel", "stt", "absorber"]
+TAIL = ["monitor", "generation", "out", "audio", "assistant_agg", "metrics"]
 
 
+# Pipecat 1.12 rewrite of "absorber right behind the STT": point A became point B. With an
+# answer supervisor (the outbound case) the absorber goes BELOW it, because the supervisor
+# times the answer on Flux's raw ``ProposedUserStartedSpeakingFrame``
+# (``answer_supervisor.py:261-266``), which the absorber discards; and ABOVE the aggregator,
+# whose turn signals it is there to replace.
+def test_absorber_sits_at_point_b():
+    pipeline = _build(TurnSignalAbsorberProcessor(), _AnswerSupervisor())
+    assert _names(pipeline) == [
+        "in",
+        "funnel",
+        "stt",
+        "answer_supervisor",
+        "absorber",
+        "user_agg",
+        "llm_gate",
+        *TAIL,
+    ]
+
+
+# Rewrite of "no absorber keeps today's order": today's order is now upstream's
+# (``stt → answer_supervisor → user_aggregator → llm_gate → call_monitor → generation``).
 def test_no_absorber_keeps_todays_order():
-    assert _names(_build(None))[:4] == ["in", "funnel", "stt", "user_agg"]
+    assert _names(_build(None, _AnswerSupervisor())) == [
+        "in",
+        "funnel",
+        "stt",
+        "answer_supervisor",
+        "user_agg",
+        "llm_gate",
+        *TAIL,
+    ]
+    assert _names(_build(None)) == ["in", "funnel", "stt", "user_agg", *TAIL]
 
 
-def test_absorber_sits_above_the_voicemail_detector():
-    # The detector must classify the text the absorber lets through, not the STT's own
-    # finals: behind it, it would see turn signals the aggregator never gets.
-    pipeline = _build(TurnSignalAbsorberProcessor(), _VoicemailDetector())
-    assert _names(pipeline)[2:5] == ["stt", "absorber", "voicemail"]
+# Rewrite of "absorber above the voicemail detector": the merge deleted our
+# ``VoicemailDetector`` block for upstream's ``AnswerSupervisor``, which classifies the
+# aggregator's turn message instead of frames (``answer_supervisor.py:120-128, :284``), so it
+# no longer needs to sit below the absorber. What still holds without a supervisor (inbound):
+# the absorber is the last thing before the aggregator.
+def test_absorber_sits_right_above_the_user_aggregator_without_a_supervisor():
+    pipeline = _build(TurnSignalAbsorberProcessor())
+    assert _names(pipeline)[:5] == ["in", "funnel", "stt", "absorber", "user_agg"]

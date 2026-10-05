@@ -61,8 +61,9 @@ def build_pipeline(
         answer_supervisor: Optional answer sensor before the user aggregator,
             with its context gate immediately after the aggregator.
         turn_signal_absorber: Optional TurnSignalAbsorberProcessor (hybrid turn mode).
-            Sits directly behind the STT, ahead of the answer supervisor, so it sees
-            the STT's turn signals before anything else does.
+            Sits at point B: below the answer supervisor, which times the answer on
+            the STT's raw turn proposals the absorber discards, and directly above
+            the user aggregator, whose turn signals it replaces.
     """
     # Build processors with optional answer handling.
     #
@@ -76,12 +77,12 @@ def build_pipeline(
         stt,
     ]
 
+    if answer_supervisor is not None:
+        processors.append(answer_supervisor)
+
     if turn_signal_absorber is not None:
         logger.info("Adding hybrid turn signal absorber to pipeline")
         processors.append(turn_signal_absorber)
-
-    if answer_supervisor is not None:
-        processors.append(answer_supervisor)
 
     processors.append(user_context_aggregator)
 
