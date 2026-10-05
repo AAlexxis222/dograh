@@ -18,7 +18,7 @@ def test_xai_tts_configuration_defaults():
 
     assert config.provider == ServiceProviders.XAI
     assert config.voice == "eve"
-    assert config.language == "en"
+    assert config.language == "es"
     # xAI TTS has no model selector; a constant satisfies the shared contract.
     assert config.model == "xai-tts"
     assert XAI_TTS_VOICES == ["eve", "ara", "leo", "rex", "sal"]

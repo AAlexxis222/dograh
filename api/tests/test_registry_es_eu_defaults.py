@@ -19,8 +19,6 @@ def test_ink2_lists_spanish():
 
 # Explicit exemptions: no Spanish support documented in this codebase's options.
 ENGLISH_DEFAULT_EXEMPT = {
-    "CambTTSConfiguration",  # no language options list for Camb in the repo
-    "XAITTSConfiguration",  # no language options list for xAI in the repo
     "SpeachesSTTConfiguration",  # default model is the English-only distil-whisper .en
 }
 
@@ -30,3 +28,23 @@ def test_tts_defaults_are_not_english_only():
                and "language" in getattr(c, "model_fields", {}) and str(c.model_fields["language"].default).startswith("en")
                and n not in ENGLISH_DEFAULT_EXEMPT]
     assert not english, f"TTS/STT defaults still English: {english}"
+
+
+def test_task_literal_voice_and_model_defaults():
+    assert _default("DeepgramTTSConfiguration", "voice") == "aura-2-carina-es"
+    assert _default("GoogleTTSConfiguration", "voice") == "es-ES-Chirp3-HD-Kore"
+    assert _default("CartesiaTTSConfiguration", "model") == "sonic-3.6"
+    assert (
+        _default("CartesiaTTSConfiguration", "voice")
+        == "3faa81ae-d3d8-4ab1-9e44-e50e46d33c30"
+    )
+    assert _default("AzureSpeechTTSConfiguration", "voice") == "es-ES-ElviraNeural"
+
+
+def test_new_defaults_are_listed_in_their_option_lists():
+    from api.services.configuration.options.azure import AZURE_SPEECH_TTS_VOICES
+    from api.services.configuration.options.google import GOOGLE_TTS_VOICES
+
+    assert "es-ES" in registry.INWORLD_TTS_LANGUAGES
+    assert _default("GoogleTTSConfiguration", "voice") in GOOGLE_TTS_VOICES
+    assert _default("AzureSpeechTTSConfiguration", "voice") in AZURE_SPEECH_TTS_VOICES

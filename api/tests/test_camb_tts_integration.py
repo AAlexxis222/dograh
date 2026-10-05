@@ -34,7 +34,7 @@ class TestCambTTSConfiguration:
         assert cfg.provider == ServiceProviders.CAMB
         assert cfg.model == "mars-flash"
         assert cfg.voice == "147320"
-        assert cfg.language == "en-us"
+        assert cfg.language == "es-es"
 
     def test_custom_values(self):
         cfg = CambTTSConfiguration(

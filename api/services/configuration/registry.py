@@ -1094,7 +1094,7 @@ class DograhTTSService(BaseTTSConfiguration):
 CARTESIA_TTS_MODELS = ["sonic-3.6", "sonic-3.5", "sonic-3"]
 INWORLD_TTS_MODELS = ["inworld-tts-2"]
 INWORLD_TTS_VOICES = ["Ashley"]
-INWORLD_TTS_LANGUAGES = ["en-US"]
+INWORLD_TTS_LANGUAGES = ["en-US", "es-ES"]
 
 
 @register_tts
@@ -1139,8 +1139,8 @@ class InworldTTSConfiguration(BaseTTSConfiguration):
     voice: str = Field(
         default="Ashley",
         description=(
-            "Inworld voice ID. Use Ashley for the default warm English voice, "
-            "or a workspace voice ID for a cloned/custom voice."
+            "Inworld voice ID. Ashley is the default (an English voice, unverified "
+            "for Spanish); use a workspace voice ID for a cloned/custom voice."
         ),
         json_schema_extra={"examples": INWORLD_TTS_VOICES, "allow_custom_input": True},
     )
@@ -1214,7 +1214,7 @@ class CambTTSConfiguration(BaseTTSConfiguration):
         json_schema_extra={"examples": CAMB_TTS_MODELS},
     )
     voice: str = Field(default="147320", description="Camb.ai voice ID.")
-    language: str = Field(default="en-us", description="BCP-47 language code.")
+    language: str = Field(default="es-es", description="BCP-47 language code.")
 
 
 RIME_TTS_MODELS = ["arcana", "mistv3", "mistv2", "mist"]
@@ -1415,7 +1415,7 @@ class XAITTSConfiguration(BaseServiceConfiguration):
         json_schema_extra={"examples": XAI_TTS_VOICES, "allow_custom_input": True},
     )
     language: str = Field(
-        default="en",
+        default="es",
         description="BCP-47 language code for synthesis (e.g. 'en', 'fr', 'de'), or 'auto' for automatic language detection.",
         json_schema_extra={"allow_custom_input": True},
     )

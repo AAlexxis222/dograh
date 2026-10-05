@@ -79,6 +79,7 @@ AZURE_SPEECH_TTS_LANGUAGES = [
 ]
 
 AZURE_SPEECH_TTS_VOICES = [
+    "es-ES-ElviraNeural",
     "en-US-AriaNeural",
     "en-US-GuyNeural",
     "en-US-JennyNeural",
