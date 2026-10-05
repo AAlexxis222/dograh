@@ -43,7 +43,6 @@ from api.services.configuration.masking import (
 )
 from api.services.configuration.merge import merge_workflow_configuration_secrets
 from api.services.configuration.resolve import (
-    enrich_overrides_with_api_keys,
     resolve_effective_config,
 )
 from api.services.configuration.secrets_registry import (
@@ -1328,12 +1327,8 @@ async def update_workflow(
             )
             effective_config = resolved_config.effective
             try:
-                enriched_overrides = enrich_overrides_with_api_keys(
-                    workflow_configurations["model_overrides"],
-                    effective_config,
-                )
                 effective = resolve_effective_config(
-                    effective_config, enriched_overrides
+                    effective_config, workflow_configurations["model_overrides"]
                 )
                 if resolved_config.source == "organization_v2":
                     v2_override = convert_legacy_ai_model_configuration_to_v2(effective)
@@ -1359,11 +1354,6 @@ async def update_workflow(
                     ),
                 }
                 workflow_configurations.pop("model_overrides", None)
-            else:
-                workflow_configurations = {
-                    **workflow_configurations,
-                    "model_overrides": enriched_overrides,
-                }
 
         # Reject upfront if any new trigger path collides with another
         # workflow's trigger — keeps the workflow record from

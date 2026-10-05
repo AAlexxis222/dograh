@@ -16,6 +16,7 @@ from api.constants import (
 )
 from api.schemas.service_tuning import ServiceTuning
 from api.schemas.turn_configuration import TurnConfiguration
+from api.services.workflow.voz_bug_18 import LEGACY_TO_CURRENT
 
 DEFAULT_MAX_CALL_DURATION_SECONDS = 300
 # Hard ceiling on configurable call duration. Must stay <= the concurrency
@@ -241,12 +242,11 @@ class WorkflowConfigurationDefaults(BaseModel):
     @field_validator("turn_start_strategy", mode="before")
     @classmethod
     def _coerce_retired_turn_start_strategy(cls, value: object) -> object:
-        # "provisional_vad" was retired. The runtime already reads this key off
-        # the raw dict and falls through to the default for anything it does not
-        # recognise, so a row the data migration missed still runs correctly —
-        # this keeps such a row loadable (and re-savable) through the API too.
-        if value == "provisional_vad":
-            return DEFAULT_TURN_START_STRATEGY
+        # "provisional_vad" was retired. Rows the data migration missed are read
+        # through the same mapping the VOZ-BUG-18 backfill writes (dual reader), so
+        # a migrated and an unmigrated row resolve to the same strategy.
+        if isinstance(value, str) and value in LEGACY_TO_CURRENT:
+            return LEGACY_TO_CURRENT[value]
         return value
 
     @field_validator("call_dispositions")
