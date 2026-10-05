@@ -130,14 +130,16 @@ def _load(raw):
     return raw if isinstance(raw, dict) else None
 
 
-def _documents(conn, table: str, column: str, where: str) -> Iterator[tuple[int, dict]]:
-    """Keyset-paged ``(id, document)`` of the candidate rows that hold a JSON object; any other
-    row is logged and skipped, by the pass and by the guard alike."""
+def _documents(
+    conn, table: str, column: str, where: str
+) -> Iterator[tuple[int, dict, bool]]:
+    """Keyset-paged ``(id, document, stored as a JSON string)`` of the candidate rows that hold a
+    JSON object; any other row is logged and skipped, by the pass and by the guard alike."""
     last_id = 0
     while True:
         rows = conn.execute(
             sa.text(
-                f"SELECT id, {column} FROM {table} "
+                f"SELECT id, {column}, json_typeof({column}) = 'string' FROM {table} "
                 f"WHERE id > :last_id AND {column} IS NOT NULL AND ({where}) "
                 f"ORDER BY id LIMIT :limit"
             ),
@@ -145,7 +147,7 @@ def _documents(conn, table: str, column: str, where: str) -> Iterator[tuple[int,
         ).fetchall()
         if not rows:
             return
-        for row_id, raw in rows:
+        for row_id, raw, double_encoded in rows:
             last_id = row_id
             doc = _load(raw)
             if doc is None:
@@ -156,20 +158,23 @@ def _documents(conn, table: str, column: str, where: str) -> Iterator[tuple[int,
                     row_id,
                 )
                 continue
-            yield row_id, doc
+            yield row_id, doc, double_encoded
 
 
 def _backfill(conn, table: str, column: str, where: str, transform) -> int:
     """Returns the number of rows changed."""
     changed = 0
-    for row_id, doc in _documents(conn, table, column, where):
+    for row_id, doc, double_encoded in _documents(conn, table, column, where):
         before = json.dumps(doc, sort_keys=True)
         after = transform(doc)
         if json.dumps(after, sort_keys=True) == before:
             continue
+        # The runtime reads a JSON-string document as no document at all; writing it back
+        # decoded would switch its settings on, so it keeps its encoding.
+        stored = json.dumps(json.dumps(after)) if double_encoded else json.dumps(after)
         conn.execute(
             sa.text(f"UPDATE {table} SET {column} = :doc WHERE id = :id"),
-            {"doc": json.dumps(after), "id": row_id},
+            {"doc": stored, "id": row_id},
         )
         changed += 1
     return changed
@@ -180,7 +185,7 @@ def upgrade() -> None:
     for table, column, where, transform, pending in _TARGETS:
         changed = _backfill(conn, table, column, where, transform)
         left = sum(
-            1 for _, doc in _documents(conn, table, column, where) if pending(doc)
+            1 for _, doc, _ in _documents(conn, table, column, where) if pending(doc)
         )
         logger.info(
             "VOZ-BUG-18 %s.%s: rewritten=%d still pending=%d",

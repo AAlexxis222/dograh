@@ -209,6 +209,29 @@ async def test_no_strip_against_an_org_configuration_the_runtime_cannot_load(
         assert (await _resolve(org, doc)).llm.api_key == ORG_KEY
 
 
+async def test_a_double_encoded_document_keeps_its_encoding(
+    db_session, async_session, org
+):
+    """The runtime reads a document stored as a JSON string as no document at all
+    (cascade.normalize_root_nulls). The copy goes, but the document stays a string: written
+    back decoded, its settings would switch on at deploy."""
+    configurations = {
+        "max_call_duration": 120,
+        "model_overrides": {
+            "llm": {"provider": "openai", "model": "gpt-4.1-mini", "api_key": ORG_KEY}
+        },
+    }
+    workflow_id = await _workflow_with(
+        db_session, async_session, org, json.dumps(configurations)
+    )
+
+    await run_upgrade(async_session, load_migration("d7e3a915c2b8"))
+
+    for doc in await _stored(async_session, workflow_id):
+        assert isinstance(doc, str), doc
+        assert "api_key" not in json.loads(doc)["model_overrides"]["llm"]
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
