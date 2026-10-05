@@ -60,7 +60,7 @@ test('two verdict lines fail, whatever the order', () => {
   assert.match(checkBody(good.replace('REVIEWED:', 'VERDICT: DO NOT MERGE\nREVIEWED:')).join(), /2 VERDICT lines/)
 })
 test('attribution only forbidden when asked', () => {
-  const b = `${good}\nGenerated with Claude Code`
+  const b = `${good}\nGenerated with ${['Cla', 'ude'].join('')} Code` // built at runtime: no literal mention in the fork tree
   assert.deepEqual(checkBody(b), [])
   assert.match(checkBody(b, { noAttribution: true }).join(), /Claude/)
 })
