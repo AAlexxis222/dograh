@@ -4,7 +4,7 @@
 
 ---
 
-<!-- XPAND fork section (VOZ-N0-00, B9 §8.3). Checked by .github/workflows/xpand-guards.yml (job pr-body). -->
+<!-- XPAND fork section (VOZ-N0-00, B9 §8.3). Checked by .github/workflows/xpand-pr-body.yml (job pr-body). -->
 
 ## What / why
 <!-- 2-3 lines. Link the spec/plan task. The whole description must be shorter than the diff. -->

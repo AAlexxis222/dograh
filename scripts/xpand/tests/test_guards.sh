@@ -22,16 +22,24 @@ expect_fail() { # <label> <cmd...>
 cd "$tmp" && git init -q -b main && git config user.email t@t && git config user.name t
 echo a > a.txt && git add a.txt && git commit -qm "base" && git branch base
 
-# --- check_no_claude_attribution.sh <base-ref>
+# --- check_no_ai_attribution.sh <base-ref>
 git checkout -q -b fix/attr
 echo b >> a.txt && git commit -qam "fix: clean change"
-"$here/check_no_claude_attribution.sh" base && echo "PASS clean range"
+"$here/check_no_ai_attribution.sh" base && echo "PASS clean range"
 git commit -q --allow-empty -m "fix: x" -m "Co-Authored-By: $ai <noreply@$(echo "$vendor" | tr A-Z a-z).com>"
-expect_fail "trailer detected" "$here/check_no_claude_attribution.sh" base
+expect_fail "trailer detected" "$here/check_no_ai_attribution.sh" base
 git reset -q --hard HEAD~1
 git commit -q --allow-empty -m "fix: y mentions $(echo "$vendor" | tr a-z A-Z) in the subject"
-expect_fail "case-insensitive mention detected" "$here/check_no_claude_attribution.sh" base
-expect_fail "unknown base ref fails closed" "$here/check_no_claude_attribution.sh" no-such-ref
+expect_fail "case-insensitive mention detected" "$here/check_no_ai_attribution.sh" base
+expect_fail "unknown base ref fails closed" "$here/check_no_ai_attribution.sh" no-such-ref
+git -c user.name="$ai" commit -q --allow-empty -m "fix: z clean message"
+expect_fail "author name detected" "$here/check_no_ai_attribution.sh" base
+git reset -q --hard HEAD~1
+GIT_COMMITTER_NAME="$ai" git commit -q --allow-empty -m "fix: w clean message"
+expect_fail "committer name detected" "$here/check_no_ai_attribution.sh" base
+git reset -q --hard HEAD~1
+printf 'fix/ok\nfix: clean title\n' | "$here/check_no_ai_attribution.sh" --stdin && echo "PASS clean title and branch"
+expect_fail "branch name detected via stdin" bash -c "echo fix/$ai-thing | '$here/check_no_ai_attribution.sh' --stdin"
 git checkout -q main
 
 # --- check_fix_against_g0.sh <upstream> [<fork-base>]
@@ -53,3 +61,15 @@ expect_fail "unknown upstream ref fails closed" "$here/check_fix_against_g0.sh" 
 git checkout -q -b fix/touches-g0 base
 mkdir -p api/routes && echo x > api/routes/user.py && git add . && git commit -qm "fix: touches a G0 conflict file"
 expect_fail "touching api/routes/user.py detected" "$here/check_fix_against_g0.sh" HEAD base
+
+# Upstream conflicts ONLY on an allowed (G0 list) file that the fork base already diverged on; the fix touches
+# nothing in the list -> must pass (guards the allowed-list filter and the merge-tree informational lines).
+git checkout -q -b g0-base base
+mkdir -p api/routes && echo base > api/routes/user.py && git add api && git commit -qm "base: user.py"
+git checkout -q -b up-allowed g0-base
+echo upstream-side > api/routes/user.py && git commit -qam "upstream: edits user.py"
+git checkout -q -b fork-base g0-base
+echo fork-side > api/routes/user.py && git commit -qam "fork base: edits user.py"
+git checkout -q -b fix/allowed-conflict-only fork-base
+echo d > d.txt && git add d.txt && git commit -qm "fix: unrelated file"
+"$here/check_fix_against_g0.sh" up-allowed fork-base && echo "PASS conflict only on an allowed file, clean fix"

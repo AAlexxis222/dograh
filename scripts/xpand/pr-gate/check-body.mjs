@@ -1,5 +1,5 @@
 // Validates a PR description against .github/pull_request_template.md (skill `pr-ready`).
-// Shared by the CI job (.github/workflows/xpand-guards.yml, job pr-body).
+// Shared by the CI job (.github/workflows/xpand-pr-body.yml, job pr-body).
 // CLI: node check-body.mjs <body-file> [--no-attribution] [--head-sha <sha>]  → exit 1 + one line per problem.
 
 const SECTIONS = ['Blast radius', 'Gate / rollback', 'Proof', 'Confidence', 'Review']
