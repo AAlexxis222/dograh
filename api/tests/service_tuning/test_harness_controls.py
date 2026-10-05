@@ -111,7 +111,7 @@ def test_control_untuned_tts_pushes_no_silence_and_keeps_todays_silence_time():
     from unittest.mock import patch
 
     with patch("api.services.pipecat.service_factory.CartesiaTTSService") as mock:
-        create_tts_service(user_config_tts("cartesia", model="sonic-2"), audio_config())
+        create_tts_service(user_config_tts("cartesia", model="sonic-3.6"), audio_config())
     kwargs = mock.call_args.kwargs
     assert kwargs["push_silence_after_stop"] is False
     assert kwargs["silence_time_s"] == 1.0
