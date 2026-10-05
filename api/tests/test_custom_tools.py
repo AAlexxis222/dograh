@@ -1763,6 +1763,57 @@ class TestCustomToolManagerUnit:
     """Unit tests for CustomToolManager class."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "timeout_ms, http_announced",
+        [(None, True), (0, False)],
+        ids=["null_means_default", "invalid_is_not_announced"],
+    )
+    async def test_get_tool_schemas_skips_a_tool_that_cannot_be_registered(
+        self, timeout_ms, http_announced
+    ):
+        """A tool whose handler registration would fail is not announced to the LLM either,
+        and does not take the tools after it down with it."""
+        from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
+
+        mock_engine = Mock()
+        mock_engine._get_organization_id = AsyncMock(return_value=1)
+        manager = CustomToolManager(mock_engine)
+        http_tool = MockToolModel(
+            tool_uuid="http-uuid",
+            name="Lookup",
+            description="Look something up",
+            category="http_api",
+            definition={
+                "schema_version": 1,
+                "type": "http_api",
+                "config": {
+                    "method": "GET",
+                    "url": "https://api.example.com/x",
+                    "timeout_ms": timeout_ms,
+                },
+            },
+        )
+        end_call = MockToolModel(
+            tool_uuid="end-uuid",
+            name="end call",
+            description="End the call",
+            category="end_call",
+            definition={"schema_version": 1, "type": "end_call", "config": {}},
+        )
+
+        with patch(
+            "api.services.workflow.pipecat_engine_custom_tools.db_client.get_tools_by_uuids",
+            new=AsyncMock(return_value=[http_tool, end_call]),
+        ):
+            schemas = await manager.get_tool_schemas(
+                [http_tool.tool_uuid, end_call.tool_uuid]
+            )
+
+        names = [schema.name for schema in schemas]
+        assert "end_call" in names
+        assert ("lookup" in names) is http_announced
+
+    @pytest.mark.asyncio
     async def test_get_tool_schemas_returns_correct_format(self):
         """Test that get_tool_schemas returns FunctionSchema objects."""
         # Create a mock engine

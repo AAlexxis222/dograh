@@ -201,7 +201,14 @@ class CustomToolManager:
                     schemas.extend(session.function_schemas(allowed))
                     continue
 
-                raw_schema = tool_to_function_schema(tool)
+                try:
+                    # register_handlers skips a tool it cannot register; announcing
+                    # it would let the LLM call a function that has no handler.
+                    self._handler_timeout_secs(tool)
+                    raw_schema = tool_to_function_schema(tool)
+                except Exception as e:
+                    logger.error(f"Skipping tool '{tool.name}' ({tool.tool_uuid}): {e}")
+                    continue
                 function_name = raw_schema["function"]["name"]
 
                 # Convert to FunctionSchema object for compatibility with update_llm_context
@@ -333,30 +340,34 @@ class CustomToolManager:
         Returns:
             Async handler function for the tool
         """
-        timeout_secs: Optional[float] = None
+        timeout_secs = self._handler_timeout_secs(tool)
 
         if tool.category == ToolCategory.END_CALL.value:
             handler = self._create_end_call_handler(tool, function_name)
         elif tool.category == ToolCategory.TRANSFER_AGENT.value:
-            # The handler returns as soon as the handoff is accepted; the
-            # handoff itself runs on an engine-owned task well past this
-            # deadline.
-            timeout_secs = 10.0
             handler = self._create_transfer_agent_handler(tool, function_name)
         elif tool.category == ToolCategory.TRANSFER_CALL.value:
-            timeout_secs = self._transfer_handler_timeout_secs(tool)
             handler = self._create_transfer_call_handler(tool, function_name)
         else:
-            timeout_ms = ((tool.definition or {}).get("config", {}) or {}).get(
-                "timeout_ms"
-            )
-            # The tool schema allows an explicit null: it means the default.
-            timeout_secs = (
-                _parse_timeout_s(5000 if timeout_ms is None else timeout_ms) / 1000
-            )
             handler = self._create_http_tool_handler(tool, function_name)
 
         return handler, timeout_secs
+
+    def _handler_timeout_secs(self, tool: Any) -> Optional[float]:
+        """The deadline a tool's handler is registered with; raises ``ValueError`` for a
+        configuration that cannot be registered (an invalid HTTP timeout)."""
+        if tool.category == ToolCategory.END_CALL.value:
+            return None
+        if tool.category == ToolCategory.TRANSFER_AGENT.value:
+            # The handler returns as soon as the handoff is accepted; the
+            # handoff itself runs on an engine-owned task well past this
+            # deadline.
+            return 10.0
+        if tool.category == ToolCategory.TRANSFER_CALL.value:
+            return self._transfer_handler_timeout_secs(tool)
+        timeout_ms = ((tool.definition or {}).get("config", {}) or {}).get("timeout_ms")
+        # The tool schema allows an explicit null: it means the default.
+        return _parse_timeout_s(5000 if timeout_ms is None else timeout_ms) / 1000
 
     def _transfer_handler_timeout_secs(self, tool: Any) -> float:
         config = (tool.definition or {}).get("config", {}) or {}
