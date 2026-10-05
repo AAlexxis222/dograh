@@ -134,7 +134,7 @@ def test_null_values_treated_as_unset():
     assert config.model_dump(exclude_unset=True) == {}
     # VOZ-AC-B2-30 / VOZ-BUG-18: the schema default is "default", not upstream's min_words.
     assert config.turn_start_strategy == "default"
-    assert config.turn_start_min_words == 2
+    assert config.turn_start_min_words == 3  # fork default (Alexis)
 
 
 def test_run_without_org_or_definition_settings_starts_turns_with_default_strategy():

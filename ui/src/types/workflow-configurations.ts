@@ -20,7 +20,7 @@ export type AmbientNoiseConfiguration = Omit<
 export type TurnStopStrategy = NonNullable<GeneratedWorkflowConfigurationDefaults["turn_stop_strategy"]>;
 export type TurnStartStrategy = NonNullable<GeneratedWorkflowConfigurationDefaults["turn_start_strategy"]>;
 export const DEFAULT_TURN_START_STRATEGY: TurnStartStrategy = 'default';
-export const DEFAULT_TURN_START_MIN_WORDS = 2;
+export const DEFAULT_TURN_START_MIN_WORDS = 3; // fork default (Alexis), not upstream #832's 2
 
 // "provisional_vad" was retired. Definitions saved before then still carry it,
 // so map it onto the option the backend now resolves such a value to ("default",
