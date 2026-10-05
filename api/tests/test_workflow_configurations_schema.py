@@ -20,6 +20,8 @@ from api.schemas.workflow_configurations import (
     WorkflowConfigurationDefaults,
     get_default_call_disposition_options,
 )
+from api.services.configuration.cascade import resolve_effective_workflow_configurations
+from api.services.workflow.voz_bug_18 import resolve_turn_start
 
 
 def test_max_call_duration_default_within_bounds():
@@ -130,8 +132,19 @@ def test_null_values_treated_as_unset():
     assert config.max_call_duration == DEFAULT_MAX_CALL_DURATION_SECONDS
     # Nulls count as unset, so a sparse round-trip drops them entirely.
     assert config.model_dump(exclude_unset=True) == {}
-    assert config.turn_start_strategy == "min_words"
-    assert config.turn_start_min_words == 2
+    # VOZ-AC-B2-30 / VOZ-BUG-18: the schema default is "default", not upstream's min_words.
+    assert config.turn_start_strategy == "default"
+    assert config.turn_start_min_words == 3  # fork default (Alexis)
+
+
+def test_run_without_org_or_definition_settings_starts_turns_with_default_strategy():
+    """VOZ-BUG-18: an org with no WORKFLOW_CONFIGURATION_DEFAULTS row (or a workflow
+    with no org) freezes the schema default into the run; it must be "default"."""
+    resolved = resolve_effective_workflow_configurations(
+        organization_defaults={}, definition_configurations={}
+    )
+
+    assert resolve_turn_start(resolved.effective) == "default"
 
 
 def test_retired_turn_start_strategy_loads_as_default():

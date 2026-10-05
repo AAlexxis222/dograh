@@ -1253,7 +1253,7 @@
         "extra": {},
         "generation_config": "NOT_GIVEN",
         "language": "es",
-        "model": "sonic-2",
+        "model": "sonic-3.6",
         "pronunciation_dict_id": "NOT_GIVEN",
         "voice": "Name - voice-1"
       },
@@ -1292,7 +1292,7 @@
           "volume": 0.8
         },
         "language": "es",
-        "model": "sonic-2",
+        "model": "sonic-3.6",
         "pronunciation_dict_id": "NOT_GIVEN",
         "voice": "Name - voice-1"
       },

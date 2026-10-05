@@ -1,0 +1,25 @@
+name: xpand-guards
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: git remote add upstream https://github.com/dograh-hq/dograh.git && git fetch upstream main
+      - run: bash scripts/xpand/tests/test_guards.sh
+      - run: node --test scripts/xpand/pr-gate/pr-gate.test.mjs
+      - run: bash scripts/xpand/check_no_ai_attribution.sh upstream/main
+      # Every PR into the fork base, except the G0 PR itself (it is the one that resolves those conflicts).
+      # This file is the PR's own copy, so the exemption is not a security boundary (a PR can edit it); the real
+      # guarantee is required status checks plus human review. The same-repo condition only stops a fork PR
+      # from skipping the check just by reusing the branch name.
+      - if: github.base_ref == 'feat/foundations-base' && !(github.head_ref == 'feat/foundations-base-sync' && github.event.pull_request.head.repo.full_name == github.repository)
+        env:
+          FORK_BASE: origin/${{ github.base_ref }}
+        run: bash scripts/xpand/check_fix_against_g0.sh 6c6cc6cb556da447ac488c849f25351f3c607ff2 "$FORK_BASE"

@@ -6,12 +6,13 @@ snapshot and the org defaults document) still carries the retired value, which t
 reads as the min_words fallback — so migrated and unmigrated rows started turns differently.
 
 This runs after c4e21b7f80a9 (the merge revision below descends from it) and applies the same
-mapping to all four stores through `api.services.workflow.voz_bug_18`, the module the schema
-reader uses too. It also pins `turn_start_strategy: "default"` in every
+mapping to all four stores (a frozen copy of `api.services.workflow.voz_bug_18`, the module the
+schema reader uses; migrations do not import application code). It also pins `turn_start_strategy: "default"` in every
 WORKFLOW_CONFIGURATION_DEFAULTS org document that lacks it (VOZ-AC-B2-30).
 
-Row counts are taken per table before and after; any difference aborts the migration
-(Postgres DDL/DML is transactional, so the abort rolls everything back).
+After each table's pass the candidate rows are read again and any row still holding the
+retired value (or, for org documents, still lacking the pin) aborts the migration (Postgres
+DDL/DML is transactional, so the abort rolls everything back).
 
 Revision ID: 5be1d27c9a43
 Revises: 966eb3a3309b
@@ -21,12 +22,10 @@ Create Date: 2026-10-05 08:10:00.000000
 
 import json
 import logging
-from typing import Callable, Sequence, Union
+from typing import Callable, Iterator, Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
-
-from api.services.workflow.voz_bug_18 import backfill_turn_start, pin_org_default
 
 revision: str = "5be1d27c9a43"
 down_revision: Union[str, None] = "966eb3a3309b"
@@ -40,48 +39,100 @@ _LEGACY = "provisional_vad"
 _ORG_DEFAULTS_KEY = "WORKFLOW_CONFIGURATION_DEFAULTS"
 
 
+# Frozen copy of api.services.workflow.voz_bug_18 as of this revision.
+_LEGACY_TO_CURRENT = {_LEGACY: "default"}
+_ORG_DEFAULT = "default"  # VOZ-AC-B2-30
+
+
+def backfill_turn_start(doc: dict) -> dict:
+    value = doc.get("turn_start_strategy")
+    if value in _LEGACY_TO_CURRENT:
+        doc["turn_start_strategy"] = _LEGACY_TO_CURRENT[value]
+    return doc
+
+
 def _org_defaults(doc: dict) -> dict:
-    return pin_org_default(backfill_turn_start(doc))
+    """Org defaults document: also pin the strategy when absent or an explicit null."""
+    backfill_turn_start(doc)
+    if doc.get("turn_start_strategy") is None:
+        doc["turn_start_strategy"] = _ORG_DEFAULT
+    return doc
+
+
+def _legacy(column: str) -> str:
+    # The columns are `json`, not `jsonb`: `->>` extracts text and renders a JSON null as SQL NULL.
+    # A document stored double-encoded is a JSON string, where `->>` sees no key: it is a
+    # candidate too and the transform decides on the decoded document.
+    return (
+        f"{column}->>'turn_start_strategy' = '{_LEGACY}' "
+        f"OR json_typeof({column}) = 'string'"
+    )
 
 
 # (table, json column, extra SQL filter selecting candidate rows, row transform).
-# The columns are `json`, not `jsonb`: `->>` extracts text and renders a JSON null as SQL NULL.
 # Org documents are few, so every one of them is a candidate (the pin may apply to a missing key).
-_TARGETS: tuple[tuple[str, str, str, Callable[[dict], dict]], ...] = (
+def _is_legacy(doc: dict) -> bool:
+    return doc.get("turn_start_strategy") == _LEGACY
+
+
+def _org_unpinned(doc: dict) -> bool:
+    return doc.get("turn_start_strategy") in (None, _LEGACY)
+
+
+# (table, json column, extra SQL filter selecting candidate rows, row transform, "still pending"
+# predicate checked after the pass — written independently of the transform so the guard also
+# catches a transform that leaves the value in place).
+_TARGETS: tuple[
+    tuple[str, str, str, Callable[[dict], dict], Callable[[dict], bool]], ...
+] = (
     (
         "organization_configurations",
         "value",
         f"key = '{_ORG_DEFAULTS_KEY}'",
         _org_defaults,
+        _org_unpinned,
     ),
     (
         "workflow_runs",
         "effective_configurations",
-        f"effective_configurations->>'turn_start_strategy' = '{_LEGACY}'",
+        _legacy("effective_configurations"),
         backfill_turn_start,
+        _is_legacy,
     ),
     (
         "workflows",
         "workflow_configurations",
-        f"workflow_configurations->>'turn_start_strategy' = '{_LEGACY}'",
+        _legacy("workflow_configurations"),
         backfill_turn_start,
+        _is_legacy,
     ),
     (
         "workflow_definitions",
         "workflow_configurations",
-        f"workflow_configurations->>'turn_start_strategy' = '{_LEGACY}'",
+        _legacy("workflow_configurations"),
         backfill_turn_start,
+        _is_legacy,
     ),
 )
 
 
-def _count(conn, table: str) -> int:
-    return conn.execute(sa.text(f"SELECT count(*) FROM {table}")).scalar_one()
+def _load(raw):
+    """The driver may hand back text; a document stored double-encoded needs a second decode.
+    Anything that does not decode to a JSON object is ``None`` (a JSON string scalar is a
+    candidate, and may hold no JSON at all)."""
+    for _ in range(2):
+        if not isinstance(raw, str):
+            break
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    return raw if isinstance(raw, dict) else None
 
 
-def _backfill(conn, table: str, column: str, where: str, transform) -> int:
-    """Keyset-paged rewrite; returns the number of rows changed."""
-    changed = 0
+def _documents(conn, table: str, column: str, where: str) -> Iterator[tuple[int, dict]]:
+    """Keyset-paged ``(id, document)`` of the candidate rows that hold a JSON object; any other
+    row is logged and skipped, by the pass and by the guard alike."""
     last_id = 0
     while True:
         rows = conn.execute(
@@ -93,40 +144,54 @@ def _backfill(conn, table: str, column: str, where: str, transform) -> int:
             {"last_id": last_id, "limit": BATCH_SIZE},
         ).fetchall()
         if not rows:
-            return changed
+            return
         for row_id, raw in rows:
             last_id = row_id
-            doc = json.loads(raw) if isinstance(raw, str) else raw
-            if not isinstance(doc, dict):
+            doc = _load(raw)
+            if doc is None:
+                logger.warning(
+                    "VOZ-BUG-18 %s.%s id=%d: not a JSON object, skipped",
+                    table,
+                    column,
+                    row_id,
+                )
                 continue
-            before = json.dumps(doc, sort_keys=True)
-            after = transform(doc)
-            if json.dumps(after, sort_keys=True) == before:
-                continue
-            conn.execute(
-                sa.text(f"UPDATE {table} SET {column} = :doc WHERE id = :id"),
-                {"doc": json.dumps(after), "id": row_id},
-            )
-            changed += 1
+            yield row_id, doc
+
+
+def _backfill(conn, table: str, column: str, where: str, transform) -> int:
+    """Returns the number of rows changed."""
+    changed = 0
+    for row_id, doc in _documents(conn, table, column, where):
+        before = json.dumps(doc, sort_keys=True)
+        after = transform(doc)
+        if json.dumps(after, sort_keys=True) == before:
+            continue
+        conn.execute(
+            sa.text(f"UPDATE {table} SET {column} = :doc WHERE id = :id"),
+            {"doc": json.dumps(after), "id": row_id},
+        )
+        changed += 1
+    return changed
 
 
 def upgrade() -> None:
     conn = op.get_bind()
-    for table, column, where, transform in _TARGETS:
-        before = _count(conn, table)
+    for table, column, where, transform, pending in _TARGETS:
         changed = _backfill(conn, table, column, where, transform)
-        after = _count(conn, table)
+        left = sum(
+            1 for _, doc in _documents(conn, table, column, where) if pending(doc)
+        )
         logger.info(
-            "VOZ-BUG-18 %s.%s: rows before=%d after=%d rewritten=%d",
+            "VOZ-BUG-18 %s.%s: rewritten=%d still pending=%d",
             table,
             column,
-            before,
-            after,
             changed,
+            left,
         )
-        if before != after:
+        if left:
             raise RuntimeError(
-                f"VOZ-BUG-18 aborted: {table} row count changed {before} -> {after}"
+                f"VOZ-BUG-18 aborted: {left} {table}.{column} rows still need the rewrite"
             )
 
 

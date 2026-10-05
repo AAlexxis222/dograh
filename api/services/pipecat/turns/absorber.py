@@ -44,7 +44,7 @@ from api.services.pipecat.turns.frames import (
     PromotedTranscriptionFrame,
     TranscriptionReplaceFrame,
 )
-from api.services.pipecat.turns.text_delta import token_delta
+from api.services.pipecat.turns.text_delta import token_count, token_delta
 from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
@@ -67,6 +67,10 @@ from pipecat.utils.time import time_now_iso8601
 @dataclass
 class FluxTurn:
     last_interim: str | None = None
+    # Longest interim text of this Flux turn, the reference a late interim must extend.
+    high_water: str | None = None
+    # A local turn closed while this Flux turn was live: from then on interims are late.
+    local_closed: bool = False
     emitted: str | None = None  # text already sent downstream for this Flux turn
     final_seen: bool = False
     stop_seen: bool = False  # Flux's stop proposal seen before any final
@@ -341,6 +345,13 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
         self.stats["delta_emitted"] += 1
         turn.emitted = text
 
+    @staticmethod
+    def _adds_words(high_water: str, text: str) -> bool:
+        delta = token_delta(high_water, text)
+        if delta is None:  # a rewrite: new speech only if it is longer than the mark
+            return token_count(text) > token_count(high_water)
+        return bool(delta)
+
     # ---- frame routing -------------------------------------------------
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -352,6 +363,8 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
                 await self._release_held_into_turn()
             elif isinstance(frame, UserStoppedSpeakingFrame):
                 self._local_open = False
+                if self._turn is not None:
+                    self._turn.local_closed = True
                 await self._cancel_wait()
             elif isinstance(frame, VADUserStoppedSpeakingFrame):
                 await self._on_local_vad_stop()
@@ -400,17 +413,27 @@ class TurnSignalAbsorberProcessor(FrameProcessor):
             return
         if isinstance(frame, InterimTranscriptionFrame):
             turn = self._turn_or_new()
-            previous = turn.last_interim
+            high_water = turn.high_water
             turn.last_interim = frame.text
             turn.interim_frame = frame
+            # B2 log #2: after the local close, an ``Update`` that repeats, rewrites
+            # (``None``) or shortens the text would open a turn, and so would one that
+            # restores words a shorter one dropped: only words beyond the longest text
+            # seen for this turn pass, also when Flux rewrites an earlier word on the way
+            # (a rewrite with more tokens than the mark). Before any local close nothing
+            # is late: the interims are what opens the local turn (min_words counts them).
             if (
                 not self._local_open
-                and previous is not None
-                and token_delta(previous, frame.text) == ""
+                and turn.local_closed
+                and high_water is not None
+                and not self._adds_words(high_water, frame.text)
             ):
-                # B2 log #2: a repeated ``Update`` after the local close would open a turn.
-                self.stats["repeated_interim_dropped"] += 1
+                self.stats["late_interim_dropped"] += 1
                 return
+            # A shorter interim (a prefix of the mark) does not lower it; an extension
+            # or a rewrite forwarded while the local turn is open replaces it.
+            if high_water is None or token_delta(frame.text, high_water) is None:
+                turn.high_water = frame.text
             await self.push_frame(frame, direction)
             return
         if isinstance(frame, TranscriptionFrame):

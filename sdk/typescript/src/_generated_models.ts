@@ -1493,13 +1493,13 @@ export interface components {
             smart_turn_stop_secs: number;
             /**
              * Turn Start Strategy
-             * @default min_words
+             * @default default
              * @enum {string}
              */
             turn_start_strategy: "default" | "min_words";
             /**
              * Turn Start Min Words
-             * @default 2
+             * @default 3
              */
             turn_start_min_words: number;
             /**

@@ -1,0 +1,53 @@
+name: xpand-pr-body
+# GitHub runs a pull_request_target workflow from the repository's DEFAULT branch, whatever the PR's
+# base: this file comes from there, and actions/checkout (no ref) checks out the default branch, so
+# scripts/xpand comes from there too. A PR cannot weaken its own gate. Safe because PR code is only
+# fetched as git objects (never checked out or executed) and the PR-controlled strings (body, title,
+# branch) travel through env, never interpolated into run:. The PR's base ref is used only as the
+# range of commits to scan.
+# Consequence: changes to the gate take effect only after they are merged into the default branch, and
+# while the default branch has no such file pr-body does not run at all (also for PRs into other bases).
+# Those PRs' bodies must carry a local run instead:
+#   node scripts/xpand/pr-gate/check-body.mjs <body.md> --no-attribution --head-sha $(git rev-parse HEAD)
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-body:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: No vendor attribution in PR title or branch name
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: printf '%s\n%s\n' "$PR_TITLE" "$HEAD_REF" | bash scripts/xpand/check_no_ai_attribution.sh --stdin
+      - name: No vendor attribution in PR commits (fetched as objects, never checked out)
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          git fetch -q origin "refs/pull/$PR/head:refs/xpand/pr-head"
+          # Upstream commits legitimately carry vendor co-author trailers: exclude them, as xpand-guards.yml does.
+          git fetch -q https://github.com/dograh-hq/dograh.git main:refs/xpand/upstream-main
+          bash scripts/xpand/check_no_ai_attribution.sh "origin/$BASE_REF" refs/xpand/pr-head refs/xpand/upstream-main
+      - name: Check PR description (pr-ready sections, verdict, REVIEWED sha, no attribution)
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+          git fetch -q origin "refs/pull/$PR/head"
+          ok_sha=$(bash scripts/xpand/pr-gate/reviewed-sha.sh "$RUNNER_TEMP/pr-body.md" "$HEAD_SHA" "origin/$BASE_REF")
+          node scripts/xpand/pr-gate/check-body.mjs "$RUNNER_TEMP/pr-body.md" --no-attribution --head-sha "$ok_sha"

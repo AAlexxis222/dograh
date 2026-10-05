@@ -146,6 +146,7 @@ async def prepare_transfer_introduction(
                 engine._audio_config,
                 organization_id=organization_id,
                 correlation_id=engine._call_context_vars.get("mps_correlation_id"),
+                tuning=agent.service_tuning,
             )
             audio = await synthesize_speech(
                 tts,

@@ -303,10 +303,11 @@ def test_workflow_config_can_override_user_turn_stop_timeout():
 @pytest.mark.parametrize(
     "bot_speaking,text,send_interim,accepted",
     [
-        (True, "okay", True, False),
-        (True, "please wait", True, True),
+        # DEFAULT_TURN_START_MIN_WORDS is 3 in the fork (upstream: 2).
+        (True, "please wait", True, False),
+        (True, "please wait now", True, True),
         (False, "yes", True, True),
-        (True, "please wait", False, True),
+        (True, "please wait now", False, True),
     ],
     ids=["below-threshold", "interim-interruption", "silent-bot", "final-only"],
 )

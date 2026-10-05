@@ -1723,6 +1723,80 @@ async def test_destination_configuration_comes_through_the_cascade():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scope, llm_instances",
+    [
+        # Extraction opted in: the conversation LLM is tuned exactly as
+        # extraction would be, so it is shared.
+        ({"extraction": True}, 1),
+        # Extraction not opted in: sharing would leak the conversation's knobs
+        # into extraction, so it gets its own client, built for its role.
+        ({}, 2),
+    ],
+    ids=["extraction_shares", "extraction_separate"],
+)
+async def test_destination_services_carry_the_service_tuning(scope, llm_instances):
+    """A handover must not drop the run's service_tuning: the destination's
+    LLM, TTS and extraction LLM are built from its cascade's tuning, with the
+    same sharing policy run_pipeline applies."""
+    tuning = {"llm": {"temperature": 0.1}, "tts": {"speed": 1.1}, "scope": scope}
+    published = _definition(998, "published", 4)
+    workflow = SimpleNamespace(id=251, name="Billing", organization_id=7)
+    factory = _destination_factory(use_draft=False)
+    effective = {
+        "service_tuning": tuning,
+        "call_dispositions": [{"code": "qualified", "description": "Done."}],
+    }
+    service = SimpleNamespace(provider="openai", model="m")
+    user_config = SimpleNamespace(
+        is_realtime=False, realtime=None, llm=service, tts=service, stt=service
+    )
+
+    async def fake_model_configuration(*, organization_id, workflow_configurations):
+        return user_config
+
+    create_llm = Mock(side_effect=lambda *a, **k: Mock(name="llm"))
+    create_tts = Mock(return_value=Mock(name="tts"))
+    module = "api.services.pipecat.agent_runtime_factory"
+    with (
+        patch.object(
+            factory,
+            "resolve_destination",
+            AsyncMock(return_value=(workflow, published)),
+        ),
+        patch.object(factory, "attach", AsyncMock()),
+        patch(
+            f"{module}.load_effective_workflow_configurations",
+            AsyncMock(return_value=SimpleNamespace(effective=effective)),
+        ),
+        patch(
+            "api.services.configuration.ai_model_configuration."
+            "get_effective_ai_model_configuration_for_workflow",
+            new=fake_model_configuration,
+        ),
+        patch(f"{module}.create_llm_service", create_llm),
+        patch(f"{module}.create_tts_service", create_tts),
+        # Only call_dispositions asks for extraction; the graph has no say.
+        patch(
+            f"{module}.WorkflowGraph",
+            Mock(return_value=Mock(uses_variable_extraction=Mock(return_value=False))),
+        ),
+    ):
+        runtime = await factory.build(workflow_id=251)
+
+    assert create_tts.call_args.kwargs["tuning"] == tuning
+    # Kept on the visit for the services built later (the transfer introduction).
+    assert runtime.service_tuning == tuning
+    assert create_llm.call_count == llm_instances
+    assert all(c.kwargs.get("tuning") == tuning for c in create_llm.call_args_list)
+    if llm_instances == 2:
+        assert create_llm.call_args_list[1].kwargs["role"] == "extraction"
+        assert runtime.variable_extraction_llm is not runtime.llm
+    else:
+        assert runtime.variable_extraction_llm is runtime.llm
+
+
+@pytest.mark.asyncio
 async def test_inactive_source_output_is_dropped_but_usage_is_collected():
     from pipecat.metrics.metrics import TTFBMetricsData, TTSUsageMetricsData
 

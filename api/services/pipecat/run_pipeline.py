@@ -1371,6 +1371,7 @@ async def _run_pipeline_impl(
         agent.recording_router = recording_router
         agent.user_config = user_config
         agent.runtime_configuration = runtime_configuration
+        agent.service_tuning = service_tuning
         agent.is_child = True
         agent.worker = None
 

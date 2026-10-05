@@ -591,15 +591,20 @@ def create_stt_service(
     # fact about one service, so it belongs on one line.
     is_deepgram = user_config.stt.provider == ServiceProviders.DEEPGRAM.value
     deepgram_base_url = _deepgram_base_url(user_config.stt) if is_deepgram else None
+    endpoint = deepgram_base_url
+    if is_deepgram:
+        plan = tuning_for(tuning, "stt", ServiceProviders.DEEPGRAM.value)
+        if user_config.stt.model in DEEPGRAM_FLUX_MODELS:
+            # Flux connects to a tuned ctor.url instead of the regional host.
+            endpoint = plan.ctor.get("url", deepgram_base_url)
 
     logger.info(
         f"Creating STT service: provider={user_config.stt.provider}, "
         f"model={user_config.stt.model}"
-        + (f", endpoint={deepgram_base_url}" if deepgram_base_url else "")
+        + (f", endpoint={endpoint}" if endpoint else "")
     )
 
     if is_deepgram:
-        plan = tuning_for(tuning, "stt", ServiceProviders.DEEPGRAM.value)
         if user_config.stt.model in DEEPGRAM_FLUX_MODELS:
             settings_kwargs = {
                 "model": user_config.stt.model,
@@ -694,8 +699,9 @@ def create_stt_service(
             settings=settings,
             should_interrupt=False,  # Let UserAggregator take care of sending InterruptionFrame
             sample_rate=audio_config.transport_in_sample_rate,
-            # Takes the host and derives the wss and https URLs itself. A tuned
-            # ctor.base_url overrides the regional default.
+            # Takes the host and derives the wss and https URLs itself. The
+            # regional host is the only source: the tuning allow-list has no
+            # base_url, and the Flux-only ctor.url was dropped above.
             **{"base_url": deepgram_base_url, **ctor},
         )
     elif user_config.stt.provider == ServiceProviders.OPENAI.value:
