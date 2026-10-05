@@ -111,7 +111,6 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMAssistantAggregatorParams,
-    LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
@@ -1151,30 +1150,26 @@ async def _run_pipeline_impl(
         user_idle_timeout=0,
         vad_analyzer=user_vad_analyzer,
     )
-    if is_realtime:
-        context_aggregator = LLMContextAggregatorPair(
-            context,
-            assistant_params=assistant_params,
-            user_params=user_params,
-            # Live publishes final user transcripts before delegation starts.
-            realtime_service_mode=not (
+    # Hybrid turn mode swaps in the hybrid user aggregator (never set on realtime);
+    # otherwise this is the plain LLMContextAggregatorPair.
+    context_aggregator = build_context_aggregators(
+        context,
+        user_params=user_params,
+        assistant_params=assistant_params,
+        # Live publishes final user transcripts before delegation starts.
+        realtime_service_mode=(
+            not (
                 user_config.realtime.provider == ServiceProviders.OPENAI_REALTIME.value
                 and user_config.realtime.model == "gpt-live-1"
-            ),
-        )
-        user_context_aggregator, assistant_context_aggregator = context_aggregator
-    else:
-        # Hybrid turn mode swaps in the hybrid user aggregator; otherwise this is
-        # the plain LLMContextAggregatorPair.
-        context_aggregator = build_context_aggregators(
-            context,
-            user_params=user_params,
-            assistant_params=assistant_params,
-            realtime_service_mode=False,
-            hybrid=hybrid_turn is not None,
-        )
-        user_context_aggregator = context_aggregator.user()
-        assistant_context_aggregator = context_aggregator.assistant()
+            )
+            if is_realtime
+            else False
+        ),
+        hybrid=hybrid_turn is not None,
+    )
+    user_context_aggregator = context_aggregator.user()
+    assistant_context_aggregator = context_aggregator.assistant()
+    if not is_realtime:
         engine.greeting.bind(user_context_aggregator)
     turn_signal_absorber = (
         TurnSignalAbsorberProcessor(
