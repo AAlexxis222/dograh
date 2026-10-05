@@ -251,6 +251,7 @@ class AgentRuntimeFactory:
             tts=tts,
             recording_router=recording_router,
             user_config=user_config,
+            service_tuning=service_tuning,
             runtime_configuration={
                 "stt_provider": user_config.stt.provider,
                 "stt_model": user_config.stt.model,

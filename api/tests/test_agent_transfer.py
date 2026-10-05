@@ -1785,6 +1785,8 @@ async def test_destination_services_carry_the_service_tuning(scope, llm_instance
         runtime = await factory.build(workflow_id=251)
 
     assert create_tts.call_args.kwargs["tuning"] == tuning
+    # Kept on the visit for the services built later (the transfer introduction).
+    assert runtime.service_tuning == tuning
     assert create_llm.call_count == llm_instances
     assert all(c.kwargs.get("tuning") == tuning for c in create_llm.call_args_list)
     if llm_instances == 2:

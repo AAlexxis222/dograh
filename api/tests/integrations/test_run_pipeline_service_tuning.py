@@ -13,6 +13,7 @@ from api.enums import WorkflowRunMode
 from api.services.pipecat.audio_config import create_audio_config
 from api.services.pipecat.run_pipeline import _run_pipeline
 from api.services.pipecat.worker_runner import wait_for_pipeline_worker_started
+from api.services.workflow.pipecat_engine import PipecatEngine
 from api.tests.integrations._run_pipeline_helpers import (
     PassthroughProcessor,
     create_workflow_run_rows,
@@ -112,6 +113,31 @@ async def test_factories_receive_service_tuning_from_the_frozen_run(
     ):
         await _boot_and_stop(workflow_run, user, workflow, captured_task)
     assert stt_calls[0]["tuning"] == TUNING and tts_calls[0]["tuning"] == TUNING
+
+
+@pytest.mark.asyncio
+async def test_the_initial_agent_keeps_the_runs_service_tuning(workflow_run_setup):
+    """Services built later in the call for this agent (the transfer introduction's TTS)
+    read the tuning from the visit."""
+    workflow_run, user, workflow = workflow_run_setup
+    captured_task: list = []
+    seen = []
+    original_initialize = PipecatEngine.initialize
+
+    async def spy_initialize(engine):
+        seen.append(engine.active_agent.service_tuning)
+        return await original_initialize(engine)
+
+    with (
+        patch_run_pipeline_externals(captured_task),
+        patch(
+            "api.services.pipecat.run_pipeline.create_stt_service",
+            side_effect=lambda *a, **k: PassthroughProcessor(),
+        ),
+        patch.object(PipecatEngine, "initialize", spy_initialize),
+    ):
+        await _boot_and_stop(workflow_run, user, workflow, captured_task)
+    assert seen == [TUNING]
 
 
 @pytest.mark.asyncio

@@ -79,6 +79,8 @@ class AgentRuntime:
     recording_router: Any = None
     user_config: Any = None
     runtime_configuration: dict[str, Any] = field(default_factory=dict)
+    # The visit's resolved service_tuning, for services built later in the call.
+    service_tuning: dict[str, Any] | None = None
     is_realtime: bool = False
     # False for the call-owned runtime, whose worker is the call itself and
     # must never be shut down by a retirement.

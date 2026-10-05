@@ -30,6 +30,7 @@ def engine():
         active_agent=SimpleNamespace(
             is_realtime=False,
             user_config=SimpleNamespace(tts=SimpleNamespace(provider="cartesia")),
+            service_tuning={"tts": {"cartesia": {"settings": {"speed": 1.1}}}},
             tts=object(),
             inference_llm=SimpleNamespace(
                 run_inference=AsyncMock(
@@ -80,6 +81,8 @@ async def test_summary_covers_handoff_and_latest_turn_without_mutating_context(
         engine._audio_config,
         organization_id=7,
         correlation_id="run-42",
+        # The introduction speaks with the agent's tuned voice (review r1 F6).
+        tuning=engine.active_agent.service_tuning,
     )
     assert synth.call_args.args[0] is tts_factory.return_value
     assert synth.call_args.args[0] is not engine.active_agent.tts
