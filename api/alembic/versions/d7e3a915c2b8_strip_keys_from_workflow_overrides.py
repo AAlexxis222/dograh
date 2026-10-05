@@ -83,24 +83,47 @@ def _load(raw):
     return raw if isinstance(raw, dict) else None
 
 
-def _org_sections(document: dict | None) -> dict[str, dict[str, Any]]:
-    """Per-section provider and keys of an org MODEL_CONFIGURATION_V2 document; a frozen copy
-    of schemas.ai_model_configuration.compile_ai_model_configuration_v2."""
-    if not document:
+# Sections each BYOK mode requires (schemas.ai_model_configuration BYOKPipeline/BYOKRealtime),
+# and which of them must not run the dograh provider (_reject_dograh_provider).
+_BYOK_REQUIRED: dict[str, tuple[str, ...]] = {
+    "pipeline": ("llm", "tts", "stt"),
+    "realtime": ("realtime", "llm"),
+}
+_BYOK_NO_DOGRAH = ("llm", "tts", "stt", "embeddings")
+
+
+def _org_sections(document: Any) -> dict[str, dict[str, Any]]:
+    """Per-section provider and keys of an org MODEL_CONFIGURATION_V2 value; a frozen copy of
+    compile_ai_model_configuration_v2. ``{}`` (nothing is stripped) unless the value is one the
+    runtime can load: it reads the column as the driver decodes it, with no second decode, and
+    falls back to no org configuration when OrganizationAIModelConfigurationV2.model_validate
+    fails (ai_model_configuration._parse_organization_ai_model_configuration_v2). The checks
+    below are that schema's structure; per-provider field validation is not replicated."""
+    if not isinstance(document, dict) or document.get("version", 2) != 2:
         return {}
     if document.get("mode") == "dograh":
         api_key = (document.get("dograh") or {}).get("api_key")
+        if not isinstance(api_key, str):
+            return {}
         return {
             s: {"provider": "dograh", "api_key": api_key} for s in ("llm", "tts", "stt")
         }
-    byok = document.get("byok") or {}
-    branch = (
-        byok.get(byok.get("mode"))
-        if byok.get("mode") in ("pipeline", "realtime")
-        else None
-    )
+    byok = document.get("byok") if document.get("mode") == "byok" else None
+    if not isinstance(byok, dict) or byok.get("mode") not in _BYOK_REQUIRED:
+        return {}
+    branch = byok.get(byok["mode"])
     if not isinstance(branch, dict):
         return {}
+    for name in (*_BYOK_REQUIRED[byok["mode"]], "embeddings"):
+        section = branch.get(name)
+        if section is None and name == "embeddings":  # optional
+            continue
+        if not isinstance(section, dict) or not isinstance(
+            section.get("provider"), str
+        ):
+            return {}
+        if name in _BYOK_NO_DOGRAH and section["provider"] == "dograh":
+            return {}
     return {
         name: section
         for name, section in branch.items()
@@ -147,7 +170,7 @@ class _OrgSections:
                 ),
                 {"org": organization_id, "key": _ORG_MODEL_CONFIGURATION_KEY},
             ).scalar_one_or_none()
-            self._cache[organization_id] = _org_sections(_load(raw))
+            self._cache[organization_id] = _org_sections(raw)
         return self._cache[organization_id]
 
 

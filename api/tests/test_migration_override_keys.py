@@ -163,6 +163,52 @@ async def test_legacy_true_copy_of_the_org_key_is_removed(
         assert (effective.llm.model, effective.llm.api_key) == ("gpt-4.1-mini", ORG_KEY)
 
 
+def _without_stt(configuration: dict) -> dict:
+    broken = copy.deepcopy(configuration)
+    del broken["byok"]["pipeline"]["stt"]
+    return broken
+
+
+@pytest.mark.parametrize(
+    "stored_org_value",
+    [
+        # Stored double-encoded: the runtime gets a str, model_validate fails, no org base.
+        json.dumps(_org_configuration(ORG_KEY)),
+        # No longer valid for the schema (byok pipeline without stt): same fallback.
+        _without_stt(_org_configuration(ORG_KEY)),
+    ],
+    ids=["org_double_encoded", "org_invalid"],
+)
+async def test_no_strip_against_an_org_configuration_the_runtime_cannot_load(
+    db_session, async_session, org, stored_org_value
+):
+    """Review r2 N1: when the runtime cannot load the org configuration it builds the
+    section from the override alone, so the override's key is the only one there is."""
+    await async_session.execute(
+        text(
+            "UPDATE organization_configurations SET value = CAST(:value AS json) "
+            "WHERE organization_id = :org AND key = :key"
+        ),
+        {
+            "value": json.dumps(stored_org_value),
+            "org": org[0].id,
+            "key": OrganizationConfigurationKey.MODEL_CONFIGURATION_V2.value,
+        },
+    )
+    configurations = {
+        "model_overrides": {
+            "llm": {"provider": "openai", "model": "gpt-4.1-mini", "api_key": ORG_KEY}
+        }
+    }
+    workflow_id = await _workflow_with(db_session, async_session, org, configurations)
+
+    await run_upgrade(async_session, load_migration("d7e3a915c2b8"))
+
+    for doc in await _stored(async_session, workflow_id):
+        assert doc == configurations
+        assert (await _resolve(org, doc)).llm.api_key == ORG_KEY
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
