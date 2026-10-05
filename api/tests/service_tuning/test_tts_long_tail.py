@@ -10,7 +10,7 @@ from api.tests.service_tuning._transport import audio_config, user_config_tts
 TTS_CASES = [
     (
         "cartesia",
-        "sonic-2",
+        "sonic-3.6",
         {
             "pronunciation_dict_id": "pd_1",
             "generation_config": {"speed": 1.2, "volume": 0.9},
@@ -208,7 +208,7 @@ def test_all_section_silence_time_is_not_splatted_into_the_provider_ctor():
     }
     with patch("api.services.pipecat.service_factory.CartesiaTTSService") as mock:
         create_tts_service(
-            user_config_tts("cartesia", model="sonic-2"), audio_config(), tuning=tuning
+            user_config_tts("cartesia", model="sonic-3.6"), audio_config(), tuning=tuning
         )
     kwargs = mock.call_args.kwargs
     assert kwargs["silence_time_s"] == 0.4 and kwargs["max_buffer_delay_ms"] == 200
@@ -229,7 +229,7 @@ def test_all_section_silence_time_enables_push_silence_after_stop():
     tuning = {"tts": {"_all": {"ctor": {"silence_time_s": 0.4}}}}
     with patch("api.services.pipecat.service_factory.CartesiaTTSService") as mock:
         create_tts_service(
-            user_config_tts("cartesia", model="sonic-2"), audio_config(), tuning=tuning
+            user_config_tts("cartesia", model="sonic-3.6"), audio_config(), tuning=tuning
         )
     kwargs = mock.call_args.kwargs
     assert kwargs["push_silence_after_stop"] is True and kwargs["silence_time_s"] == 0.4
