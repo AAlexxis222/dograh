@@ -159,7 +159,7 @@ entries:
     model_or_feature: u3-rt-pro
     date: null
     effect: legacy   # alias of universal-3-5-pro, not in documented enum
-    replacement: universal-3-5-pro
+    replacement: universal-3-6-pro
     source_url: https://www.assemblyai.com/changelog
     read_at: 2026-10-02
   - provider: speechmatics
