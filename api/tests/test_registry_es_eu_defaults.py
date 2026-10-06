@@ -25,6 +25,7 @@ def test_ink2_lists_spanish():
 # Explicit exemptions: no Spanish support documented in this codebase's options.
 ENGLISH_DEFAULT_EXEMPT = {
     "SpeachesSTTConfiguration",  # default model is the English-only distil-whisper .en
+    "SpeechifyTTSConfiguration",  # English-only provider brought by the upstream sync
 }
 
 

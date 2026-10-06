@@ -1,7 +1,7 @@
 """The applier merges ``_all`` under the provider section and hands the result
 to ``Settings.from_mapping`` as a delta over the factory's current kwargs."""
 
-from pipecat.services.deepgram.flux.base import DeepgramFluxSTTSettings
+from pipecat.services.deepgram.flux.stt_base import DeepgramFluxSTTSettings
 from pipecat.services.settings import NOT_GIVEN
 
 from api.services.pipecat.service_tuning import (

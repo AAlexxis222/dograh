@@ -7,6 +7,7 @@ the root api/conftest.py. This module provides lightweight, non-DB fixtures:
 - Pre-built WorkflowGraph fixtures for various node topologies
 """
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 from unittest.mock import AsyncMock, Mock, patch
@@ -131,12 +132,15 @@ def mock_engine():
     from api.services.workflow.pipecat_engine import PipecatEngine
 
     engine = Mock()
+    from api.tests.pipecat_test_utils import stub_agent_runtime
+
+    engine.active_agent = stub_agent_runtime()
     engine._workflow_run_id = 1
     engine._call_context_vars = {"customer_name": "John Doe"}
     engine._organization_id = None
     engine._get_organization_id = PipecatEngine._get_organization_id.__get__(engine)
-    engine.llm = Mock()
-    engine.llm.register_function = Mock()
+    engine.active_agent.llm = Mock()
+    engine.active_agent.llm.register_function = Mock()
 
     with patch(
         "api.db:db_client.get_organization_id_by_workflow_run_id",
@@ -144,6 +148,108 @@ def mock_engine():
         return_value=1,
     ):
         yield engine
+
+
+class SpeechWorker:
+    """A real call pipeline (TTS -> output transport) behind a real engine.
+
+    Speech the engine queues reaches the output transport, which holds its audio
+    until the test releases it, so a queued utterance stays pending (and its mute
+    held) exactly as long as the test wants. The three helpers below are the
+    observable surface of the VOZ-OLA0-F6 regression cases.
+    """
+
+    def __init__(self, engine, tts, output, worker):
+        self.engine = engine
+        self.tts = tts
+        self.output = output
+        self.worker = worker
+
+    async def is_user_muted(self) -> bool:
+        from pipecat.frames.frames import Frame
+
+        return await self.engine.should_mute_user(Frame())
+
+    def last_speech(self):
+        return list(self.engine.speech_playback.pending.values())[-1]
+
+    async def finish_playback_of_last_speech(self) -> None:
+        speech = self.last_speech()
+        self.output.release.set()
+        await asyncio.wait_for(speech.wait(), 1)
+
+    async def cancel_last_speech(self) -> None:
+        from pipecat.frames.frames import InterruptionFrame
+
+        speech = self.last_speech()
+        await self.output.queue_frame(InterruptionFrame())
+        await asyncio.wait_for(speech.wait(), 1)
+
+
+@pytest.fixture
+async def mock_engine_with_worker():
+    """Yield ``(engine, speech_worker)`` with the engine's speech route running."""
+    from types import SimpleNamespace
+
+    from pipecat.frames.frames import EndFrame
+    from pipecat.pipeline.pipeline import Pipeline
+    from pipecat.pipeline.worker import PipelineWorker
+    from pipecat.tests.mock_transport import MockOutputTransport
+    from pipecat.tests.mock_tts_service import MockTTSService
+    from pipecat.transports.base_transport import TransportParams
+
+    from api.services.pipecat.worker_runner import run_pipeline_worker
+    from api.services.workflow.pipecat_engine import PipecatEngine
+
+    class GatedOutput(MockOutputTransport):
+        def __init__(self):
+            super().__init__(
+                params=TransportParams(
+                    audio_out_enabled=True,
+                    audio_out_sample_rate=16000,
+                    audio_out_end_silence_secs=0,
+                )
+            )
+            self.release = asyncio.Event()
+
+        async def write_audio_frame(self, frame):
+            await self.release.wait()
+            return await super().write_audio_frame(frame)
+
+    class SwitchableTTS(MockTTSService):
+        silent = False
+
+        async def run_tts(self, text, context_id):
+            if self.silent:
+                return
+            async for frame in super().run_tts(text, context_id):
+                yield frame
+
+    engine = PipecatEngine(workflow=None, call_context_vars={})
+    tts = SwitchableTTS(mock_audio_duration_ms=80, frame_delay=0)
+    output = GatedOutput()
+    worker = PipelineWorker(Pipeline([tts, output]), enable_rtvi=False)
+    engine.call_worker = worker
+    # Configured speech enters the generation stage, as in a child worker.
+    engine.active_agent.worker = SimpleNamespace(queue_frame=tts.queue_frame)
+    engine.set_transport_output(output)
+
+    started = asyncio.Event()
+
+    @worker.event_handler("on_pipeline_started")
+    async def on_started(*_):
+        started.set()
+
+    runner = asyncio.create_task(run_pipeline_worker(worker))
+    try:
+        await asyncio.wait_for(started.wait(), 3)
+        yield engine, SpeechWorker(engine, tts, output, worker)
+    finally:
+        output.release.set()
+        await engine.cleanup()
+        if not runner.done():
+            await worker.queue_frame(EndFrame())
+        await asyncio.wait_for(runner, 3)
 
 
 @pytest.fixture
