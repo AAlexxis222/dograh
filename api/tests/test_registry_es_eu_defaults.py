@@ -22,10 +22,12 @@ def test_ink2_lists_spanish():
     assert "es" in CARTESIA_INK_2_STT_LANGUAGES
 
 
-# Explicit exemptions: no Spanish support documented in this codebase's options.
+# Explicit exemptions: providers whose default stays English on purpose.
 ENGLISH_DEFAULT_EXEMPT = {
     "SpeachesSTTConfiguration",  # default model is the English-only distil-whisper .en
-    "SpeechifyTTSConfiguration",  # English-only provider brought by the upstream sync
+    # Arrived with the upstream sync. Its default model simba-3.2 is English-only (simba-3.0 adds es);
+    # owner decision 2026-10-05: keep upstream's default rather than switch to an unverified es voice.
+    "SpeechifyTTSConfiguration",
 }
 
 
