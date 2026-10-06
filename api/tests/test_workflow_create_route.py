@@ -347,10 +347,6 @@ def test_update_workflow_accepts_a_secret_under_a_registered_path():
             "api.routes.workflow.get_resolved_ai_model_configuration",
             AsyncMock(return_value=SimpleNamespace(effective={}, source="user")),
         ),
-        patch(
-            "api.routes.workflow.enrich_overrides_with_api_keys",
-            lambda incoming, _effective: incoming,
-        ),
         patch("api.routes.workflow.resolve_effective_config", lambda *_: {}),
         patch("api.routes.workflow.UserConfigurationValidator") as validator,
     ):

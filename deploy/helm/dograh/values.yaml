@@ -161,8 +161,10 @@ secrets:
   langfusePublicKey: ""
   langfuseHost: ""
   langfuseProjectId: ""
-  # Traces are private by default. "true" makes them readable by anyone holding
-  # the trace URL, with no Langfuse login.
+  # Traces are private by default. "true" makes traces in the project above
+  # readable by anyone holding the trace URL, with no Langfuse login.
+  # Organizations that connected their own Langfuse project in the UI carry
+  # their own visibility setting instead.
   langfuseTracesPublic: ""
 
   # Signs the telephony media WebSocket URL the carrier dials back, so the ids
@@ -644,12 +646,13 @@ redisinternal:
     limits: { cpu: 500m, memory: 256Mi }
 
 minio:
-  # Official upstream MinIO. Root creds are shared with the app (single source of
-  # truth) so they can't drift; the app creates its bucket on first use.
+  # MinIO built from the community fork by github.com/dograh-hq/minio (upstream
+  # MinIO no longer publishes images). Root creds are shared with the app (single
+  # source of truth) so they can't drift; the app creates its bucket on first use.
   image:
     registry: docker.io
-    repository: minio/minio
-    tag: RELEASE.2025-04-22T22-12-26Z
+    repository: dograhai/minio
+    tag: "2026.09.22"
     pullPolicy: IfNotPresent
   auth:
     rootUser: minioadmin

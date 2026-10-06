@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
 import pytest
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.frames.frames import (
@@ -23,6 +24,7 @@ from pipecat.frames.frames import (
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMServiceMetadataFrame,
+    TTSSpeakFrame,
     UserTurnInferenceCompletedFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
@@ -37,6 +39,7 @@ from api.services.workflow.tools.custom_tool import (
     execute_http_tool,
     tool_to_function_schema,
 )
+from api.tests.pipecat_test_utils import stub_agent_runtime
 from api.utils.template_renderer import render_url_template
 from pipecat.tests import MockLLMService, run_test
 
@@ -539,6 +542,12 @@ class TestExecuteHttpTool:
                     "timeout_ms": 5000,
                     "preset_parameters": [
                         {
+                            "name": "workflow_run_id",
+                            "type": "number",
+                            "value_template": "{{initial_context.workflow_run_id}}",
+                            "required": True,
+                        },
+                        {
                             "name": "phone_number",
                             "type": "string",
                             "value_template": "{{initial_context.phone_number}}",
@@ -577,15 +586,17 @@ class TestExecuteHttpTool:
                 tool,
                 arguments,
                 call_context_vars={
+                    "workflow_run_id": 12345,
                     "phone_number": "+14155550123",
                     "is_vip": "true",
                 },
-                gathered_context_vars={"customer_id": "42"},
+                gathered_context_vars={"customer_id": "42", "workflow_run_id": 999},
             )
 
             call_kwargs = mock_client.request.call_args.kwargs
             assert call_kwargs["json"] == {
                 "name": "John",
+                "workflow_run_id": 12345,
                 "phone_number": "+14155550123",
                 "customer_id": 42,
                 "is_vip": True,
@@ -840,6 +851,39 @@ class TestExecuteHttpTool:
             assert call_kwargs["params"] == arguments
 
     @pytest.mark.asyncio
+    async def test_null_timeout_uses_the_default(self):
+        """The tool schema allows ``timeout_ms: null``; it means the default, not a crash."""
+        tool = MockToolModel(
+            tool_uuid="test-uuid",
+            name="Null timeout",
+            description="A tool saved without a timeout",
+            category="http_api",
+            definition={
+                "schema_version": 1,
+                "type": "http_api",
+                "config": {
+                    "method": "GET",
+                    "url": "https://api.example.com/x",
+                    "timeout_ms": None,
+                },
+            },
+        )
+
+        with patch(
+            "api.services.workflow.tools.custom_tool.httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.request.return_value = Mock(
+                status_code=200, json=Mock(return_value={"ok": True})
+            )
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await execute_http_tool(tool, {})
+
+        assert mock_client_class.call_args.kwargs["timeout"] == 5.0
+        assert result["status"] == "success"
+
+    @pytest.mark.asyncio
     async def test_timeout_error_handling(self):
         """Test that timeout errors are handled gracefully."""
         import httpx
@@ -1070,6 +1114,226 @@ class TestExecuteHttpTool:
 
                 # Verify credential lookup was NOT called
                 mock_db.get_credential_by_uuid.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_http_error_response_is_reported_as_an_error(self):
+        """A 4xx reaches the agent as status error, with the code and body."""
+        tool = MockToolModel(
+            tool_uuid="test-uuid-error",
+            name="Book Slot",
+            description="Book a slot",
+            category="http_api",
+            definition={
+                "schema_version": 1,
+                "type": "http_api",
+                "config": {"method": "POST", "url": "https://api.example.com/book"},
+            },
+        )
+
+        with patch(
+            "api.services.workflow.tools.custom_tool.httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = Mock()
+            mock_response.status_code = 400
+            mock_response.text = '{"detail": "slot taken"}'
+            mock_response.json.return_value = {"detail": "slot taken"}
+            mock_client.request.return_value = mock_response
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await execute_http_tool(tool, {"slot": "10:00"})
+
+        assert result["status"] == "error"
+        assert result["status_code"] == 400
+        assert result["data"] == {"detail": "slot taken"}
+
+    @pytest.mark.asyncio
+    async def test_form_body_format_sends_form_encoded_fields(self):
+        """Form mode sends data= instead of json=, flattening what cannot nest."""
+        tool = MockToolModel(
+            tool_uuid="test-uuid-form",
+            name="Send SMS",
+            description="Send an SMS",
+            category="http_api",
+            definition={
+                "schema_version": 1,
+                "type": "http_api",
+                "config": {
+                    "method": "POST",
+                    "url": "https://api.example.com/messages",
+                    "body_format": "form",
+                },
+            },
+        )
+        arguments = {
+            "To": "+15550100",
+            "MediaUrl": ["https://a.example/1.png", "https://a.example/2.png"],
+            "Meta": {"campaign": "spring"},
+            "Urgent": True,
+        }
+
+        with patch(
+            "api.services.workflow.tools.custom_tool.httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = Mock()
+            mock_response.status_code = 201
+            mock_response.json.return_value = {"sid": "SM1"}
+            mock_client.request.return_value = mock_response
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await execute_http_tool(tool, arguments)
+
+        call_kwargs = mock_client.request.call_args.kwargs
+        assert call_kwargs["json"] is None
+        assert call_kwargs["data"] == {
+            "To": "+15550100",
+            "MediaUrl": ["https://a.example/1.png", "https://a.example/2.png"],
+            "Meta": '{"campaign": "spring"}',
+            "Urgent": True,
+        }
+        assert result["status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_form_body_is_encoded_on_the_wire(self):
+        """The request httpx builds carries a form content type and body."""
+        tool = MockToolModel(
+            tool_uuid="test-uuid-form-wire",
+            name="Send SMS",
+            description="Send an SMS",
+            category="http_api",
+            definition={
+                "schema_version": 1,
+                "type": "http_api",
+                "config": {
+                    "method": "POST",
+                    "url": "https://api.example.com/messages",
+                    "body_format": "form",
+                    "headers": {"Content-Type": "application/json"},
+                },
+            },
+        )
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["content_type"] = request.headers["content-type"]
+            captured["body"] = request.content.decode()
+            return httpx.Response(201, json={"sid": "SM1"})
+
+        real_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with patch(
+            "api.services.workflow.tools.custom_tool.httpx.AsyncClient",
+            side_effect=client_factory,
+        ):
+            result = await execute_http_tool(
+                tool, {"To": "+15550100", "Body": "Hi there"}
+            )
+
+        assert result["status"] == "success"
+        # The configured JSON Content-Type is dropped, not sent with a form body.
+        assert captured["content_type"] == "application/x-www-form-urlencoded"
+        assert captured["body"] == "To=%2B15550100&Body=Hi+there"
+
+    @pytest.mark.asyncio
+    async def test_form_body_overrides_credential_content_type(self):
+        """A Content-Type from a shared credential does not reach a form request."""
+        tool = MockToolModel(
+            tool_uuid="test-uuid-form-credential",
+            name="Send SMS",
+            description="Send an SMS",
+            category="http_api",
+            definition={
+                "schema_version": 1,
+                "type": "http_api",
+                "config": {
+                    "method": "POST",
+                    "url": "https://api.example.com/messages",
+                    "body_format": "form",
+                    "credential_uuid": "cred-uuid-ct",
+                },
+            },
+        )
+        credential = Mock()
+        credential.name = "JSON API header"
+        credential.credential_type = "custom_header"
+        credential.credential_data = {
+            "header_name": "Content-Type",
+            "header_value": "application/json",
+        }
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["content_type"] = request.headers["content-type"]
+            return httpx.Response(201, json={"sid": "SM1"})
+
+        real_client = httpx.AsyncClient
+
+        def client_factory(**kwargs):
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        with (
+            patch(
+                "api.services.workflow.tools.custom_tool.httpx.AsyncClient",
+                side_effect=client_factory,
+            ),
+            patch("api.services.workflow.tools.custom_tool.db_client") as mock_db,
+        ):
+            mock_db.get_credential_by_uuid = AsyncMock(return_value=credential)
+            result = await execute_http_tool(
+                tool,
+                {"To": "+15550100"},
+                organization_id=1,
+                include_request_headers=True,
+            )
+
+        assert result["status"] == "success"
+        assert captured["content_type"] == "application/x-www-form-urlencoded"
+        # The preview shows only headers that were actually sent.
+        assert result["request_headers"] == {}
+
+    @pytest.mark.parametrize("method", ["GET", "DELETE"])
+    @pytest.mark.asyncio
+    async def test_form_body_format_ignored_without_body(self, method):
+        """A form format left over on a GET/DELETE tool keeps its headers."""
+        tool = MockToolModel(
+            tool_uuid="test-uuid-form-no-body",
+            name="Lookup",
+            description="Look up a record",
+            category="http_api",
+            definition={
+                "schema_version": 1,
+                "type": "http_api",
+                "config": {
+                    "method": method,
+                    "url": "https://api.example.com/records",
+                    "body_format": "form",
+                    "headers": {"Content-Type": "application/json"},
+                },
+            },
+        )
+
+        with patch(
+            "api.services.workflow.tools.custom_tool.httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"ok": True}
+            mock_client.request.return_value = mock_response
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await execute_http_tool(tool, {"id": "42"})
+
+        call_kwargs = mock_client.request.call_args.kwargs
+        assert call_kwargs["headers"] == {"Content-Type": "application/json"}
+        assert call_kwargs["json"] is None
+        assert call_kwargs["data"] is None
+        assert call_kwargs["params"] == {"id": "42"}
+        assert result["status"] == "success"
 
 
 class TestCoerceParameterValue:
@@ -1499,6 +1763,57 @@ class TestCustomToolManagerUnit:
     """Unit tests for CustomToolManager class."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "timeout_ms, http_announced",
+        [(None, True), (0, False)],
+        ids=["null_means_default", "invalid_is_not_announced"],
+    )
+    async def test_get_tool_schemas_skips_a_tool_that_cannot_be_registered(
+        self, timeout_ms, http_announced
+    ):
+        """A tool whose handler registration would fail is not announced to the LLM either,
+        and does not take the tools after it down with it."""
+        from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
+
+        mock_engine = Mock()
+        mock_engine._get_organization_id = AsyncMock(return_value=1)
+        manager = CustomToolManager(mock_engine)
+        http_tool = MockToolModel(
+            tool_uuid="http-uuid",
+            name="Lookup",
+            description="Look something up",
+            category="http_api",
+            definition={
+                "schema_version": 1,
+                "type": "http_api",
+                "config": {
+                    "method": "GET",
+                    "url": "https://api.example.com/x",
+                    "timeout_ms": timeout_ms,
+                },
+            },
+        )
+        end_call = MockToolModel(
+            tool_uuid="end-uuid",
+            name="end call",
+            description="End the call",
+            category="end_call",
+            definition={"schema_version": 1, "type": "end_call", "config": {}},
+        )
+
+        with patch(
+            "api.services.workflow.pipecat_engine_custom_tools.db_client.get_tools_by_uuids",
+            new=AsyncMock(return_value=[http_tool, end_call]),
+        ):
+            schemas = await manager.get_tool_schemas(
+                [http_tool.tool_uuid, end_call.tool_uuid]
+            )
+
+        names = [schema.name for schema in schemas]
+        assert "end_call" in names
+        assert ("lookup" in names) is http_announced
+
+    @pytest.mark.asyncio
     async def test_get_tool_schemas_returns_correct_format(self):
         """Test that get_tool_schemas returns FunctionSchema objects."""
         # Create a mock engine
@@ -1508,6 +1823,9 @@ class TestCustomToolManagerUnit:
         from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
 
         mock_engine = Mock()
+        from api.tests.pipecat_test_utils import stub_agent_runtime
+
+        mock_engine.active_agent = stub_agent_runtime()
         mock_engine._workflow_run_id = 1
         mock_engine._call_context_vars = {}
         mock_engine._organization_id = None
@@ -1586,13 +1904,16 @@ class TestCustomToolManagerUnit:
         from api.services.workflow.pipecat_engine import PipecatEngine
 
         mock_engine = Mock()
+        from api.tests.pipecat_test_utils import stub_agent_runtime
+
+        mock_engine.active_agent = stub_agent_runtime()
         mock_engine._workflow_run_id = 1
         mock_engine._call_context_vars = {}
         mock_engine._organization_id = None
         mock_engine._get_organization_id = PipecatEngine._get_organization_id.__get__(
             mock_engine
         )
-        mock_engine.llm = mock_llm
+        mock_engine.active_agent.llm = mock_llm
 
         manager = CustomToolManager(mock_engine)
 
@@ -1669,7 +1990,7 @@ class TestCustomToolManagerUnit:
 
         mock_engine = Mock()
         mock_engine._get_organization_id = AsyncMock(return_value=1)
-        mock_engine.llm.register_function = Mock()
+        mock_engine.active_agent.llm.register_function = Mock()
         manager = CustomToolManager(mock_engine)
         tool = MockToolModel(
             tool_uuid=f"{category}-uuid",
@@ -1689,11 +2010,65 @@ class TestCustomToolManagerUnit:
         ):
             await manager.register_handlers([tool.tool_uuid])
 
-        mock_engine.llm.register_function.assert_called_once()
+        mock_engine.active_agent.llm.register_function.assert_called_once()
         assert (
-            mock_engine.llm.register_function.call_args.kwargs["is_node_transition"]
+            mock_engine.active_agent.llm.register_function.call_args.kwargs[
+                "is_node_transition"
+            ]
             is True
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "timeout_ms, http_registered",
+        [(None, True), (0, False)],
+        ids=["null_means_default", "invalid_skips_only_that_tool"],
+    )
+    async def test_one_tool_timeout_does_not_unregister_the_next_tools(
+        self, timeout_ms, http_registered
+    ):
+        """A null timeout takes the default; an invalid one skips that tool only,
+        so the call-control tools after it (end_call) are still registered."""
+        from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
+
+        mock_engine = Mock()
+        mock_engine._get_organization_id = AsyncMock(return_value=1)
+        register = mock_engine.active_agent.llm.register_function = Mock()
+        manager = CustomToolManager(mock_engine)
+        http_tool = MockToolModel(
+            tool_uuid="http-uuid",
+            name="Lookup",
+            description="Look something up",
+            category="http_api",
+            definition={
+                "schema_version": 1,
+                "type": "http_api",
+                "config": {
+                    "method": "GET",
+                    "url": "https://api.example.com/x",
+                    "timeout_ms": timeout_ms,
+                },
+            },
+        )
+        end_call = MockToolModel(
+            tool_uuid="end-uuid",
+            name="end call",
+            description="End the call",
+            category="end_call",
+            definition={"schema_version": 1, "type": "end_call", "config": {}},
+        )
+
+        with patch(
+            "api.services.workflow.pipecat_engine_custom_tools.db_client.get_tools_by_uuids",
+            new=AsyncMock(return_value=[http_tool, end_call]),
+        ):
+            await manager.register_handlers([http_tool.tool_uuid, end_call.tool_uuid])
+
+        registered = {c.args[0]: c.kwargs for c in register.call_args_list}
+        assert "end_call" in registered
+        assert ("lookup" in registered) is http_registered
+        if http_registered:
+            assert registered["lookup"]["timeout_secs"] == 5.0
 
     @pytest.mark.asyncio
     async def test_transfer_call_renders_destination_from_initial_context(self):
@@ -1701,6 +2076,9 @@ class TestCustomToolManagerUnit:
         from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
 
         mock_engine = Mock()
+        from api.tests.pipecat_test_utils import stub_agent_runtime
+
+        mock_engine.active_agent = stub_agent_runtime()
         mock_engine._workflow_run_id = 1
         mock_engine._call_context_vars = {
             "transfer_destination": "+14155550123",
@@ -1795,12 +2173,14 @@ class TestCustomToolManagerUnit:
         from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
 
         mock_engine = Mock()
+        from api.tests.pipecat_test_utils import stub_agent_runtime
+
+        mock_engine.active_agent = stub_agent_runtime()
         mock_engine._workflow_run_id = 1
         mock_engine._call_context_vars = {"department": "sales"}
         mock_engine._gathered_context = {}
         mock_engine._get_organization_id = AsyncMock(return_value=1)
         mock_engine.flush_variable_extraction = AsyncMock()
-        mock_engine.arm_speech_playback = Mock()
 
         manager = CustomToolManager(mock_engine)
         tool = MockToolModel(
@@ -1868,9 +2248,10 @@ class TestCustomToolManagerUnit:
     @pytest.mark.asyncio
     async def test_transfer_call_http_resolver_uses_transfer_context_destination(self):
         """HTTP resolver transfer_context.destination is passed to the provider."""
+        from api.services.workflow.pipecat_engine import PipecatEngine
         from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
 
-        mock_engine = Mock()
+        mock_engine = PipecatEngine(workflow=None, call_context_vars={})
         mock_engine._workflow_run_id = 1
         mock_engine._call_context_vars = {}
         mock_engine._gathered_context = {"state": "TX"}
@@ -1878,7 +2259,8 @@ class TestCustomToolManagerUnit:
         mock_engine._audio_config = SimpleNamespace(transport_out_sample_rate=8000)
         mock_engine._transport_output = SimpleNamespace(queue_frame=AsyncMock())
         mock_engine._get_organization_id = AsyncMock(return_value=1)
-        mock_engine.task = SimpleNamespace(queue_frame=AsyncMock())
+        mock_engine.call_worker = SimpleNamespace(queue_frame=AsyncMock())
+        mock_engine._active_agent = stub_agent_runtime()
         mock_engine.set_mute_pipeline = Mock()
         mock_engine.end_call_with_reason = AsyncMock()
 
@@ -1998,24 +2380,30 @@ class TestCustomToolManagerUnit:
             False,
         ]
 
+        # Configured speech goes out through the running agent's own voice.
         spoken_texts = [
-            call.args[0].text for call in mock_engine.task.queue_frame.await_args_list
+            call.args[0].text
+            for call in mock_engine._active_agent.worker.queue_frame.await_args_list
+            if isinstance(call.args[0], TTSSpeakFrame)
         ]
         assert "One moment while I find the right team." in spoken_texts
         assert "I will connect you with our Texas partner now." in spoken_texts
+        mock_engine.speech_playback.cancel_all()
 
     @pytest.mark.asyncio
     async def test_transfer_call_resolver_failure_does_not_toggle_pipeline_mute(self):
         """Function-call muting covers resolver execution without pipeline state."""
+        from api.services.workflow.pipecat_engine import PipecatEngine
         from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
 
-        mock_engine = Mock()
+        mock_engine = PipecatEngine(workflow=None, call_context_vars={})
         mock_engine._workflow_run_id = 1
         mock_engine._call_context_vars = {}
         mock_engine._gathered_context = {"state": "TX"}
         mock_engine._fetch_recording_audio = None
         mock_engine._get_organization_id = AsyncMock(return_value=1)
-        mock_engine.task = SimpleNamespace(queue_frame=AsyncMock())
+        mock_engine.call_worker = SimpleNamespace(queue_frame=AsyncMock())
+        mock_engine._active_agent = stub_agent_runtime()
         mock_engine.set_mute_pipeline = Mock()
         mock_engine.end_call_with_reason = AsyncMock()
 
@@ -2081,6 +2469,7 @@ class TestCustomToolManagerUnit:
         assert result_received["status"] == "transfer_failed"
         assert result_received["reason"] == "no_destination"
         mock_engine.set_mute_pipeline.assert_not_called()
+        mock_engine.speech_playback.cancel_all()
 
     @pytest.mark.asyncio
     async def test_transfer_call_propagates_provider_destination_error(self):
@@ -2088,6 +2477,9 @@ class TestCustomToolManagerUnit:
         from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
 
         mock_engine = Mock()
+        from api.tests.pipecat_test_utils import stub_agent_runtime
+
+        mock_engine.active_agent = stub_agent_runtime()
         mock_engine._workflow_run_id = 1
         mock_engine._call_context_vars = {}
         mock_engine._gathered_context = {}
@@ -2672,6 +3064,7 @@ class TestUrlPathParameters:
                 url="https://api.com/users/123",
                 headers={},
                 json=None,
+                data=None,
                 params={"userId": "123"},
             )
 
@@ -2704,6 +3097,7 @@ class TestUrlPathParameters:
                 url="https://api.apaleo.com/booking/v1/reservations/AWAEYPKI-1/actions/cancel",
                 headers={},
                 json={"reservationId": "AWAEYPKI-1"},
+                data=None,
                 params=None,
             )
 
@@ -2802,5 +3196,6 @@ class TestUrlPathParameters:
                 url="https://api.com/users/123",
                 headers={},
                 json=None,
+                data=None,
                 params={"userId": "123"},
             )

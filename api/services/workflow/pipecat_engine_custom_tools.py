@@ -13,20 +13,22 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from loguru import logger
 from pipecat.adapters.schemas.function_schema import FunctionSchema
-from pipecat.frames.frames import (
-    FunctionCallResultProperties,
-    TTSSpeakFrame,
-)
+from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.utils.enums import EndTaskReason
 
 from api.db import db_client
 from api.enums import ToolCategory, WorkflowRunMode
-from api.services.pipecat.audio_playback import play_audio, play_audio_loop
+from api.services.pipecat.audio_playback import play_audio_loop
+from api.services.pipecat.speech_playback import PlaybackOutcome, SpeechPlayback
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.external_pbx import resolve_external_pbx_field_mappings
 from api.services.telephony.factory import get_telephony_provider_for_run
-from api.services.telephony.transfer_event_protocol import TransferContext
+from api.services.telephony.transfer_event_protocol import (
+    TransferContext,
+    TransferEvent,
+    TransferEventType,
+)
 from api.services.workflow.tools.calculator import get_calculator_tools, safe_calculator
 from api.services.workflow.tools.custom_tool import (
     execute_http_tool,
@@ -36,6 +38,7 @@ from api.services.workflow.tools.transfer_resolver import (
     TransferResolutionError,
     resolve_transfer_config,
 )
+from api.services.workflow.transfer_introduction import prepare_transfer_introduction
 from api.utils.template_renderer import render_template
 
 if TYPE_CHECKING:
@@ -47,6 +50,23 @@ _TRANSFER_PLAYBACK_START_TIMEOUT_SECS = 5.0
 _TRANSFER_PLAYBACK_FINISH_TIMEOUT_SECS = 30.0
 _TRANSFER_EXTERNAL_PBX_API_TIMEOUT_SECS = 30.0
 _TRANSFER_POST_HANDOFF_DELAY_SECS = 4.0
+
+
+def _parse_timeout_s(raw: object) -> float:
+    """Validate a configured tool timeout at the boundary.
+
+    Pipecat (>= 1.8) cancels a handler that outlives the ``timeout_secs`` it was
+    registered with, so a bad value must be rejected here: a non-numeric or
+    non-positive one would otherwise make registration raise, or cancel every
+    call to the tool at once.
+    """
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"tool timeout must be a number, got {raw!r}") from None
+    if value <= 0:
+        raise ValueError(f"tool timeout must be > 0, got {value}")
+    return value
 
 
 def _render_transfer_destination(
@@ -101,52 +121,25 @@ class CustomToolManager:
       4. Executing tools when invoked by the LLM
     """
 
-    def __init__(self, engine: "PipecatEngine") -> None:
+    def __init__(self, engine: "PipecatEngine", agent=None) -> None:
         self._engine = engine
+        self._agent = agent or engine.active_agent
 
     async def _play_config_message(
         self, config: dict, *, append_to_context: bool = False
-    ) -> bool:
-        """Play a message from tool config — text or pre-recorded audio.
-
-        Returns True if a message was queued, False otherwise.
-        """
+    ) -> SpeechPlayback | None:
+        """Queue configured text or audio, returning its playback operation."""
         message_type = config.get("messageType", "none")
-
-        if message_type == "audio":
-            recording_pk = config.get("audioRecordingId")
-            if recording_pk and self._engine._fetch_recording_audio:
-                result = await self._engine._fetch_recording_audio(
-                    recording_pk=int(recording_pk)
-                )
-                if result:
-                    await play_audio(
-                        result.audio,
-                        sample_rate=self._engine._audio_config.pipeline_sample_rate
-                        if self._engine._audio_config
-                        else 16000,
-                        queue_frame=self._engine._transport_output.queue_frame,
-                        transcript=result.transcript,
-                        persist_to_logs=True,
-                    )
-                    return True
-                else:
-                    logger.warning(f"Failed to fetch recording pk={recording_pk}")
-            return False
-
-        if message_type == "custom":
-            custom_message = config.get("customMessage", "")
-            if custom_message:
-                await self._engine.task.queue_frame(
-                    TTSSpeakFrame(
-                        custom_message,
-                        append_to_context=append_to_context,
-                        persist_to_logs=True,
-                    )
-                )
-                return True
-
-        return False
+        if message_type == "audio" and config.get("audioRecordingId"):
+            return await self._engine.queue_speech(
+                recording_pk=int(config["audioRecordingId"]),
+                append_to_context=append_to_context,
+            )
+        if message_type == "custom" and config.get("customMessage"):
+            return await self._engine.queue_speech(
+                config["customMessage"], append_to_context=append_to_context
+            )
+        return None
 
     async def get_organization_id(self) -> Optional[int]:
         """Get the organization ID from the engine (shared cache)."""
@@ -193,7 +186,7 @@ class CustomToolManager:
                     continue
 
                 if tool.category == ToolCategory.MCP.value:
-                    session = self._engine._mcp_sessions.get(tool.tool_uuid)
+                    session = self._agent.mcp_sessions.get(tool.tool_uuid)
                     if session is None or not session.available:
                         logger.warning(
                             f"MCP tool '{tool.name}' ({tool.tool_uuid}) "
@@ -208,7 +201,14 @@ class CustomToolManager:
                     schemas.extend(session.function_schemas(allowed))
                     continue
 
-                raw_schema = tool_to_function_schema(tool)
+                try:
+                    # register_handlers skips a tool it cannot register; announcing
+                    # it would let the LLM call a function that has no handler.
+                    self._handler_timeout_secs(tool)
+                    raw_schema = tool_to_function_schema(tool)
+                except Exception as e:
+                    logger.error(f"Skipping tool '{tool.name}' ({tool.tool_uuid}): {e}")
+                    continue
                 function_name = raw_schema["function"]["name"]
 
                 # Convert to FunctionSchema object for compatibility with update_llm_context
@@ -256,64 +256,76 @@ class CustomToolManager:
             tools = await db_client.get_tools_by_uuids(tool_uuids, organization_id)
 
             for tool in tools:
-                if tool.category == ToolCategory.CALCULATOR.value:
-                    self._register_calculator_handler()
-                    logger.debug(
-                        f"Registered calculator tool handler "
-                        f"(tool_uuid: {tool.tool_uuid})"
-                    )
-                    continue
-
-                if tool.category == ToolCategory.MCP.value:
-                    session = self._engine._mcp_sessions.get(tool.tool_uuid)
-                    if session is None or not session.available:
-                        logger.warning(
-                            f"MCP tool '{tool.name}' ({tool.tool_uuid}) "
-                            f"unavailable; skipping handler registration"
+                try:
+                    if tool.category == ToolCategory.CALCULATOR.value:
+                        self._register_calculator_handler()
+                        logger.debug(
+                            f"Registered calculator tool handler "
+                            f"(tool_uuid: {tool.tool_uuid})"
                         )
                         continue
-                    allowed = (
-                        None
-                        if mcp_tool_filters is None
-                        else set(mcp_tool_filters.get(tool.tool_uuid, []))
-                    )
-                    mcp_schemas = session.function_schemas(allowed)
-                    for fs in mcp_schemas:
-                        self._engine.llm.register_function(
-                            fs.name,
-                            self._create_mcp_handler(session, fs.name),
-                            timeout_secs=session.call_timeout_secs,
+
+                    if tool.category == ToolCategory.MCP.value:
+                        session = self._agent.mcp_sessions.get(tool.tool_uuid)
+                        if session is None or not session.available:
+                            logger.warning(
+                                f"MCP tool '{tool.name}' ({tool.tool_uuid}) "
+                                f"unavailable; skipping handler registration"
+                            )
+                            continue
+                        allowed = (
+                            None
+                            if mcp_tool_filters is None
+                            else set(mcp_tool_filters.get(tool.tool_uuid, []))
                         )
-                    logger.debug(
-                        f"Registered {len(mcp_schemas)} MCP "
-                        f"handlers for tool '{tool.name}' ({tool.tool_uuid})"
+                        mcp_schemas = session.function_schemas(allowed)
+                        for fs in mcp_schemas:
+                            self._agent.llm.register_function(
+                                fs.name,
+                                self._agent.bind_tool(
+                                    self._engine,
+                                    self._create_mcp_handler(session, fs.name),
+                                ),
+                                timeout_secs=session.call_timeout_secs,
+                            )
+                        logger.debug(
+                            f"Registered {len(mcp_schemas)} MCP "
+                            f"handlers for tool '{tool.name}' ({tool.tool_uuid})"
+                        )
+                        continue
+
+                    schema = tool_to_function_schema(tool)
+                    function_name = schema["function"]["name"]
+
+                    # Create and register the handler
+                    handler, timeout_secs = self._create_handler(tool, function_name)
+                    # End-call and transfer-call tools are workflow-control
+                    # boundaries even though they do not necessarily select another
+                    # graph node. Give them the same ordering guarantees as an
+                    # explicit node-transition function.
+                    is_node_transition = tool.category in {
+                        ToolCategory.END_CALL.value,
+                        ToolCategory.TRANSFER_CALL.value,
+                        ToolCategory.TRANSFER_AGENT.value,
+                    }
+                    self._agent.llm.register_function(
+                        function_name,
+                        self._agent.bind_tool(self._engine, handler),
+                        timeout_secs=timeout_secs,
+                        is_node_transition=is_node_transition,
                     )
-                    continue
 
-                schema = tool_to_function_schema(tool)
-                function_name = schema["function"]["name"]
-
-                # Create and register the handler
-                handler, timeout_secs = self._create_handler(tool, function_name)
-                # End-call and transfer-call tools are workflow-control
-                # boundaries even though they do not necessarily select another
-                # graph node. Give them the same ordering guarantees as an
-                # explicit node-transition function.
-                is_node_transition = tool.category in {
-                    ToolCategory.END_CALL.value,
-                    ToolCategory.TRANSFER_CALL.value,
-                }
-                self._engine.llm.register_function(
-                    function_name,
-                    handler,
-                    timeout_secs=timeout_secs,
-                    is_node_transition=is_node_transition,
-                )
-
-                logger.debug(
-                    f"Registered custom tool handler: {function_name} "
-                    f"(tool_uuid: {tool.tool_uuid})"
-                )
+                    logger.debug(
+                        f"Registered custom tool handler: {function_name} "
+                        f"(tool_uuid: {tool.tool_uuid})"
+                    )
+                except Exception as e:
+                    # One bad tool must not leave the node without the tools after
+                    # it (end_call and transfer among them).
+                    logger.error(
+                        f"Failed to register handler for tool '{tool.name}' "
+                        f"({tool.tool_uuid}): {e}"
+                    )
 
         except Exception as e:
             logger.error(f"Failed to register custom tool handlers: {e}")
@@ -328,21 +340,34 @@ class CustomToolManager:
         Returns:
             Async handler function for the tool
         """
-        timeout_secs: Optional[float] = None
+        timeout_secs = self._handler_timeout_secs(tool)
 
         if tool.category == ToolCategory.END_CALL.value:
             handler = self._create_end_call_handler(tool, function_name)
+        elif tool.category == ToolCategory.TRANSFER_AGENT.value:
+            handler = self._create_transfer_agent_handler(tool, function_name)
         elif tool.category == ToolCategory.TRANSFER_CALL.value:
-            timeout_secs = self._transfer_handler_timeout_secs(tool)
             handler = self._create_transfer_call_handler(tool, function_name)
         else:
-            timeout_ms = ((tool.definition or {}).get("config", {}) or {}).get(
-                "timeout_ms", 5000
-            )
-            timeout_secs = float(timeout_ms) / 1000
             handler = self._create_http_tool_handler(tool, function_name)
 
         return handler, timeout_secs
+
+    def _handler_timeout_secs(self, tool: Any) -> Optional[float]:
+        """The deadline a tool's handler is registered with; raises ``ValueError`` for a
+        configuration that cannot be registered (an invalid HTTP timeout)."""
+        if tool.category == ToolCategory.END_CALL.value:
+            return None
+        if tool.category == ToolCategory.TRANSFER_AGENT.value:
+            # The handler returns as soon as the handoff is accepted; the
+            # handoff itself runs on an engine-owned task well past this
+            # deadline.
+            return 10.0
+        if tool.category == ToolCategory.TRANSFER_CALL.value:
+            return self._transfer_handler_timeout_secs(tool)
+        timeout_ms = ((tool.definition or {}).get("config", {}) or {}).get("timeout_ms")
+        # The tool schema allows an explicit null: it means the default.
+        return _parse_timeout_s(5000 if timeout_ms is None else timeout_ms) / 1000
 
     def _transfer_handler_timeout_secs(self, tool: Any) -> float:
         config = (tool.definition or {}).get("config", {}) or {}
@@ -391,7 +416,9 @@ class CustomToolManager:
             except Exception as e:
                 await function_call_params.result_callback({"error": str(e)})
 
-        self._engine.llm.register_function("safe_calculator", calculate_func)
+        self._agent.llm.register_function(
+            "safe_calculator", self._agent.bind_tool(self._engine, calculate_func)
+        )
 
     def _create_http_tool_handler(self, tool: Any, function_name: str):
         """Create a handler function for an HTTP API tool.
@@ -422,42 +449,12 @@ class CustomToolManager:
                         logger.info(
                             f"Playing audio message before HTTP tool: pk={recording_pk}"
                         )
-                        mute_token = self._engine.acquire_queued_speech_mute()
-                        try:
-                            result = await self._engine._fetch_recording_audio(
-                                recording_pk=int(recording_pk)
-                            )
-                            if result:
-                                await play_audio(
-                                    result.audio,
-                                    sample_rate=self._engine._audio_config.pipeline_sample_rate
-                                    if self._engine._audio_config
-                                    else 16000,
-                                    queue_frame=self._engine.queued_speech_frame_sink(
-                                        mute_token
-                                    ),
-                                    transcript=result.transcript,
-                                    persist_to_logs=True,
-                                )
-                            else:
-                                logger.warning(
-                                    f"Failed to fetch recording pk={recording_pk}"
-                                )
-                        finally:
-                            # Nothing was queued, so no BotStoppedSpeakingFrame
-                            # will ever release this hold; release it here.
-                            self._engine.release_queued_speech_mute(mute_token)
-                elif custom_message:
-                    logger.info(
-                        f"Playing custom message before HTTP tool: {custom_message}"
-                    )
-                    self._engine.mute_until_speech_playback_ends()
-                    await self._engine.task.queue_frame(
-                        TTSSpeakFrame(
-                            custom_message,
-                            append_to_context=False,
-                            persist_to_logs=True,
+                        await self._engine.queue_speech(
+                            recording_pk=int(recording_pk), mute_user=True
                         )
+                elif custom_message:
+                    await self._engine.queue_text_message(
+                        custom_message, mute_user=True
                     )
 
                 result = await execute_http_tool(
@@ -547,9 +544,13 @@ class CustomToolManager:
                     properties=properties,
                 )
 
-                played = await self._play_config_message(config)
-                if played:
-                    # End the call after the message (not immediately)
+                speech = await self._play_config_message(config)
+                if speech is not None and speech.outcome not in (
+                    PlaybackOutcome.FAILED,
+                    PlaybackOutcome.SKIPPED,
+                    PlaybackOutcome.CLOSED,
+                ):
+                    await speech.wait()
                     await self._engine.end_call_with_reason(
                         EndTaskReason.END_CALL.value,
                         abort_immediately=False,
@@ -569,6 +570,94 @@ class CustomToolManager:
                 )
 
         return end_call_handler
+
+    def _create_transfer_agent_handler(self, tool: Any, function_name: str):
+        """Create a handler that hands the live call to another Dograh agent.
+
+        The handler's job ends the moment the handoff is accepted. Announcing,
+        holding, preparing the destination and activating it all run on an
+        engine-owned task: they outlast the tool's deadline, and they must
+        survive the caller interrupting, which cancels the aggregator's
+        ``on_context_updated`` tasks.
+        """
+
+        async def transfer_agent_handler(
+            function_call_params: FunctionCallParams,
+        ) -> None:
+            from api.services.workflow.agent_transfer import TransferRequest
+
+            engine = self._engine
+            logger.info(f"Transfer Agent Tool EXECUTED: {function_name}")
+
+            config = (tool.definition or {}).get("config", {}) or {}
+
+            async def refuse(code: str, message: str) -> None:
+                # No properties: the agent gets its result and generates a
+                # reply, so the caller hears why nothing happened.
+                logger.warning(f"Transfer via '{function_name}' refused: {code}")
+                await function_call_params.result_callback(
+                    {"status": "transfer_failed", "reason": code, "message": message}
+                )
+
+            if not engine.agent_transfer_enabled:
+                await refuse(
+                    "transfer_unavailable",
+                    "Transferring to another agent is not available on this call. "
+                    "Continue helping the caller yourself.",
+                )
+                return
+
+            workflow_id = config.get("workflow_id")
+            if not isinstance(workflow_id, int):
+                await refuse(
+                    "destination_misconfigured",
+                    "That transfer is not configured correctly. Continue "
+                    "helping the caller yourself.",
+                )
+                return
+
+            announcement = config.get("message")
+            announcement = (
+                engine._format_prompt(str(announcement)) if announcement else None
+            )
+
+            request = TransferRequest(
+                destination_workflow_id=workflow_id,
+                # The tool's own name is what the caller-facing recovery
+                # message and the run record refer to.
+                destination_label=tool.name,
+                origin_visit_id=self._agent.visit_id,
+                announcement=announcement,
+                play_greeting=config.get("play_greeting", True),
+            )
+
+            if not engine.transfer_coordinator.accept(request):
+                await refuse(
+                    "transfer_in_progress",
+                    "A transfer is already under way. Wait for it to finish.",
+                )
+                return
+
+            context_ready = asyncio.Event()
+            engine.transfer_coordinator.start(request, context_ready=context_ready)
+
+            async def on_context_updated() -> None:
+                # Runs once the tool result is committed to the conversation,
+                # so the handoff snapshot contains it rather than racing it.
+                context_ready.set()
+
+            await function_call_params.result_callback(
+                {"status": "transferring", "message": "Connecting the caller now."},
+                # The caller is about to hear the transfer message and then a
+                # ringer; another generation from this agent would talk over
+                # both, and it is being handed off regardless of what it says.
+                properties=FunctionCallResultProperties(
+                    run_llm=False,
+                    on_context_updated=on_context_updated,
+                ),
+            )
+
+        return transfer_agent_handler
 
     def _create_transfer_call_handler(self, tool: Any, function_name: str):
         """Create a handler function for a transfer call tool.
@@ -668,13 +757,7 @@ class CustomToolManager:
                 ) == "dynamic" and isinstance(resolver, dict)
 
                 if is_dynamic_transfer and resolver.get("wait_message"):
-                    await self._engine.task.queue_frame(
-                        TTSSpeakFrame(
-                            str(resolver["wait_message"]),
-                            append_to_context=False,
-                            persist_to_logs=True,
-                        )
-                    )
+                    await self._engine.queue_text_message(str(resolver["wait_message"]))
 
                 try:
                     resolved_transfer = await resolve_transfer_config(
@@ -717,18 +800,10 @@ class CustomToolManager:
                     workflow_run, organization_id
                 )
 
-                self._engine.arm_speech_playback()
                 if resolved_transfer.message:
-                    await self._engine.task.queue_frame(
-                        TTSSpeakFrame(
-                            resolved_transfer.message,
-                            append_to_context=False,
-                            persist_to_logs=True,
-                        )
-                    )
-                    message_queued = True
+                    speech = await self._engine.queue_speech(resolved_transfer.message)
                 else:
-                    message_queued = await self._play_config_message(config)
+                    speech = await self._play_config_message(config)
 
                 if external_pbx_call:
                     transfer_disposition = (
@@ -747,11 +822,8 @@ class CustomToolManager:
                     # The external PBX pulls the customer off our leg as soon as
                     # the transfer API returns, so the pre-transfer message has
                     # to finish playing before we make that call.
-                    if message_queued:
-                        await self._engine.wait_for_speech_playback(
-                            start_timeout=_TRANSFER_PLAYBACK_START_TIMEOUT_SECS,
-                            playback_timeout=_TRANSFER_PLAYBACK_FINISH_TIMEOUT_SECS,
-                        )
+                    if speech is not None:
+                        await speech.wait()
                     external_result = await provider.transfer_external_pbx_call(
                         identity=external_pbx_call,
                         destination=destination,
@@ -826,6 +898,42 @@ class CustomToolManager:
 
                 # Store initial transfer context in Redis before provider call to avoid race condition
                 call_transfer_manager = await get_call_transfer_manager()
+                introduction_audio_url = None
+                if (
+                    config.get("introduction_enabled")
+                    and getattr(
+                        provider, "supports_transfer_introduction", lambda: False
+                    )()
+                ):
+                    # Finish the caller-facing announcement, then cover the
+                    # bounded summary + TTS preparation with hold audio.
+                    if speech is not None:
+                        await speech.wait()
+                    self._engine.set_mute_pipeline(True)
+                    preparation_stop = asyncio.Event()
+                    preparation_hold = asyncio.create_task(
+                        play_audio_loop(
+                            stop_event=preparation_stop,
+                            sample_rate=(
+                                self._engine._audio_config.transport_out_sample_rate
+                                if self._engine._audio_config
+                                else 8000
+                            ),
+                            queue_frame=self._engine._transport_output.queue_frame,
+                        )
+                    )
+                    try:
+                        introduction_audio_url = await prepare_transfer_introduction(
+                            self._engine, config, organization_id
+                        )
+                    finally:
+                        preparation_stop.set()
+                        await asyncio.gather(preparation_hold, return_exceptions=True)
+                        self._engine.set_mute_pipeline(False)
+                    if introduction_audio_url:
+                        # A retry must never rejoin a previous transfer attempt.
+                        conference_name = f"transfer-{transfer_id}"
+
                 transfer_context = TransferContext(
                     transfer_id=transfer_id,
                     call_sid=None,  # Will be updated after provider response
@@ -835,6 +943,7 @@ class CustomToolManager:
                     conference_name=conference_name,
                     initiated_at=time.time(),
                     workflow_run_id=self._engine._workflow_run_id,
+                    introduction_audio_url=introduction_audio_url,
                 )
                 await call_transfer_manager.store_transfer_context(transfer_context)
 
@@ -857,6 +966,11 @@ class CustomToolManager:
                         transfer_id=transfer_id,
                         conference_name=conference_name,
                         timeout=timeout_seconds,
+                        **(
+                            {"introduction_audio_url": introduction_audio_url}
+                            if introduction_audio_url
+                            else {}
+                        ),
                     )
                 except Exception as e:
                     logger.error(f"Transfer provider failed: {e}")
@@ -934,6 +1048,26 @@ class CustomToolManager:
                     if hold_music_task:
                         await hold_music_task
                     self._engine.set_mute_pipeline(False)
+
+                if not transfer_event and introduction_audio_url and call_sid:
+                    # Claim the timeout atomically against a concurrent answer.
+                    # If the answer won, continue the transfer and keep its leg.
+                    transfer_event = await call_transfer_manager.publish_transfer_event(
+                        TransferEvent(
+                            type=TransferEventType.TRANSFER_FAILED,
+                            transfer_id=transfer_id,
+                            original_call_sid=original_call_sid,
+                            status="failed",
+                            action="transfer_failed",
+                            reason="timeout",
+                        ),
+                        only_if_pending=True,
+                    )
+                    if (
+                        transfer_event is None
+                        or transfer_event.type != TransferEventType.DESTINATION_ANSWERED
+                    ):
+                        await provider.end_transfer_leg(call_sid)
 
                 # Handle result (after cleanup)
                 if transfer_event:

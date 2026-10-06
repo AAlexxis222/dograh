@@ -24,6 +24,7 @@ SECRET_LEAF_NAMES: tuple[str, ...] = (
     "credentials",
     "aws_access_key",
     "aws_secret_key",
+    "aws_session_token",
 )
 
 # The ``model_overrides`` sections merge.py restores real secrets into
