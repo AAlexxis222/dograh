@@ -1015,7 +1015,7 @@ class GoogleRealtimeLLMConfiguration(BaseLLMConfiguration):
         },
     )
     language: str = Field(
-        default="en",
+        default="es",
         description="ISO 639-1 language code.",
         json_schema_extra={
             "examples": GOOGLE_REALTIME_LANGUAGES,
@@ -1047,7 +1047,7 @@ class GoogleVertexRealtimeLLMConfiguration(BaseLLMConfiguration):
         },
     )
     language: str = Field(
-        default="en",
+        default="es",
         description="BCP-47 language code (e.g. 'en-US').",
         json_schema_extra={
             "examples": GOOGLE_VERTEX_REALTIME_LANGUAGES,
@@ -1173,7 +1173,7 @@ class DeepgramTTSConfiguration(BaseServiceConfiguration):
     model_config = DEEPGRAM_PROVIDER_MODEL_CONFIG
     provider: Literal[ServiceProviders.DEEPGRAM] = ServiceProviders.DEEPGRAM
     voice: str = Field(
-        default="aura-2-helena-en",
+        default="aura-2-carina-es",
         description="Deepgram voice ID (model is inferred from the 'aura-N' prefix).",
     )
     base_url: str = Field(
@@ -1250,7 +1250,7 @@ class GoogleTTSConfiguration(BaseTTSConfiguration):
         },
     )
     voice: str = Field(
-        default="en-US-Chirp3-HD-Charon",
+        default="es-ES-Chirp3-HD-Kore",
         description="Google Cloud voice name. Use a Chirp 3 HD or Journey voice for streaming TTS.",
         json_schema_extra={
             "examples": GOOGLE_TTS_VOICES,
@@ -1258,7 +1258,7 @@ class GoogleTTSConfiguration(BaseTTSConfiguration):
         },
     )
     language: str = Field(
-        default="en-US",
+        default="es-ES",
         description="BCP-47 language code for synthesis.",
         json_schema_extra={
             "examples": GOOGLE_TTS_LANGUAGES,
@@ -1337,7 +1337,7 @@ class DograhTTSService(BaseTTSConfiguration):
 CARTESIA_TTS_MODELS = ["sonic-3.6", "sonic-3.5", "sonic-3"]
 INWORLD_TTS_MODELS = ["inworld-tts-2"]
 INWORLD_TTS_VOICES = ["Ashley"]
-INWORLD_TTS_LANGUAGES = ["en-US"]
+INWORLD_TTS_LANGUAGES = ["en-US", "es-ES"]
 
 
 @register_tts
@@ -1351,7 +1351,10 @@ class CartesiaTTSConfiguration(BaseTTSConfiguration):
     )
     voice: str = Field(
         default="3faa81ae-d3d8-4ab1-9e44-e50e46d33c30",
-        description="Cartesia voice UUID from your Cartesia dashboard.",
+        description=(
+            "Cartesia voice UUID from your Cartesia dashboard. "
+            "Default is provisional: not yet verified as a Castilian Spanish voice."
+        ),
     )
     speed: float = Field(default=1.0, ge=0.6, le=1.5, description="Speed of the voice.")
     volume: float = Field(
@@ -1361,7 +1364,7 @@ class CartesiaTTSConfiguration(BaseTTSConfiguration):
         description="Volume multiplier for generated speech.",
     )
     language: str = Field(
-        default="en",
+        default="es",
         description="Cartesia language code for TTS synthesis (e.g. 'en', 'tr', 'fr', 'de').",
         json_schema_extra={"allow_custom_input": True},
     )
@@ -1379,13 +1382,13 @@ class InworldTTSConfiguration(BaseTTSConfiguration):
     voice: str = Field(
         default="Ashley",
         description=(
-            "Inworld voice ID. Use Ashley for the default warm English voice, "
-            "or a workspace voice ID for a cloned/custom voice."
+            "Inworld voice ID. Ashley is the default (an English voice, unverified "
+            "for Spanish); use a workspace voice ID for a cloned/custom voice."
         ),
         json_schema_extra={"examples": INWORLD_TTS_VOICES, "allow_custom_input": True},
     )
     language: str = Field(
-        default="en-US",
+        default="es-ES",
         description="BCP-47 language code for synthesis.",
         json_schema_extra={
             "examples": INWORLD_TTS_LANGUAGES,
@@ -1454,7 +1457,7 @@ class CambTTSConfiguration(BaseTTSConfiguration):
         json_schema_extra={"examples": CAMB_TTS_MODELS},
     )
     voice: str = Field(default="147320", description="Camb.ai voice ID.")
-    language: str = Field(default="en-us", description="BCP-47 language code.")
+    language: str = Field(default="es-es", description="BCP-47 language code.")
 
 
 RIME_TTS_MODELS = ["arcana", "mistv3", "mistv2", "mist"]
@@ -1478,7 +1481,7 @@ class RimeTTSConfiguration(BaseTTSConfiguration):
         default=1.0, ge=0.5, le=2.0, description="Speech speed multiplier."
     )
     language: str = Field(
-        default="en",
+        default="es",
         description="ISO 639-1 language code.",
         json_schema_extra={"examples": RIME_TTS_LANGUAGES, "allow_custom_input": True},
     )
@@ -1568,14 +1571,14 @@ class AzureSpeechTTSConfiguration(BaseTTSConfiguration):
         json_schema_extra={"examples": ["neural"]},
     )
     region: str = Field(
-        default="eastus",
+        default="westeurope",
         description="Azure region for Speech Services (e.g. 'eastus', 'westeurope').",
         json_schema_extra={
             "examples": AZURE_SPEECH_REGIONS,
         },
     )
     voice: str = Field(
-        default="en-US-AriaNeural",
+        default="es-ES-ElviraNeural",
         description="Azure Neural voice name (e.g. 'en-US-AriaNeural').",
         json_schema_extra={
             "examples": AZURE_SPEECH_TTS_VOICES,
@@ -1583,7 +1586,7 @@ class AzureSpeechTTSConfiguration(BaseTTSConfiguration):
         },
     )
     language: str = Field(
-        default="en-US",
+        default="es-ES",
         description="BCP-47 language code for synthesis.",
         json_schema_extra={
             "examples": AZURE_SPEECH_TTS_LANGUAGES,
@@ -1627,7 +1630,7 @@ class SmallestAITTSConfiguration(BaseTTSConfiguration):
         },
     )
     language: str = Field(
-        default="en",
+        default="es",
         description="ISO 639-1 language code for synthesis.",
         json_schema_extra={
             "examples": SMALLEST_TTS_LANGUAGES,
@@ -1655,7 +1658,7 @@ class XAITTSConfiguration(BaseServiceConfiguration):
         json_schema_extra={"examples": XAI_TTS_VOICES, "allow_custom_input": True},
     )
     language: str = Field(
-        default="en",
+        default="es",
         description="BCP-47 language code for synthesis (e.g. 'en', 'fr', 'de'), or 'auto' for automatic language detection.",
         json_schema_extra={"allow_custom_input": True},
     )
@@ -1694,7 +1697,7 @@ class LmntTTSConfiguration(BaseTTSConfiguration):
         json_schema_extra={"examples": LMNT_TTS_VOICES, "allow_custom_input": True},
     )
     language: str = Field(
-        default="en",
+        default="es",
         description=(
             "Language code for synthesis (e.g. 'en', 'es', 'fr', 'de', 'pt', "
             "'zh', 'ko', 'hi')."
@@ -1875,8 +1878,8 @@ class CartesiaSTTConfiguration(BaseSTTConfiguration):
         json_schema_extra={"examples": CARTESIA_STT_MODELS},
     )
     language: str = Field(
-        default="en",
-        description="ISO 639-1 language code. ink-2 currently supports English only.",
+        default="es",
+        description="ISO 639-1 language code. ink-2 supports en, fr, hi, ja and es.",
         json_schema_extra={
             "examples": CARTESIA_STT_LANGUAGES,
             "model_options": {
@@ -1918,7 +1921,7 @@ class GoogleSTTConfiguration(BaseSTTConfiguration):
         },
     )
     language: str = Field(
-        default="en-US",
+        default="es-ES",
         description="Primary BCP-47 language code for recognition.",
         json_schema_extra={
             "examples": GOOGLE_STT_LANGUAGES,
@@ -2006,7 +2009,7 @@ class SpeechmaticsSTTConfiguration(BaseSTTConfiguration):
         json_schema_extra={"examples": ["linden-1"]},
     )
     language: str = Field(
-        default="en",
+        default="es",
         description="ISO 639-1 language code.",
         json_schema_extra={"examples": SPEECHMATICS_STT_LANGUAGES},
     )
@@ -2095,7 +2098,7 @@ class AssemblyAISTTConfiguration(BaseSTTConfiguration):
         json_schema_extra={"examples": ASSEMBLYAI_STT_MODELS},
     )
     language: str = Field(
-        default="en",
+        default="es",
         description="ISO 639-1 language code.",
         json_schema_extra={"examples": ASSEMBLYAI_STT_LANGUAGES},
     )
@@ -2111,7 +2114,7 @@ class GladiaSTTConfiguration(BaseSTTConfiguration):
         json_schema_extra={"examples": GLADIA_STT_MODELS},
     )
     language: str = Field(
-        default="en",
+        default="es",
         description="ISO 639-1 language code.",
         json_schema_extra={"examples": GLADIA_STT_LANGUAGES},
     )
@@ -2149,14 +2152,14 @@ class AzureSpeechSTTConfiguration(BaseSTTConfiguration):
         json_schema_extra={"examples": ["latest_long", "latest_short"]},
     )
     region: str = Field(
-        default="eastus",
+        default="westeurope",
         description="Azure region for Speech Services (e.g. 'eastus', 'westeurope').",
         json_schema_extra={
             "examples": AZURE_SPEECH_REGIONS,
         },
     )
     language: str = Field(
-        default="en-US",
+        default="es-ES",
         description="BCP-47 language code for recognition.",
         json_schema_extra={
             "examples": AZURE_SPEECH_STT_LANGUAGES,
@@ -2215,7 +2218,7 @@ class ElevenlabsSTTConfiguration(BaseSTTConfiguration):
         },
     )
     language: str = Field(
-        default="en",
+        default="es",
         description=(
             "ISO 639-1 language code for transcription. "
             "Use 'auto' to let ElevenLabs detect the language."
@@ -2245,7 +2248,7 @@ class SmallestAISTTConfiguration(BaseSTTConfiguration):
         json_schema_extra={"examples": SMALLEST_STT_MODELS},
     )
     language: str = Field(
-        default="en",
+        default="es",
         description="ISO 639-1 language code for transcription.",
         json_schema_extra={
             "examples": SMALLEST_STT_LANGUAGES,

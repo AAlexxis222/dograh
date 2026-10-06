@@ -14,7 +14,7 @@ def test_inworld_tts_configuration_defaults():
     assert config.provider == ServiceProviders.INWORLD
     assert config.model == "inworld-tts-2"
     assert config.voice == "Ashley"
-    assert config.language == "en-US"
+    assert config.language == "es-ES"
     assert config.delivery_mode == "BALANCED"
 
 

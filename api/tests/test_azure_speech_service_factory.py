@@ -35,7 +35,7 @@ def test_create_azure_speech_tts_service():
         tts=SimpleNamespace(
             provider=ServiceProviders.AZURE_SPEECH.value,
             api_key="test-subscription-key",
-            region="eastus",
+            region="westeurope",
             voice="en-US-AriaNeural",
             language="en-US",
             speed=1.0,
@@ -49,7 +49,7 @@ def test_create_azure_speech_tts_service():
     assert mock_service.call_count == 1
     kwargs = mock_service.call_args.kwargs
     assert kwargs["api_key"] == "test-subscription-key"
-    assert kwargs["region"] == "eastus"
+    assert kwargs["region"] == "westeurope"
     assert kwargs["settings"].voice == "en-US-AriaNeural"
     assert kwargs["settings"].language == "en-US"
 
@@ -81,7 +81,7 @@ def test_create_azure_speech_stt_service():
         stt=SimpleNamespace(
             provider=ServiceProviders.AZURE_SPEECH.value,
             api_key="test-subscription-key",
-            region="eastus",
+            region="westeurope",
             language="en-US",
             model="latest_long",
         )
@@ -93,7 +93,7 @@ def test_create_azure_speech_stt_service():
     assert mock_service.call_count == 1
     kwargs = mock_service.call_args.kwargs
     assert kwargs["api_key"] == "test-subscription-key"
-    assert kwargs["region"] == "eastus"
+    assert kwargs["region"] == "westeurope"
     assert kwargs["sample_rate"] == 16000
 
 
@@ -102,7 +102,7 @@ def test_create_azure_speech_stt_service_preserves_custom_language():
         stt=SimpleNamespace(
             provider=ServiceProviders.AZURE_SPEECH.value,
             api_key="test-subscription-key",
-            region="eastus",
+            region="westeurope",
             language="custom-locale",
             model="latest_long",
         )

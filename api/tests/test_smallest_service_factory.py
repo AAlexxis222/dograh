@@ -18,7 +18,7 @@ def test_smallest_tts_configuration_defaults_and_registry():
     assert config.provider == ServiceProviders.SMALLEST
     assert config.model == "lightning_v3.1"
     assert config.voice == "sophia"
-    assert config.language == "en"
+    assert config.language == "es"
     assert config.speed == 1.0
     assert (
         REGISTRY[ServiceType.TTS][ServiceProviders.SMALLEST]
@@ -31,7 +31,7 @@ def test_smallest_stt_configuration_defaults_and_registry():
 
     assert config.provider == ServiceProviders.SMALLEST
     assert config.model == "pulse"
-    assert config.language == "en"
+    assert config.language == "es"
     assert (
         REGISTRY[ServiceType.STT][ServiceProviders.SMALLEST]
         is SmallestAISTTConfiguration
