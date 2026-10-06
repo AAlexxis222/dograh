@@ -272,7 +272,14 @@ def test_control_no_drop_logs_nothing(warnings):
 
 
 def test_nova_split_is_derived_from_the_specs_table(monkeypatch):
-    assert service_factory._nova_shared_settings() == {"numerals", "keyterm"}
+    # Flux gained profanity_filter and redact in pipecat 1.12
+    # (deepgram/flux/stt_base.py:171-172), both wire parameters Nova already had.
+    assert service_factory._nova_shared_settings() == {
+        "numerals",
+        "keyterm",
+        "profanity_filter",
+        "redact",
+    }
     assert service_factory._nova_ctor_allowed() == {"mip_opt_out", "tag"}
     # If the table changes, the split follows it.
     monkeypatch.setattr(
@@ -289,6 +296,8 @@ def test_nova_split_is_derived_from_the_specs_table(monkeypatch):
     assert service_factory._nova_shared_settings() == {
         "numerals",
         "keyterm",
+        "profanity_filter",
+        "redact",
         "eot_threshold",
     }
     assert service_factory._nova_ctor_allowed() == {"mip_opt_out", "tag", "extra_kw"}
@@ -316,3 +325,42 @@ def test_non_flux_dograh_logs_every_knob_it_drops(warnings):
             f"stt.dograh.{knob}" in w and "nova-3" in w and "zz" in w for w in dropped
         ), knob
     assert len(dropped) == 3
+
+
+# --- The logged endpoint is the one the audio goes to (Opus review G0 #5) ----
+
+
+@pytest.fixture
+def infos():
+    records = []
+    sink = logger.add(lambda m: records.append(m.record["message"]), level="INFO")
+    yield records
+    logger.remove(sink)
+
+
+def _endpoint_lines(infos):
+    return [i for i in infos if i.startswith("Creating STT service:")]
+
+
+def test_flux_logs_the_tuned_url_it_connects_to(infos):
+    create_stt_service(
+        user_config_stt(**FLUX),
+        audio_config(),
+        tuning={
+            "stt": {"deepgram": {"ctor": {"url": "wss://proxy.example/v2/listen"}}}
+        },
+    )
+    (line,) = _endpoint_lines(infos)
+    assert line.endswith("endpoint=wss://proxy.example/v2/listen")
+
+
+def test_nova_logs_the_regional_endpoint_not_a_dropped_url(infos):
+    create_stt_service(
+        user_config_stt(ServiceProviders.DEEPGRAM.value, model="nova-3", language=None),
+        audio_config(),
+        tuning={
+            "stt": {"deepgram": {"ctor": {"url": "wss://proxy.example/v2/listen"}}}
+        },
+    )
+    (line,) = _endpoint_lines(infos)
+    assert "proxy.example" not in line and "endpoint=https://" in line

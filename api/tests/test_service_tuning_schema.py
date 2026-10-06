@@ -77,7 +77,8 @@ STT_KEYTERM_KNOBS = {
     "google": {"enable_automatic_punctuation": True},
     "huggingface": {"return_timestamps": True},
     "openai": {"prompt": "Marbella"},
-    "sarvam": {"prompt": "Marbella"},
+    # No sarvam entry: pipecat 1.12 moved ``prompt`` to SarvamRealtimeSTTSettings,
+    # so the service the factory builds (SarvamSTTSettings) has no biasing field.
     "smallest": {"keywords": "Marbella:2"},
     "speaches": {"prompt": "Marbella"},
     "speechmatics": {"additional_vocab": [{"content": "Marbella"}]},
@@ -90,8 +91,9 @@ def test_every_stt_provider_has_a_row_and_takes_its_biasing_knob(provider, setti
 
 
 def test_speechmatics_operating_point_stays_registry_owned():
-    # It *is* the model: sf maps user_config.stt.model to an OperatingPoint and
-    # the service writes it back into settings.model (speechmatics/stt.py:512).
+    # It *is* the model (a deprecated alias): sf maps user_config.stt.model to
+    # the model and _resolve_model raises when the two differ
+    # (speechmatics/stt.py:129-153).
     with pytest.raises(
         ValidationError, match="stt.speechmatics.settings.operating_point: unknown"
     ):
@@ -101,9 +103,8 @@ def test_speechmatics_operating_point_stays_registry_owned():
 
 
 def test_speechmatics_extra_params_stays_closed():
-    # _build_config splats it onto the SDK config by hasattr
-    # (speechmatics/stt.py:795-799), so a free-form dict would re-open every
-    # excluded field — operating_point included, which then crashes at :512.
+    # It was a free-form dict splatted onto the SDK config, which would re-open
+    # every excluded field; pipecat 1.12 removed it, and it must stay closed.
     with pytest.raises(
         ValidationError, match="stt.speechmatics.settings.extra_params: unknown"
     ):
@@ -119,14 +120,13 @@ def test_speechmatics_extra_params_stays_closed():
 
 
 def test_enum_typed_setting_checks_the_enum_values():
-    _validate({"stt": {"speechmatics": {"settings": {"focus_mode": "retain"}}}})
+    _validate({"stt": {"speechmatics": {"settings": {"turn_detection_mode": "external"}}}})
     for field, value in (
-        ("focus_mode", "bogus"),
         # An unhashable value must not raise TypeError out of the membership
         # check, and a bad mode must not reach TurnDetectionMode(...) in the
         # factory as a ValueError.
-        ("focus_mode", ["retain"]),
         ("turn_detection_mode", "bogus"),
+        ("turn_detection_mode", "adaptive"),  # removed in pipecat 1.12
         ("turn_detection_mode", ["external"]),
     ):
         with pytest.raises(

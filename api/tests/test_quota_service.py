@@ -833,6 +833,59 @@ async def test_authorize_workflow_run_resolves_config_from_pinned_definition(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["published", "archived", "draft", None])
+async def test_campaign_preflight_uses_selected_definition_configuration(
+    monkeypatch, status
+):
+    _patch_workflow_context(monkeypatch)
+    pinned_config = {"model_configuration_v2_override": {"key": "pinned"}}
+    get_definition = AsyncMock(
+        return_value=SimpleNamespace(
+            workflow_configurations=pinned_config, status=status
+        )
+        if status
+        else None
+    )
+    monkeypatch.setattr(
+        quota_service.db_client, "get_workflow_definition", get_definition
+    )
+    get_config = AsyncMock(return_value=_byok_config())
+    monkeypatch.setattr(
+        quota_service, "get_effective_ai_model_configuration_for_workflow", get_config
+    )
+    monkeypatch.setattr(quota_service, "DEPLOYMENT_MODE", "saas")
+    monkeypatch.setattr(
+        quota_service,
+        "_authorize_hosted_workflow_run_start",
+        AsyncMock(return_value=QuotaCheckResult(has_quota=True)),
+    )
+
+    # Pre-run authorization resolves what the runs will freeze: the cascade
+    # over the selected definition, not that definition's raw column.
+    resolved_config = {"model_configuration_v2_override": {"key": "resolved"}}
+    load_effective = AsyncMock(
+        return_value=SimpleNamespace(effective=resolved_config, warnings=[])
+    )
+    monkeypatch.setattr(
+        quota_service, "load_effective_workflow_configurations", load_effective
+    )
+
+    result = await quota_service.authorize_workflow_run_start(
+        workflow_id=7, organization_id=42, definition_id=88
+    )
+    get_definition.assert_awaited_once_with(7, 88, 42)
+    if status in {"published", "archived"}:
+        assert result.has_quota
+        assert load_effective.await_args.kwargs["definition_id"] == 88
+        get_config.assert_awaited_once_with(
+            organization_id=42, workflow_configurations=resolved_config
+        )
+    else:
+        assert not result.has_quota
+        get_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_authorize_workflow_run_prefers_frozen_configuration_over_pinned(
     monkeypatch,
 ):

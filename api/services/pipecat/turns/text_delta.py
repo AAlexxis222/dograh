@@ -22,6 +22,10 @@ def _tokens(text: str) -> list[str]:
     return [t for t in text.split() if normalize_token(t)]
 
 
+def token_count(text: str) -> int:
+    return len(_tokens(text))
+
+
 def token_delta(emitted: str, text: str) -> str | None:
     """What ``text`` adds beyond ``emitted``.
 

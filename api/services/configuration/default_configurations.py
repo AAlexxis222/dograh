@@ -23,6 +23,9 @@ from api.schemas.workflow_configurations import (
 )
 from api.services.configuration.defaults import DEFAULT_SERVICE_PROVIDERS
 from api.services.configuration.registry import REGISTRY, ServiceType
+from api.services.workflow.answer_classification_service import (
+    ANSWER_CLASSIFIER_SYSTEM_PROMPT,
+)
 
 
 class DefaultConfigurationsResponse(BaseModel):
@@ -37,6 +40,13 @@ class DefaultConfigurationsResponse(BaseModel):
         description=(
             "Built-in suggestions for call-disposition extraction. They do not "
             "enable extraction until saved in workflow_configurations.call_dispositions."
+        )
+    )
+    default_answer_classifier_prompt: str = Field(
+        description=(
+            "Built-in instructions for the voicemail/screening classifier. The "
+            "editor starts from these when a workflow has saved none of its own; "
+            "a workflow that has saved instructions keeps showing those."
         )
     )
     text_chat_inactivity_timeout_constraints: TextChatInactivityTimeoutConstraints
@@ -79,6 +89,7 @@ def build_default_configurations_response(
         "default_providers": DEFAULT_SERVICE_PROVIDERS,
         "workflow_configurations": workflow_configurations,
         "default_call_dispositions": get_default_call_disposition_options(),
+        "default_answer_classifier_prompt": ANSWER_CLASSIFIER_SYSTEM_PROMPT,
         "text_chat_inactivity_timeout_constraints": (
             TextChatInactivityTimeoutConstraints()
         ),

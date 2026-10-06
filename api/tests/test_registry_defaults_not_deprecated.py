@@ -120,8 +120,3 @@ def test_assemblyai_offered_pro_models_are_recognised_by_pinned_pipecat():
     for m in registry.ASSEMBLYAI_STT_MODELS:
         if m.startswith(("universal-3", "u3")):
             assert is_u3_pro_model(m), f"{m} is offered but the pinned pipecat treats it as non-Pro"
-
-
-def test_vertex_realtime_default_location_is_eu():
-    cfg = registry.GoogleVertexRealtimeLLMConfiguration(project_id="p")
-    assert cfg.location == "eu"

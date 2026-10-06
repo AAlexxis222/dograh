@@ -57,6 +57,27 @@ def serialize_query_params(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def serialize_form_body(body: dict[str, Any]) -> dict[str, Any]:
+    """Prepare a request body for application/x-www-form-urlencoded encoding.
+
+    Form fields are flat. A top-level list stays a list so httpx repeats the
+    key once per item (``To=a&To=b``); objects, and anything nested inside a
+    list, are JSON-stringified because the format has no nesting.
+    """
+
+    def encode(value: Any) -> Any:
+        return json.dumps(value) if isinstance(value, (dict, list)) else value
+
+    return {
+        k: [encode(item) for item in v] if isinstance(v, list) else encode(v)
+        for k, v in body.items()
+    }
+
+
+def _without_content_type(headers: dict[str, str]) -> dict[str, str]:
+    return {k: v for k, v in headers.items() if k.lower() != "content-type"}
+
+
 def tool_to_function_schema(tool: Any) -> dict[str, Any]:
     """Convert a ToolModel to an LLM function schema.
 
@@ -306,6 +327,10 @@ async def execute_http_tool(
     method = config.get("method", "POST").upper()
     url = config.get("url", "")
 
+    # GET and DELETE send no body, so the body format must not touch them.
+    sends_body = method in ("POST", "PUT", "PATCH")
+    form_encoded = sends_body and config.get("body_format", "json") == "form"
+
     # Get headers from config
     headers = dict(config.get("headers", {}) or {})
 
@@ -349,6 +374,13 @@ async def execute_http_tool(
                 tool_name=tool.name,
             )
 
+    if form_encoded:
+        # The body format owns the Content-Type. A JSON one kept in the tool's
+        # headers from before the format was switched, or set by a credential
+        # shared with a JSON tool, would make the server misread the body.
+        headers = _without_content_type(headers)
+        credential_headers = _without_content_type(credential_headers)
+
     request_headers: dict[str, str] = {}
     if include_request_headers:
         request_headers = {str(name): str(value) for name, value in headers.items()}
@@ -368,9 +400,9 @@ async def execute_http_tool(
             }
         return result
 
-    # Get timeout
-    timeout_ms = config.get("timeout_ms", 5000)
-    timeout_seconds = timeout_ms / 1000
+    # Get timeout (the tool schema allows an explicit null: it means the default)
+    timeout_ms = config.get("timeout_ms")
+    timeout_seconds = (5000 if timeout_ms is None else timeout_ms) / 1000
 
     if preset_params is None:
         try:
@@ -433,10 +465,10 @@ async def execute_http_tool(
             {"status": "error", "error": f"URL validation failed: {e!s}"}
         )
 
-    # Build request: JSON body for POST/PUT/PATCH, query params for GET/DELETE
+    # Build request: body for POST/PUT/PATCH, query params for GET/DELETE
     body = None
     params = None
-    if method in ("POST", "PUT", "PATCH"):
+    if sends_body:
         body_template = config.get("body_template")
         if body_template is None:
             body = resolved_arguments
@@ -467,7 +499,8 @@ async def execute_http_tool(
                 method=method,
                 url=url,
                 headers=headers,
-                json=body,
+                json=None if form_encoded else body,
+                data=serialize_form_body(body) if form_encoded and body else None,
                 params=params,
             )
 

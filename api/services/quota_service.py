@@ -631,6 +631,7 @@ async def authorize_workflow_run_start(
     organization_id: int,
     workflow_run_id: int | None = None,
     actor_user: UserModel | None = None,
+    definition_id: int | None = None,
 ) -> QuotaCheckResult:
     """Authorize a workflow run before any billable call/text runtime starts.
 
@@ -762,15 +763,28 @@ async def authorize_workflow_run_start(
             workflow_configurations = run_configurations_for(workflow_run)
         else:
             # Pre-run authorization (campaign start): resolve what the runs
-            # will freeze, from the published definition.
+            # will freeze, from the selected definition or else the published one.
+            if definition_id is not None:
+                definition = await db_client.get_workflow_definition(
+                    workflow.id, definition_id, organization_id
+                )
+                if definition is None or definition.status not in {
+                    "published",
+                    "archived",
+                }:
+                    return QuotaCheckResult(
+                        has_quota=False,
+                        error_code="workflow_definition_not_found",
+                        error_message="Published or archived agent version not found",
+                    )
+            else:
+                definition_id = getattr(published_definition(workflow), "id", None)
             try:
                 workflow_configurations = (
                     await load_effective_workflow_configurations(
                         db_client,
                         organization_id=organization_id,
-                        definition_id=getattr(
-                            published_definition(workflow), "id", None
-                        ),
+                        definition_id=definition_id,
                     )
                 ).effective
             except (

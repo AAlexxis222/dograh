@@ -58,7 +58,7 @@ import {
 import {
     type AmbientNoiseConfiguration,
     type CallDispositionOption,
-    DEFAULT_PROVISIONAL_VAD_PAUSE_SECS,
+    coerceTurnStartStrategy,
     DEFAULT_TURN_START_MIN_WORDS,
     DEFAULT_VOICEMAIL_DETECTION_CONFIGURATION,
     type ExternalPBXFieldMapping,
@@ -69,6 +69,7 @@ import {
     type WorkflowConfigurationState,
 } from "@/types/workflow-configurations";
 
+import { AnswerSupervisorFields, isVoicemailMessageMissing, readAnswerSupervisorSettings } from "../components/AnswerSupervisorFields";
 import { EmbedDialog } from "../components/EmbedDialog";
 import { useWorkflowState } from "../hooks/useWorkflowState";
 import {
@@ -104,35 +105,13 @@ function sectionKey(configuration: WorkflowConfigurationState, paths: readonly L
     );
 }
 
-const DEFAULT_VOICEMAIL_SYSTEM_PROMPT = `You are a voicemail detection classifier for an OUTBOUND calling system. A bot has called a phone number and you need to determine if a human answered or if the call went to voicemail based on the provided text.
-
-HUMAN ANSWERED - LIVE CONVERSATION (respond "CONVERSATION"):
-- Personal greetings: "Hello?", "Hi", "Yeah?", "John speaking"
-- Interactive responses: "Who is this?", "What do you want?", "Can I help you?"
-- Conversational tone expecting back-and-forth dialogue
-- Questions directed at the caller: "Hello? Anyone there?"
-- Informal responses: "Yep", "What's up?", "Speaking"
-- Natural, spontaneous speech patterns
-- Immediate acknowledgment of the call
-
-VOICEMAIL SYSTEM (respond "VOICEMAIL"):
-- Automated voicemail greetings: "Hi, you've reached [name], please leave a message"
-- Phone carrier messages: "The number you have dialed is not in service", "Please leave a message", "All circuits are busy"
-- Professional voicemail: "This is [name], I'm not available right now"
-- Instructions about leaving messages: "leave a message", "leave your name and number"
-- References to callback or messaging: "call me back", "I'll get back to you"
-- Carrier system messages: "mailbox is full", "has not been set up"
-- Business hours messages: "our office is currently closed"
-
-Respond with ONLY "CONVERSATION" if a person answered, or "VOICEMAIL" if it's voicemail/recording.`;
-
 // Sidebar navigation items
 const NAV_ITEMS = [
     { id: "general", label: "General", icon: Settings },
     { id: "models", label: "Model Overrides", icon: Brain },
     { id: "variables", label: "Template Variables", icon: Variable },
     { id: "dictionary", label: "Dictionary", icon: BookA },
-    { id: "voicemail", label: "Voicemail Detection", icon: PhoneOff },
+    { id: "voicemail", label: "Voicemail & Screening", icon: PhoneOff },
     { id: "recordings", label: "Recordings", icon: Mic },
     { id: "deployment", label: "Add to Website", icon: Rocket },
     { id: "report", label: "Report", icon: FileDown },
@@ -317,9 +296,9 @@ const GENERAL_LEAVES = {
     smartTurnStopSecs: ["smart_turn_stop_secs"],
     turnStartStrategy: ["turn_start_strategy"],
     turnStartMinWords: ["turn_start_min_words"],
-    provisionalVadPauseSecs: ["provisional_vad_pause_secs"],
     turnStopStrategy: ["turn_stop_strategy"],
     contextCompactionEnabled: ["context_compaction_enabled"],
+    ttsCacheEnabled: ["tts_cache_enabled"],
     callDispositions: ["call_dispositions"],
     transcriptEndTimestamps: ["transcript_configuration", "include_end_timestamps"],
     externalPbxFieldMappings: ["external_pbx_field_mappings"],
@@ -357,19 +336,19 @@ function GeneralSection({
     );
     const [smartTurnStopSecs, setSmartTurnStopSecs] = useState(effective.smart_turn_stop_secs);
     const [turnStartStrategy, setTurnStartStrategy] = useState<TurnStartStrategy>(
-        effective.turn_start_strategy,
+        coerceTurnStartStrategy(effective.turn_start_strategy),
     );
     const [turnStartMinWords, setTurnStartMinWords] = useState(
         effective.turn_start_min_words,
-    );
-    const [provisionalVadPauseSecs, setProvisionalVadPauseSecs] = useState(
-        effective.provisional_vad_pause_secs,
     );
     const [turnStopStrategy, setTurnStopStrategy] = useState<TurnStopStrategy>(
         effective.turn_stop_strategy,
     );
     const [contextCompactionEnabled, setContextCompactionEnabled] = useState(
         effective.context_compaction_enabled,
+    );
+    const [ttsCacheEnabled, setTtsCacheEnabled] = useState(
+        effective.tts_cache_enabled,
     );
     const [callDispositionRows, setCallDispositionRows] = useState<CallDispositionRow[]>(
         () => createCallDispositionRows(effective.call_dispositions),
@@ -427,11 +406,11 @@ function GeneralSection({
             case leafKey(GENERAL_LEAVES.maxUserIdleTimeout): setMaxUserIdleTimeout(value as number); break;
             case leafKey(GENERAL_LEAVES.userTurnStopTimeout): setUserTurnStopTimeout(value as number | undefined); break;
             case leafKey(GENERAL_LEAVES.smartTurnStopSecs): setSmartTurnStopSecs(value as number); break;
-            case leafKey(GENERAL_LEAVES.turnStartStrategy): setTurnStartStrategy(value as TurnStartStrategy); break;
+            case leafKey(GENERAL_LEAVES.turnStartStrategy): setTurnStartStrategy(coerceTurnStartStrategy(String(value))); break;
             case leafKey(GENERAL_LEAVES.turnStartMinWords): setTurnStartMinWords(value as number); break;
-            case leafKey(GENERAL_LEAVES.provisionalVadPauseSecs): setProvisionalVadPauseSecs(value as number); break;
             case leafKey(GENERAL_LEAVES.turnStopStrategy): setTurnStopStrategy(value as TurnStopStrategy); break;
             case leafKey(GENERAL_LEAVES.contextCompactionEnabled): setContextCompactionEnabled(Boolean(value)); break;
+            case leafKey(GENERAL_LEAVES.ttsCacheEnabled): setTtsCacheEnabled(Boolean(value)); break;
             case leafKey(GENERAL_LEAVES.transcriptEndTimestamps): setIncludeTranscriptEndTimestamps(Boolean(value)); break;
             case leafKey(GENERAL_LEAVES.callDispositions): setCallDispositionRows(createCallDispositionRows((value as CallDispositionOption[]) ?? [])); break;
             case leafKey(GENERAL_LEAVES.ambientEnabled): setAmbientNoiseConfig((prev) => ({ ...prev, enabled: Boolean(value) })); break;
@@ -486,9 +465,9 @@ function GeneralSection({
             { path: GENERAL_LEAVES.smartTurnStopSecs, value: smartTurnStopSecs },
             { path: GENERAL_LEAVES.turnStartStrategy, value: turnStartStrategy },
             { path: GENERAL_LEAVES.turnStartMinWords, value: turnStartMinWords },
-            { path: GENERAL_LEAVES.provisionalVadPauseSecs, value: provisionalVadPauseSecs },
             { path: GENERAL_LEAVES.turnStopStrategy, value: turnStopStrategy },
             { path: GENERAL_LEAVES.contextCompactionEnabled, value: contextCompactionEnabled },
+            { path: GENERAL_LEAVES.ttsCacheEnabled, value: ttsCacheEnabled },
             { path: GENERAL_LEAVES.callDispositions, value: normalizedCallDispositions },
             { path: GENERAL_LEAVES.transcriptEndTimestamps, value: includeTranscriptEndTimestamps },
         ];
@@ -510,9 +489,9 @@ function GeneralSection({
         smartTurnStopSecs,
         turnStartStrategy,
         turnStartMinWords,
-        provisionalVadPauseSecs,
         turnStopStrategy,
         contextCompactionEnabled,
+        ttsCacheEnabled,
         normalizedCallDispositions,
         includeTranscriptEndTimestamps,
         externalPbxFieldMappings,
@@ -882,11 +861,6 @@ function GeneralSection({
                         </Select>
                         <p className="text-xs text-muted-foreground">
                             {selectedTurnStartStrategy?.description}
-                            {turnStartStrategy === "provisional_vad" && (
-                                <span className="ml-2 inline-flex rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-                                    Experimental
-                                </span>
-                            )}
                         </p>
                     </div>
                     {turnStartStrategy === "min_words" && (
@@ -913,33 +887,6 @@ function GeneralSection({
                             />
                             <p className="text-xs text-muted-foreground">
                                 Number of transcribed words needed to interrupt while the bot is speaking. Default: {DEFAULT_TURN_START_MIN_WORDS}
-                            </p>
-                        </div>
-                    )}
-                    {turnStartStrategy === "provisional_vad" && (
-                        <div className="space-y-2">
-                            <div className="flex items-center justify-between">
-                                <Label htmlFor="provisional_vad_pause_secs" className="text-xs">
-                                    Provisional Pause (seconds)
-                                </Label>
-                                <InheritedBadge path={GENERAL_LEAVES.provisionalVadPauseSecs} configuration={configuration} reverted={reverted} onRevert={revertLeaf} />
-                            </div>
-                            <Input
-                                id="provisional_vad_pause_secs"
-                                type="number"
-                                step="0.1"
-                                min="0.1"
-                                max="5"
-                                value={provisionalVadPauseSecs}
-                                onChange={(e) => {
-                                    const value = parseFloat(e.target.value);
-                                    if (isNaN(value) || value < 0.1) return;
-                                    unrevert(GENERAL_LEAVES.provisionalVadPauseSecs);
-                                    setProvisionalVadPauseSecs(value);
-                                }}
-                            />
-                            <p className="text-xs text-muted-foreground">
-                                Seconds to pause bot audio while waiting for transcript confirmation. Default: {DEFAULT_PROVISIONAL_VAD_PAUSE_SECS}
                             </p>
                         </div>
                     )}
@@ -1001,6 +948,34 @@ function GeneralSection({
                                 onCheckedChange={(checked) => {
                                     unrevert(GENERAL_LEAVES.contextCompactionEnabled);
                                     setContextCompactionEnabled(checked);
+                                }}
+                            />
+                        </div>
+                    </div>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-4">
+                    <div>
+                        <h3 className="text-sm font-medium">Speech Caching</h3>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                            Reuse generated audio for repeated phrases to reduce response time and speech generation costs.
+                            Cached audio expires after 24 hours. Currently available with MiniMax TTS.
+                        </p>
+                    </div>
+                    <div className="flex items-center justify-between">
+                        <Label htmlFor="tts-cache-enabled" className="text-sm">
+                            Enable Speech Caching
+                        </Label>
+                        <div className="flex items-center gap-3">
+                            <InheritedBadge path={GENERAL_LEAVES.ttsCacheEnabled} configuration={configuration} reverted={reverted} onRevert={revertLeaf} />
+                            <Switch
+                                id="tts-cache-enabled"
+                                checked={ttsCacheEnabled}
+                                onCheckedChange={(checked) => {
+                                    unrevert(GENERAL_LEAVES.ttsCacheEnabled);
+                                    setTtsCacheEnabled(checked);
                                 }}
                             />
                         </div>
@@ -1483,7 +1458,7 @@ function DictionarySection({
 }
 
 // ---------------------------------------------------------------------------
-// Section: Voicemail Detection
+// Section: Voicemail & Screening
 // ---------------------------------------------------------------------------
 
 const VOICEMAIL_LEAF: LeafPath = ["voicemail_detection"];
@@ -1498,9 +1473,11 @@ const formatVoicemailBase = (value: unknown): string => {
 
 function VoicemailSection({
     configuration,
+    defaultAnswerClassifierPrompt,
     onSave,
 }: {
     configuration: WorkflowConfigurationState;
+    defaultAnswerClassifierPrompt: string;
     onSave: (patch: ConfigurationPatch, workflowName?: string) => Promise<void>;
 }) {
     const voicemailDetection = configuration.effective.voicemail_detection;
@@ -1514,10 +1491,20 @@ function VoicemailSection({
     const [provider, setProvider] = useState(getConfig().provider || "openai");
     const [model, setModel] = useState(getConfig().model || "gpt-4.1");
     const [apiKey, setApiKey] = useState(getConfig().api_key || "");
-    const [systemPrompt, setSystemPrompt] = useState(getConfig().system_prompt || DEFAULT_VOICEMAIL_SYSTEM_PROMPT);
-    const [longSpeechTimeout, setLongSpeechTimeout] = useState(getConfig().long_speech_timeout);
     // Set ⇒ the save drops the workflow's own voicemail block and inherits again.
     const [pendingRevert, setPendingRevert] = useState(false);
+    const savedPrompt = getConfig().system_prompt;
+    const [systemPrompt, setSystemPrompt] = useState(savedPrompt || "");
+    const [promptEdited, setPromptEdited] = useState(false);
+
+    // The defaults endpoint resolves after first paint. A workflow that saved its
+    // own instructions keeps showing those; one that never did starts from the
+    // built-in text so it can be edited rather than written from scratch.
+    useEffect(() => {
+        if (promptEdited) return;
+        setSystemPrompt(savedPrompt || defaultAnswerClassifierPrompt);
+    }, [defaultAnswerClassifierPrompt, promptEdited, savedPrompt]);
+    const [answerSettings, setAnswerSettings] = useState(readAnswerSupervisorSettings(getConfig()));
     const [isSaving, setIsSaving] = useState(false);
 
     const isDirty = useMemo(() => {
@@ -1532,10 +1519,12 @@ function VoicemailSection({
             provider !== (init.provider || "openai") ||
             model !== (init.model || "gpt-4.1") ||
             apiKey !== (init.api_key || "") ||
-            systemPrompt !== (init.system_prompt || DEFAULT_VOICEMAIL_SYSTEM_PROMPT) ||
-            longSpeechTimeout !== init.long_speech_timeout
+            // Showing the built-in text is not a change; editing it is. Match the
+            // prefill's truthiness test, or a stored "" reads as dirty on load.
+            systemPrompt !== (init.system_prompt || defaultAnswerClassifierPrompt) ||
+            JSON.stringify(answerSettings) !== JSON.stringify(readAnswerSupervisorSettings(init))
         );
-    }, [pendingRevert, enabled, useWorkflowLlm, provider, model, apiKey, systemPrompt, longSpeechTimeout, voicemailDetection]);
+    }, [pendingRevert, enabled, useWorkflowLlm, provider, model, apiKey, systemPrompt, defaultAnswerClassifierPrompt, answerSettings, voicemailDetection]);
 
     useUnsavedChanges("voicemail", isDirty);
 
@@ -1557,28 +1546,38 @@ function VoicemailSection({
         setProvider(baseConfig.provider || "openai");
         setModel(baseConfig.model || "gpt-4.1");
         setApiKey(baseConfig.api_key || "");
-        setSystemPrompt(baseConfig.system_prompt || DEFAULT_VOICEMAIL_SYSTEM_PROMPT);
-        setLongSpeechTimeout(baseConfig.long_speech_timeout);
+        // Marked as edited so the defaults prefill does not overwrite the base text.
+        setPromptEdited(true);
+        setSystemPrompt(baseConfig.system_prompt || defaultAnswerClassifierPrompt);
+        setAnswerSettings(readAnswerSupervisorSettings(baseConfig));
     };
 
     const handleSave = async () => {
         setIsSaving(true);
         try {
             const voicemailConfig: VoicemailDetectionConfiguration = {
+                ...answerSettings,
                 enabled,
                 use_workflow_llm: useWorkflowLlm,
                 provider: useWorkflowLlm ? undefined : provider,
                 model: useWorkflowLlm ? undefined : model,
                 api_key: useWorkflowLlm ? undefined : apiKey,
+                // Persist only instructions that differ from the built-in text, so a
+                // workflow that never customized them keeps following platform updates
+                // instead of freezing today's copy. Clearing the box reverts to them.
                 system_prompt:
-                    systemPrompt && systemPrompt !== DEFAULT_VOICEMAIL_SYSTEM_PROMPT ? systemPrompt : undefined,
-                long_speech_timeout: longSpeechTimeout,
+                    systemPrompt.trim() &&
+                        systemPrompt.trim() !== defaultAnswerClassifierPrompt.trim()
+                        ? systemPrompt.trim()
+                        : undefined,
             };
             await onSave(
                 pendingRevert
                     ? { set: [], unset: [VOICEMAIL_LEAF] }
                     : { set: [{ path: VOICEMAIL_LEAF, value: voicemailConfig }], unset: [] },
             );
+            setSystemPrompt(voicemailConfig.system_prompt || defaultAnswerClassifierPrompt);
+            setPromptEdited(false);
             toast.success(`Voicemail settings saved. ${PUBLISH_WORKFLOW_REMINDER}`);
         } catch (error) {
             console.error("Failed to save voicemail settings:", error);
@@ -1594,7 +1593,7 @@ function VoicemailSection({
                 <CardTitle className="flex items-center justify-between gap-2 text-base">
                     <span className="flex items-center gap-2">
                         <PhoneOff className="h-4 w-4" />
-                        Voicemail Detection
+                        Voicemail & Screening
                     </span>
                     <InheritedBadge
                         path={VOICEMAIL_LEAF}
@@ -1605,80 +1604,82 @@ function VoicemailSection({
                     />
                 </CardTitle>
                 <CardDescription>
-                    Automatically detect and end calls when a voicemail system is reached.
+                    Choose how the agent handles voicemail and call screening. Applies to outbound calls with separate speech and language models.
+                    <span className="mt-2 block">
+                        These settings do not apply to realtime speech-to-speech models. Support for realtime models is coming soon.
+                    </span>
                 </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
                 <div className="flex items-center space-x-2 rounded-md border bg-muted/20 p-2">
                     <Switch id="voicemail-enabled" checked={enabled} onCheckedChange={edit(setEnabled)} />
-                    <Label htmlFor="voicemail-enabled">Enable Voicemail Detection</Label>
+                    <Label htmlFor="voicemail-enabled">Enable voicemail and screening handling</Label>
                 </div>
 
                 {enabled && (
                     <>
-                        {/* LLM Configuration */}
-                        <div className="space-y-3">
-                            <div className="flex items-center space-x-2 rounded-md border bg-muted/20 p-2">
-                                <Switch
-                                    id="voicemail-use-workflow-llm"
-                                    checked={useWorkflowLlm}
-                                    onCheckedChange={edit(setUseWorkflowLlm)}
-                                />
-                                <Label htmlFor="voicemail-use-workflow-llm">Use Workflow LLM</Label>
-                                <Label className="ml-2 text-xs text-muted-foreground">
-                                    Use the LLM configured in your account settings.
-                                </Label>
+                        <AnswerSupervisorFields value={answerSettings} onChange={edit(setAnswerSettings)} />
+                        <details className="rounded-md border p-3">
+                            <summary className="cursor-pointer text-sm font-medium">Classification model</summary>
+                            <div className="mt-3 space-y-3">
+                                <div className="flex items-center space-x-2 rounded-md border bg-muted/20 p-2">
+                                    <Switch
+                                        id="voicemail-use-workflow-llm"
+                                        checked={useWorkflowLlm}
+                                        onCheckedChange={edit(setUseWorkflowLlm)}
+                                    />
+                                    <Label htmlFor="voicemail-use-workflow-llm">Use Workflow LLM</Label>
+                                    <Label className="ml-2 text-xs text-muted-foreground">
+                                        Use the LLM configured in your account settings.
+                                    </Label>
+                                </div>
+
+                                {!useWorkflowLlm && (
+                                    <LLMConfigSelector
+                                        provider={provider}
+                                        onProviderChange={edit(setProvider)}
+                                        model={model}
+                                        onModelChange={edit(setModel)}
+                                        apiKey={apiKey}
+                                        onApiKeyChange={edit(setApiKey)}
+                                    />
+                                )}
+
+                                <div className="space-y-2">
+                                    <Label htmlFor="voicemail-system-prompt">Classifier instructions</Label>
+                                    <Textarea
+                                        id="voicemail-system-prompt"
+                                        disabled={isSaving}
+                                        rows={6}
+                                        maxLength={8000}
+                                        value={systemPrompt}
+                                        placeholder="Leave blank to use the built-in instructions."
+                                        onChange={e => {
+                                            setPromptEdited(true);
+                                            edit(setSystemPrompt)(e.target.value);
+                                        }}
+                                    />
+                                    <p className="text-xs text-muted-foreground">
+                                        These instructions decide whether the answering party is a person, a
+                                        voicemail, a screening service or an IVR menu. Edit them when your
+                                        calls are not in English: describe the greetings and carrier
+                                        announcements your callers actually hear. Leave them unchanged to
+                                        keep following the built-in instructions as they improve; clear the
+                                        box to go back to them. The reply must be a single label —
+                                        CONVERSATION, VOICEMAIL, NO_MESSAGE, SCREENER, SCREENING_WAIT, IVR
+                                        or UNKNOWN. Anything else is read as UNKNOWN, which lets the call
+                                        through to the agent, so instructions that only answer CONVERSATION
+                                        or VOICEMAIL will silently disable screening and IVR handling.
+                                    </p>
+                                </div>
                             </div>
-
-                            {!useWorkflowLlm && (
-                                <LLMConfigSelector
-                                    provider={provider}
-                                    onProviderChange={edit(setProvider)}
-                                    model={model}
-                                    onModelChange={edit(setModel)}
-                                    apiKey={apiKey}
-                                    onApiKeyChange={edit(setApiKey)}
-                                />
-                            )}
-                        </div>
-
-                        {/* System Prompt */}
-                        <div className="space-y-2">
-                            <Label>System Prompt</Label>
-                            <p className="text-xs text-muted-foreground">
-                                The LLM must respond with either &quot;CONVERSATION&quot; or &quot;VOICEMAIL&quot;.
-                            </p>
-                            <Textarea
-                                value={systemPrompt}
-                                onChange={(e) => edit(setSystemPrompt)(e.target.value)}
-                                className="min-h-[200px] font-mono text-xs"
-                            />
-                        </div>
-
-                        {/* Timing */}
-                        <div className="space-y-2 rounded-md border bg-muted/10 p-3">
-                            <Label className="font-medium">Timing</Label>
-                            <div className="space-y-2">
-                                <Label className="text-sm">Speech Cutoff (seconds)</Label>
-                                <p className="text-xs text-muted-foreground">
-                                    Trigger classification early if first turn speech exceeds this duration.
-                                </p>
-                                <Input
-                                    type="number"
-                                    step="0.5"
-                                    min="1"
-                                    max="30"
-                                    value={longSpeechTimeout}
-                                    onChange={(e) => edit(setLongSpeechTimeout)(parseFloat(e.target.value) || 8.0)}
-                                />
-                            </div>
-                        </div>
+                        </details>
                     </>
                 )}
             </CardContent>
             <CardFooter className="justify-end gap-3 border-t pt-6">
                 {isDirty && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
-                <Button onClick={handleSave} disabled={isSaving || !isDirty}>
+                <Button onClick={handleSave} disabled={isSaving || !isDirty || (enabled && isVoicemailMessageMissing(answerSettings))}>
                     {isSaving ? "Saving..." : "Save Voicemail Settings"}
                 </Button>
             </CardFooter>
@@ -2008,6 +2009,7 @@ function WorkflowSettingsInner({
         configurationLoadError,
         reloadConfiguration,
         defaultCallDispositions,
+        defaultAnswerClassifierPrompt,
         textChatInactivityTimeoutConstraints,
         widgetTextDefaults,
         templateContextVariables,
@@ -2149,10 +2151,11 @@ function WorkflowSettingsInner({
                                 onSave={saveWorkflowConfigurations}
                             />
 
-                            {/* Voicemail Detection */}
+                            {/* Voicemail & Screening */}
                             <VoicemailSection
                                 key={sectionKey(configurationState, VOICEMAIL_LEAVES)}
                                 configuration={configurationState}
+                                defaultAnswerClassifierPrompt={defaultAnswerClassifierPrompt}
                                 onSave={saveWorkflowConfigurations}
                             />
 

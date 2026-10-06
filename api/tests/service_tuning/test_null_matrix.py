@@ -13,11 +13,16 @@ from pydantic import ValidationError
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
 from api.services.pipecat import service_tuning_specs as specs
 
+_TURN_FIELDS = {
+    (provider, name)
+    for (provider, _), names in specs._PROVIDER_TURN_FIELDS.items()
+    for name in names
+}
 _GATED = {
+    ("stt", provider, name) for provider, name in _TURN_FIELDS
+} | {
     (kind, provider, name)
-    for kind, provider, section, name in (
-        set(specs._PROVIDER_TURN_FIELDS) | set(specs._PROVIDER_TURN_KNOBS)
-    )
+    for kind, provider, section, name in specs._PROVIDER_TURN_KNOBS
     if section == "settings"
 }
 

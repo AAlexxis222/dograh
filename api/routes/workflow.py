@@ -2,7 +2,7 @@ import json
 import re
 import uuid
 from datetime import datetime
-from typing import Any, List, Literal, Optional
+from typing import Annotated, Any, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -43,7 +43,6 @@ from api.services.configuration.masking import (
 )
 from api.services.configuration.merge import merge_workflow_configuration_secrets
 from api.services.configuration.resolve import (
-    enrich_overrides_with_api_keys,
     resolve_effective_config,
 )
 from api.services.configuration.secrets_registry import (
@@ -828,17 +827,41 @@ async def get_workflow(
     }
 
 
+class WorkflowVersionSummaryResponse(BaseModel):
+    id: int
+    version_number: int | None
+    status: str
+    published_at: datetime | None
+
+
+@router.get("/{workflow_id}/version-summaries")
+async def get_workflow_version_summaries(
+    workflow_id: int, user: UserModel = Depends(get_user)
+) -> list[WorkflowVersionSummaryResponse]:
+    workflow_name = await db_client.get_workflow_name(
+        workflow_id, organization_id=user.selected_organization_id
+    )
+    if workflow_name is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return await db_client.get_workflow_version_summaries(
+        workflow_id, user.selected_organization_id
+    )
+
+
 @router.get("/{workflow_id}/versions")
 async def get_workflow_versions(
     workflow_id: int,
     limit: int | None = Query(None, ge=1, le=100),
     offset: int = Query(0, ge=0),
     user: UserModel = Depends(get_user),
+    version_number: Annotated[int | None, Query(ge=1)] = None,
+    status: Literal["draft", "published", "archived"] | None = None,
 ) -> list[WorkflowVersionResponse]:
     """List versions for a workflow, newest first.
 
     Pass `limit`/`offset` to page through long histories. With no `limit`,
-    returns every version (legacy behavior).
+    returns every version (legacy behavior). Filter by `version_number` to
+    open an exact version, or by `status=published` for the latest release.
     """
     workflow = await db_client.get_workflow(
         workflow_id, organization_id=user.selected_organization_id
@@ -849,7 +872,11 @@ async def get_workflow_versions(
         )
 
     versions = await db_client.get_workflow_versions(
-        workflow_id, limit=limit, offset=offset
+        workflow_id,
+        limit=limit,
+        offset=offset,
+        version_number=version_number,
+        status=status,
     )
     return [
         WorkflowVersionResponse(
@@ -1300,12 +1327,8 @@ async def update_workflow(
             )
             effective_config = resolved_config.effective
             try:
-                enriched_overrides = enrich_overrides_with_api_keys(
-                    workflow_configurations["model_overrides"],
-                    effective_config,
-                )
                 effective = resolve_effective_config(
-                    effective_config, enriched_overrides
+                    effective_config, workflow_configurations["model_overrides"]
                 )
                 if resolved_config.source == "organization_v2":
                     v2_override = convert_legacy_ai_model_configuration_to_v2(effective)
@@ -1331,11 +1354,6 @@ async def update_workflow(
                     ),
                 }
                 workflow_configurations.pop("model_overrides", None)
-            else:
-                workflow_configurations = {
-                    **workflow_configurations,
-                    "model_overrides": enriched_overrides,
-                }
 
         # Reject upfront if any new trigger path collides with another
         # workflow's trigger — keeps the workflow record from
@@ -1505,6 +1523,7 @@ async def create_workflow_run(
         call_type=call_type,
         organization_id=user.selected_organization_id,
         definition_id=run_inputs.definition_id,
+        use_draft=run_inputs.use_draft,
         initial_context=initial_context,
         effective_configurations=run_inputs.effective_configurations,
     )

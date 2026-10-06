@@ -1,15 +1,19 @@
-"""Absorber rules with direct frames (spec §6.1.1 ratified form): swallow Flux's turn
-signals, promote the last interim on the local VAD stop only with a local turn open, emit
-token deltas, reset per Flux StartOfTurn, pass signals through under mute."""
+"""Absorber rules with direct frames (spec §6.1.1 ratified form, on the Pipecat 1.12 contract):
+discard Flux's turn proposals (``Proposed*``), promote the last interim on the local VAD stop
+only with a local turn open, emit token deltas, reset per Flux StartOfTurn proposal, discard
+the proposals under mute too."""
 
 import asyncio
 
 import pytest
 from pipecat.frames.frames import (
+    EagerTranscriptionFrame,
     EndFrame,
     Frame,
     InterimTranscriptionFrame,
     InterruptionFrame,
+    ProposedUserStartedSpeakingFrame,
+    ProposedUserStoppedSpeakingFrame,
     TranscriptionFrame,
     UserMuteStartedFrame,
     UserMuteStoppedFrame,
@@ -30,6 +34,7 @@ class Recorder(FrameProcessor):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.down: list[tuple[str, str, bool | None, str]] = []
+        self.frames: list[Frame] = []  # the same frames, as they left the absorber
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -39,10 +44,14 @@ class Recorder(FrameProcessor):
                 TranscriptionFrame,
                 InterimTranscriptionFrame,
                 TranscriptionReplaceFrame,
+                EagerTranscriptionFrame,
                 UserStartedSpeakingFrame,
                 UserStoppedSpeakingFrame,
+                ProposedUserStartedSpeakingFrame,
+                ProposedUserStoppedSpeakingFrame,
             ),
         ):
+            self.frames.append(frame)
             self.down.append(
                 (
                     frame.__class__.__name__,
@@ -119,16 +128,16 @@ def finals(rec):
 
 
 @pytest.mark.asyncio
-async def test_swallows_flux_signals_and_promotes_on_local_vad_stop():
+async def test_discards_flux_proposals_and_promotes_on_local_vad_stop():
     absorber, rec = await run_steps(
         [
-            ("down", UserStartedSpeakingFrame()),  # Flux StartOfTurn
+            ("down", ProposedUserStartedSpeakingFrame()),  # Flux StartOfTurn
             ("up", UserStartedSpeakingFrame()),  # local turn opened
             ("down", itf("hola quiero")),
             ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
         ]
     )
-    assert not any(d[0] == "UserStartedSpeakingFrame" for d in rec.down)
+    assert not any(d[0] == "ProposedUserStartedSpeakingFrame" for d in rec.down)
     assert (
         "PromotedTranscriptionFrame",
         "hola quiero",
@@ -142,7 +151,7 @@ async def test_swallows_flux_signals_and_promotes_on_local_vad_stop():
 async def test_vad_stop_without_local_turn_open_does_not_promote():
     absorber, rec = await run_steps(
         [
-            ("down", UserStartedSpeakingFrame()),
+            ("down", ProposedUserStartedSpeakingFrame()),
             ("down", itf("hola quiero")),
             (
                 "up",
@@ -158,7 +167,7 @@ async def test_vad_stop_without_local_turn_open_does_not_promote():
 async def test_final_extending_promoted_emits_token_delta():
     absorber, rec = await run_steps(
         [
-            ("down", UserStartedSpeakingFrame()),
+            ("down", ProposedUserStartedSpeakingFrame()),
             ("up", UserStartedSpeakingFrame()),
             ("down", itf("hola quiero")),
             ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
@@ -166,7 +175,7 @@ async def test_final_extending_promoted_emits_token_delta():
                 "down",
                 tf("Hola, quiero reservar."),
             ),  # capitalised + punctuated: still an extension
-            ("down", UserStoppedSpeakingFrame()),
+            ("down", ProposedUserStoppedSpeakingFrame()),
         ]
     )
     assert finals(rec) == [
@@ -180,12 +189,12 @@ async def test_final_extending_promoted_emits_token_delta():
 async def test_final_equal_to_promoted_is_deduped():
     absorber, rec = await run_steps(
         [
-            ("down", UserStartedSpeakingFrame()),
+            ("down", ProposedUserStartedSpeakingFrame()),
             ("up", UserStartedSpeakingFrame()),
             ("down", itf("hola quiero")),
             ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
             ("down", tf("Hola quiero.")),
-            ("down", UserStoppedSpeakingFrame()),
+            ("down", ProposedUserStoppedSpeakingFrame()),
         ]
     )
     assert len(finals(rec)) == 1
@@ -198,12 +207,12 @@ async def test_blank_final_after_a_promotion_adds_nothing():
     # rewrite: it must be dropped before it reaches the replace branch.
     absorber, rec = await run_steps(
         [
-            ("down", UserStartedSpeakingFrame()),
+            ("down", ProposedUserStartedSpeakingFrame()),
             ("up", UserStartedSpeakingFrame()),
             ("down", itf("hola quiero")),
             ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
             ("down", tf("   ")),
-            ("down", UserStoppedSpeakingFrame()),
+            ("down", ProposedUserStoppedSpeakingFrame()),
         ]
     )
     assert [d[1] for d in finals(rec)] == ["hola quiero"]
@@ -214,7 +223,7 @@ async def test_blank_final_after_a_promotion_adds_nothing():
 async def test_second_local_turn_in_same_flux_turn_promotes_only_the_delta():
     absorber, rec = await run_steps(
         [
-            ("down", UserStartedSpeakingFrame()),
+            ("down", ProposedUserStartedSpeakingFrame()),
             ("up", UserStartedSpeakingFrame()),
             ("down", itf("quiero reservar")),
             ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
@@ -235,10 +244,10 @@ async def test_second_local_turn_in_same_flux_turn_promotes_only_the_delta():
 async def test_final_with_nothing_emitted_and_local_turn_open_passes_through():
     absorber, rec = await run_steps(
         [
-            ("down", UserStartedSpeakingFrame()),
+            ("down", ProposedUserStartedSpeakingFrame()),
             ("up", UserStartedSpeakingFrame()),
             ("down", tf("hola")),  # no interim (S4)
-            ("down", UserStoppedSpeakingFrame()),
+            ("down", ProposedUserStoppedSpeakingFrame()),
         ]
     )
     assert finals(rec) == [("TranscriptionFrame", "hola", True, "flux")]
@@ -251,19 +260,19 @@ async def test_start_of_turn_resets_stale_state_from_a_turn_closed_without_final
     # into the next turn and the next final must not be treated as an orphan.
     absorber, rec = await run_steps(
         [
-            ("down", UserStartedSpeakingFrame()),
+            ("down", ProposedUserStartedSpeakingFrame()),
             ("up", UserStartedSpeakingFrame()),
             ("down", itf("stale words")),
-            ("down", UserStoppedSpeakingFrame()),  # Flux closed, no final
+            ("down", ProposedUserStoppedSpeakingFrame()),  # Flux closed, no final
             ("up", UserStoppedSpeakingFrame()),
-            ("down", UserStartedSpeakingFrame()),  # next Flux turn → reset here
+            ("down", ProposedUserStartedSpeakingFrame()),  # next Flux turn → reset here
             ("up", UserStartedSpeakingFrame()),
             (
                 "up",
                 VADUserStoppedSpeakingFrame(stop_secs=0.2),
             ),  # nothing to promote yet
             ("down", tf("fresh words")),
-            ("down", UserStoppedSpeakingFrame()),
+            ("down", ProposedUserStoppedSpeakingFrame()),
         ]
     )
     assert [d[1] for d in finals(rec)] == ["fresh words"]
@@ -271,22 +280,21 @@ async def test_start_of_turn_resets_stale_state_from_a_turn_closed_without_final
 
 
 @pytest.mark.asyncio
-async def test_muted_signals_pass_through_and_nothing_is_promoted():
+async def test_muted_proposals_are_discarded_and_nothing_is_promoted():
     absorber, rec = await run_steps(
         [
             ("up", UserMuteStartedFrame()),
-            ("down", UserStartedSpeakingFrame()),
+            ("down", ProposedUserStartedSpeakingFrame()),
             ("up", UserStartedSpeakingFrame()),
             ("down", itf("while muted")),
             ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),
-            ("down", UserStoppedSpeakingFrame()),
+            ("down", ProposedUserStoppedSpeakingFrame()),
             ("up", UserMuteStoppedFrame()),
         ]
     )
-    assert any(
-        d[0] == "UserStartedSpeakingFrame" for d in rec.down
-    )  # §5.3-4 passthrough
-    assert absorber.stats["passthrough_muted_signal"] == 2
+    # 1.7 passed the signals through under mute (§5.3-4); a 1.12 proposal that crosses would
+    # leave the aggregator's ``_user_speaking`` set (spec B2 VOZ-AC-B2-12), so none does.
+    assert not any(d[0].startswith("Proposed") for d in rec.down)
     assert absorber.stats["promoted"] == 0
 
 
@@ -294,7 +302,7 @@ async def test_muted_signals_pass_through_and_nothing_is_promoted():
 async def test_interruption_reemits_last_interim():
     absorber, rec = await run_steps(
         [
-            ("down", UserStartedSpeakingFrame()),
+            ("down", ProposedUserStartedSpeakingFrame()),
             ("down", itf("hola quiero")),
             ("up", InterruptionFrame()),
         ]
@@ -310,7 +318,7 @@ async def test_interruption_after_a_final_does_not_reemit_the_consumed_interim()
     # re-arming the start strategies with it would open a ghost turn.
     absorber, _ = await run_steps(
         [
-            ("down", UserStartedSpeakingFrame()),
+            ("down", ProposedUserStartedSpeakingFrame()),
             ("up", UserStartedSpeakingFrame()),
             ("down", itf("hola quiero")),
             ("up", VADUserStoppedSpeakingFrame(stop_secs=0.2)),

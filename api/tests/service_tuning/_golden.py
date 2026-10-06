@@ -6,9 +6,11 @@ test_harness_controls.py pin a handful of wire values; this module pins the
 whole construction: for every provider the factory builds — one case per
 model-dependent branch — the service class is replaced by a mock and the
 kwargs it receives are serialised. ``golden/untuned_construction.json`` is
-that capture taken ONCE from the base commit (``ac8ed47d``, see
-test_harness_controls.py for the method), and the test compares today's
-capture against it with an explicit allow-list of the declared changes.
+that capture taken from a base commit (see test_harness_controls.py for the
+method), and the test compares today's capture against it with an explicit
+allow-list of the declared changes. The base was ``ac8ed47d`` and was re-taken
+at upstream ``6c6cc6cb`` (pipecat 1.12) by the same method (VOZ-G0-09): upstream's
+own untuned construction under 1.12 is what "unchanged" means now.
 
 Self-contained on purpose: the same file is loaded by path against the base
 worktree to produce the golden, so it must not import anything this branch
@@ -65,7 +67,6 @@ SERVICE_CLASSES = [
     ("pipecat.services.azure.tts", "AzureTTSService"),
     ("pipecat.services.smallest.tts", "SmallestTTSService"),
     ("pipecat.services.xai.tts", "XAITTSService"),
-    ("pipecat.services.lmnt.tts", "LmntTTSService"),
     ("pipecat.services.openai.llm", "OpenAILLMService"),
     ("pipecat.services.groq.llm", "GroqLLMService"),
     ("pipecat.services.openrouter.llm", "OpenRouterLLMService"),
@@ -167,7 +168,6 @@ TTS_CASES: dict[str, Any] = {
     "tts.smallest": _tts("smallest", "lightning-v2", voice="emily", speed=1.1, language="es"),
     "tts.xai": _tts("xai", "grok-tts", voice="eve", language="es"),
     "tts.xai/speed": _tts("xai", "grok-tts", voice="eve", speed=1.3, language="es"),
-    "tts.lmnt": _tts("lmnt", "aurora", voice="lily", language="es"),
 }  # fmt: skip
 LLM_CASES: dict[str, dict[str, Any]] = {
     "llm.openai/gpt-4.1": {"provider": "openai", "model": "gpt-4.1"},
@@ -208,7 +208,9 @@ def _serial(value: Any) -> Any:
         return value.value
     if isinstance(value, MagicMock):
         return "<mock>"
-    if type(value).__name__ == "_NotGiven":
+    # ``_NotGiven`` before pipecat 1.12 (the base commit), ``NotGiven`` after
+    # (utils/types.py:18): the sentinel is the same, only its class was renamed.
+    if type(value).__name__ in ("_NotGiven", "NotGiven"):
         return "NOT_GIVEN"
     if isinstance(value, re.Pattern):
         return value.pattern
