@@ -1,6 +1,7 @@
 AZURE_MODELS = ["gpt-4.1-mini"]
 
 AZURE_REALTIME_MODELS = [
+    "gpt-realtime-2.1",
     "gpt-realtime",
     "gpt-realtime-1.5",
     "gpt-realtime-mini",
