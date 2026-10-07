@@ -4,8 +4,11 @@ import pathlib
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pipecat.serializers.twilio import TwilioFrameSerializer
 from twilio.request_validator import RequestValidator
 
+from api.routes import organization
+from api.services.telephony.providers import twilio as twilio_pkg
 from api.services.telephony.providers.twilio import SPEC, transport
 from api.services.telephony.providers.twilio import provider as provider_module
 from api.services.telephony.providers.twilio.provider import TwilioProvider
@@ -255,3 +258,105 @@ async def test_transport_passes_region_and_edge_to_the_serializer(monkeypatch):
     kwargs = serializer.call_args.kwargs
     assert (kwargs["region"], kwargs["edge"]) == ("ie1", "dublin")
     assert (kwargs["account_sid"], kwargs["auth_token"]) == ("AC1", "t-ie1")
+
+
+@pytest.mark.parametrize("bad", [["ie1"], "ie1", 7])
+def test_non_mapping_credentials_is_a_named_error(bad):
+    with pytest.raises(RegionError) as e:
+        resolve_twilio_endpoint({"credentials": bad}, cell_policy="eu")
+    assert e.value.code == "carrier_region_credentials_invalid"
+    assert e.value.hint and e.value.reason
+
+
+@pytest.mark.asyncio
+async def test_unlink_clears_the_fallback_url_only_when_configured(monkeypatch):
+    monkeypatch.delenv("CARRIER_REGION_POLICY", raising=False)
+    with_fallback = {
+        **US1,
+        "from_numbers": ["+34911222333"],
+        "fallback_url": "https://fallback.example/twiml",
+    }
+    calls = await _run_configure_inbound(monkeypatch, with_fallback, None)
+    assert calls[1][2] == {"VoiceUrl": "", "VoiceFallbackUrl": ""}
+
+    without_fallback = {**US1, "from_numbers": ["+34911222333"]}
+    calls = await _run_configure_inbound(monkeypatch, without_fallback, None)
+    assert calls[1][2] == {"VoiceUrl": ""}
+
+
+def _stored_cell_config():
+    return {
+        **US1,
+        "from_numbers": ["+34911222333"],
+        "region": "ie1",
+        "edge": "dublin",
+        "credentials": {"ie1": IE1},
+        "allow_non_eu_carrier_region": True,
+        "allow_non_eu_carrier_region_reason": "pilot",
+        "fallback_url": "https://fallback.example/twiml",
+    }
+
+
+def test_region_keys_and_regional_token_never_reach_api_clients():
+    stored = _stored_cell_config()
+
+    shown = organization._credentials_for_display("twilio", stored)
+
+    assert not set(shown) & set(twilio_pkg._REGION_KEYS)
+    assert "t-ie1" not in repr(shown)
+    assert shown["account_sid"] != US1["account_sid"]  # sensitive top-level masked
+    assert stored["credentials"] == {"ie1": IE1}  # source untouched
+
+
+@pytest.mark.asyncio
+async def test_update_sending_only_the_editable_fields_keeps_the_regional_setup():
+    existing = _stored_cell_config()
+    # What the route receives: the UI echoes the masked display copy, which
+    # carries no region keys, with a rotated flat token.
+    payload = {"account_sid": "ACUS", "auth_token": "t-us1-rotated"}
+
+    organization.preserve_masked_fields("twilio", payload, existing)
+    saved = await organization._run_preprocess_hook("twilio", payload, existing)
+
+    assert saved["auth_token"] == "t-us1-rotated"
+    for key in twilio_pkg._REGION_KEYS:
+        assert saved[key] == existing[key]
+
+
+@pytest.mark.asyncio
+async def test_update_cannot_inject_region_keys_from_the_payload():
+    existing = {**US1, "from_numbers": []}
+    payload = {**US1, "credentials": {"ie1": {"account_sid": "ACX"}}, "region": "ie1"}
+
+    saved = await organization._run_preprocess_hook("twilio", payload, existing)
+
+    assert "credentials" not in saved and "region" not in saved
+
+
+@pytest.mark.asyncio
+async def test_transport_outside_a_cell_passes_no_region_and_builds_a_real_serializer(
+    monkeypatch,
+):
+    monkeypatch.delenv("CARRIER_REGION_POLICY", raising=False)
+    monkeypatch.setattr(
+        transport,
+        "load_credentials_for_transport",
+        AsyncMock(return_value={**US1, "provider": "twilio"}),
+    )
+    built = []
+
+    def real_serializer(**kwargs):
+        built.append(kwargs)
+        return TwilioFrameSerializer(**kwargs)  # raises on a lone region/edge
+
+    monkeypatch.setattr(transport, "TwilioFrameSerializer", real_serializer)
+    monkeypatch.setattr(transport, "build_audio_out_mixer", AsyncMock())
+    monkeypatch.setattr(transport, "FastAPIWebsocketTransport", MagicMock())
+    monkeypatch.setattr(transport, "FastAPIWebsocketParams", MagicMock())
+
+    await transport.create_transport(
+        MagicMock(), 1, MagicMock(), 7, stream_sid="MZ1", call_sid="CA1"
+    )
+
+    assert "region" not in built[0] and "edge" not in built[0]
+    assert (built[0]["account_sid"], built[0]["auth_token"]) == ("ACUS", "t-us1")

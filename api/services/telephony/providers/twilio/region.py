@@ -154,7 +154,16 @@ def _credentials_for(
     config: Mapping[str, Any], region: str
 ) -> tuple[str | None, str | None]:
     """Credentials of ``region``; flat top-level ones are the legacy ``us1`` pair."""
-    regional = (config.get("credentials") or {}).get(region)
+    by_region = config.get("credentials") or {}
+    if not isinstance(by_region, Mapping):
+        raise RegionError(
+            "carrier_region_credentials_invalid",
+            f"'credentials' must map region names to account_sid/auth_token, "
+            f"got {type(by_region).__name__}.",
+            'Set credentials to an object such as {"ie1": {"account_sid": "AC..", '
+            '"auth_token": ".."}}.',
+        )
+    regional = by_region.get(region)
     if not isinstance(regional, Mapping):
         regional = config if region == US1 else {}
     return regional.get("account_sid"), regional.get("auth_token")

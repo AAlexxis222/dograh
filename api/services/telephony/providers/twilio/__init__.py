@@ -14,7 +14,9 @@ from .provider import TwilioProvider
 from .transport import create_transport
 
 # Optional keys read by ``region.resolve_twilio_endpoint`` and the provider.
-# Forwarded only when stored, so legacy configs keep their exact shape.
+# Forwarded only when stored, so legacy configs keep their exact shape. They are
+# operator-seeded, so the API never shows them (``credentials`` holds a token)
+# and an update that sends only the editable fields keeps them.
 _REGION_KEYS = (
     "region",
     "edge",
@@ -73,6 +75,7 @@ SPEC = ProviderSpec(
     config_request_cls=TwilioConfigurationRequest,
     ui_metadata=_UI_METADATA,
     account_id_credential_field="account_sid",
+    server_managed_credential_fields=_REGION_KEYS,
 )
 
 
