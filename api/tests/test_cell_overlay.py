@@ -95,6 +95,25 @@ def test_recordings_go_to_s3_not_minio(cfg):
     assert env["S3_BUCKET"] and env["S3_REGION"]
 
 
+def test_api_reads_host_vended_credentials_never_imds(cfg):
+    # The host vends short-lived credentials as a credential_process file (VOZ-AC-B5-55/-91); no IMDS, no static keys.
+    env = cfg["api"]["environment"]
+    assert env["AWS_CONFIG_FILE"] == "/run/aws/config"
+    assert env["AWS_SHARED_CREDENTIALS_FILE"] == "/dev/null"
+    assert env["AWS_EC2_METADATA_DISABLED"] == "true"
+    assert env["AWS_ACCESS_KEY_ID"] == "" and env["AWS_SECRET_ACCESS_KEY"] == ""
+
+
+def test_api_mounts_credentials_directory_read_only(cfg):
+    mounts = [v for v in cfg["api"]["volumes"] if v["target"] == "/run/aws"]
+    assert len(mounts) == 1, mounts
+    mount = mounts[0]
+    assert mount["type"] == "bind" and mount.get("read_only") is True
+    # Docker on Windows may rewrite the host path (drive letter, backslashes); only that is tolerated.
+    assert mount["source"].replace("\\", "/").endswith("/run/xpand/aws/recordings"), mount["source"]
+    assert mount["bind"].get("create_host_path") is False
+
+
 def test_ui_has_no_telemetry(cfg):
     env = cfg["ui"]["environment"]
     assert env["ENABLE_TELEMETRY"] == "false" and not env.get("POSTHOG_KEY")

@@ -24,8 +24,20 @@ x-cell-env: &cell-env
   ENABLE_AWS_S3: "true"
   S3_BUCKET: "${S3_BUCKET:?S3_BUCKET must be set}"
   S3_REGION: "${S3_REGION:?S3_REGION must be set}"
+  # Blank on purpose: botocore skips empty keys, and this stops static keys leaking in from .env.
   AWS_ACCESS_KEY_ID: ""
   AWS_SECRET_ACCESS_KEY: ""
+  # Short-lived credentials vended by the host via credential_process (VOZ-AC-B5-55/-91); containers never use IMDS.
+  AWS_CONFIG_FILE: /run/aws/config
+  AWS_SHARED_CREDENTIALS_FILE: /dev/null
+  AWS_EC2_METADATA_DISABLED: "true"
+
+x-cell-aws-creds: &cell-aws-creds
+  type: bind
+  source: /run/xpand/aws/recordings # directory, not file: the host's atomic rename stays visible
+  target: /run/aws
+  read_only: true
+  bind: { create_host_path: false }
 
 services:
   postgres:
@@ -53,6 +65,7 @@ services:
     restart: unless-stopped
     logging: *logging
     environment: *cell-env
+    volumes: [*cell-aws-creds]
   ui:
     ports: !reset []
     restart: unless-stopped
