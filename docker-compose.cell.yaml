@@ -56,7 +56,10 @@ x-cell-aws-creds: &cell-aws-creds
 # the shared env sets ENABLE_AWS_S3: call uploads recordings and transcripts, arq uploads knowledge-base files
 # and reads campaign CSVs, api signs the download/upload URLs it hands out. coordinators touches no storage
 # directly but takes the same env, and the guard test pins env and mounts together.
+# image: the fork's image, pinned by digest. It alone ships the call entrypoint and the migration gates; the base
+# file's default image is upstream's, where call would crash-loop and api would race `alembic upgrade head`.
 x-cell-role: &cell-role
+  image: "${CELL_API_IMAGE:?CELL_API_IMAGE must be set (fork image, pinned by digest)}"
   ports: !reset []
   restart: unless-stopped
   logging: *logging
@@ -100,7 +103,8 @@ services:
   arq:
     <<: *cell-role
     extends: { file: docker-compose.yaml, service: api }
-    command: ["./scripts/run_arq_worker.sh"]
+    # The base start script (which gates api and coordinators) is not on arq's path, so the gate wraps its command.
+    command: ["bash", "-c", "scripts/xpand/require_db_head.sh arq && exec ./scripts/run_arq_worker.sh"]
     healthcheck: { disable: true } # no HTTP server in this role
     environment: *cell-env
   # ari_manager and campaign_orchestrator, through the base start script with uvicorn and arq off.

@@ -24,11 +24,14 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 ###############################################################################
-### 2) Run migrations (a cell sets RUN_MIGRATIONS_ON_START=false and migrates out of band)
+### 2) Run migrations (a cell sets RUN_MIGRATIONS_ON_START=false, migrates out of band and only checks the head)
 ###############################################################################
 
 if [[ "${RUN_MIGRATIONS_ON_START:-true}" != "false" ]]; then
   alembic -c "$BASE_DIR/api/alembic.ini" upgrade head
+else
+  # VOZ-AC-B5-44: without migrating, refuse to start on a database whose schema is behind this image.
+  "$BASE_DIR/scripts/xpand/require_db_head.sh" start_services_docker
 fi
 
 ###############################################################################

@@ -3,13 +3,20 @@
 # orchestrator's TERM directly; it is stopped only after the drain finishes or fails.
 # Why: uvicorn closes every live websocket with 1012 on TERM, which cuts the phone calls on it.
 set -uo pipefail
-CALL_CMD="${CALL_CMD:-uvicorn api.app:app --host 0.0.0.0 --port ${UVICORN_PORT:-8000} --workers 1}"
+# WEB_PORT is the port drain_web.sh polls: one knob, so the server and its drain cannot diverge.
+CALL_CMD="${CALL_CMD:-uvicorn api.app:app --host 0.0.0.0 --port ${WEB_PORT:-8000} --workers 1}"
 DRAIN_CMD="${DRAIN_CMD:-DRAIN_FAIL_CLOSED=true scripts/drain_web.sh}"
+
+# VOZ-AC-B5-44: refuse to serve calls on a database whose schema is behind this image.
+"$(dirname "${BASH_SOURCE[0]}")/require_db_head.sh" call || exit 1
 
 bash -c "$CALL_CMD" &
 child=$!
 
 on_term() {
+  # Reentrancy: a repeated TERM must neither re-run the drain nor re-signal uvicorn (a second TERM forces its exit
+  # and skips the lifespan shutdown).
+  trap '' TERM INT
   bash -c "$DRAIN_CMD"
   local drain_status=$?
   kill -TERM "$child" 2>/dev/null

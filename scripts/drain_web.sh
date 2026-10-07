@@ -34,6 +34,13 @@ if [ -z "${DOGRAH_DEVOPS_SECRET:-}" ]; then
   exit 0
 fi
 
+# A cell fails closed (VOZ-AC-B0-30): proceeding to SIGTERM with calls active, or without ever having read the count, cuts calls.
+fail_closed() { # <code> <reason>
+  echo "code=$1 where=drain_web reason=$2 hint=check DOGRAH_DEVOPS_SECRET, /api/v1/health/active-calls and DRAIN_MAX_WAIT" >&2
+  exit 1
+}
+
+counter_read=false
 deadline=$(( $(date +%s) + MAX_WAIT ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
   count=$(WEB_PORT="$PORT" python - <<'PY' || echo ERR
@@ -47,6 +54,7 @@ with urllib.request.urlopen(req, timeout=3) as r:
     print(json.load(r)["active_calls"])
 PY
 )
+  case "$count" in ''|*[!0-9]*) ;; *) counter_read=true ;; esac
   if [ "$count" = "0" ]; then
     echo "drain: no active calls — releasing SIGTERM"
     exit 0
@@ -57,5 +65,11 @@ PY
   sleep "$INTERVAL"
 done
 
+if [ "${DRAIN_FAIL_CLOSED:-false}" = "true" ]; then
+  if [ "$counter_read" = "true" ]; then
+    fail_closed drain_timeout "DRAIN_MAX_WAIT (${MAX_WAIT}s) reached with calls still active"
+  fi
+  fail_closed drain_counter_unreadable "the active-call count was never readable in ${MAX_WAIT}s"
+fi
 echo "drain: DRAIN_MAX_WAIT (${MAX_WAIT}s) reached — proceeding to SIGTERM"
 exit 0

@@ -18,7 +18,8 @@ PROFILES = "remote,local-turn,tunnel"
 # Services that share the api cell env anchor: the roles run from one image (VOZ-N0-08).
 CELL_ROLES = {"api", "call", "arq", "coordinators"}
 # Not a secret: any memory size the cell host sets; the placeholder "x" used for the secrets is not a valid size.
-VALID_VALUES = {"CALL_MEM_LIMIT": "1g"}
+CELL_API_IMAGE = "registry.example/xpand-api@sha256:" + "0" * 64  # the fork image, pinned by digest
+VALID_VALUES = {"CALL_MEM_LIMIT": "1g", "CELL_API_IMAGE": CELL_API_IMAGE}
 AWS_CONFIG_TARGET = "/etc/xpand/aws/config"
 COMPOSE = ["docker", "compose", "-f", "docker-compose.yaml", "-f", "docker-compose.cell.yaml"]
 # Docker on Windows needs these to find its compose plugin (ProgramFiles) and config/context; none is a secret.
@@ -176,8 +177,9 @@ def test_each_secret_is_required(missing, empty_env_file):
     assert out.returncode != 0 and missing in out.stderr, out.stderr
 
 
-def test_every_role_runs_from_the_api_image(cfg):
-    assert {cfg[r]["image"] for r in CELL_ROLES} == {cfg["api"]["image"]}
+def test_every_role_runs_the_fork_image_from_one_variable(cfg):
+    # The call entrypoint and the migration gates exist only in the fork image: upstream's default image would crash-loop.
+    assert {r: cfg[r]["image"] for r in CELL_ROLES} == {r: CELL_API_IMAGE for r in CELL_ROLES}
 
 
 @pytest.mark.parametrize("role", sorted(CELL_ROLES))
@@ -207,6 +209,14 @@ def test_each_duty_runs_in_exactly_one_role(cfg):
     assert "run_arq_worker.sh" in " ".join(cfg["arq"]["command"])
 
 
+def test_arq_refuses_a_stale_schema_before_it_starts(cfg):
+    # VOZ-AC-B5-44: the worker is not launched through the base start script, so its command carries the gate.
+    command = " ".join(cfg["arq"]["command"])
+    assert command.index("require_db_head.sh") < command.index("run_arq_worker.sh")
+
+
 def test_image_ships_the_call_entrypoint():
     # The Dockerfile copies scripts by allowlist; a missing line leaves the call role without its entrypoint.
-    assert "scripts/xpand/call_entrypoint.sh" in (ROOT / "api/Dockerfile").read_text()
+    dockerfile = (ROOT / "api/Dockerfile").read_text()
+    assert "scripts/xpand/call_entrypoint.sh" in dockerfile
+    assert "scripts/xpand/require_db_head.sh" in dockerfile
