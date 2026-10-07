@@ -45,6 +45,7 @@ from api.services.pipecat.tracing_config import (
     load_all_org_langfuse_credentials,
 )
 from api.services.pipecat.tts_cache.runtime import close_speech_cache
+from api.services.telephony.providers.twilio.region import RegionError
 from api.services.worker_sync.manager import (
     WorkerSyncManager,
     set_worker_sync_manager,
@@ -163,6 +164,30 @@ async def handle_workflow_definition_not_visible(
     return JSONResponse(
         status_code=403,
         content={"detail": "Workflow definition is not available to this organization"},
+    )
+
+
+@app.exception_handler(RegionError)
+async def handle_twilio_region_error(
+    _request: Request,
+    exc: RegionError,
+) -> JSONResponse:
+    """A Twilio region cannot be used as configured: answer a named 422.
+
+    The body carries the stable code, what is wrong and what to do, so the
+    caller can act on it instead of seeing a generic 400/500.
+    """
+
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": {
+                "code": exc.code,
+                "reason": exc.reason,
+                "hint": exc.hint,
+                "where": exc.where,
+            }
+        },
     )
 
 

@@ -34,11 +34,14 @@ _EEA_REGIONS = frozenset({"ie1"})
 _DEFAULT_EDGE = {"ie1": "dublin", "au1": "sydney"}
 
 
-class RegionError(ValueError):
+class RegionError(Exception):
     """A Twilio region cannot be used as configured (VOZ-AC-B0-28 shape).
 
     ``code`` is stable and machine-readable; ``reason`` says what is wrong and
     ``hint`` what to do about it. Both are always non-empty.
+
+    Deliberately not a ``ValueError``: the outbound routes turn ``ValueError`` into a
+    400 "configuration not found". The app answers this one with a named 422.
     """
 
     def __init__(

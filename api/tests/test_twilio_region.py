@@ -391,7 +391,7 @@ def test_region_error_is_classified_as_a_user_config_failure_with_its_code_and_h
     assert failure.retryable is False
 
 
-# --- outbound call routes answer a named 422 for region errors (VOZ-AC-B4-41) ---
+# --- region errors reach the app handler as a named 422 (VOZ-AC-B4-41) ---
 
 
 def _region_error():
@@ -402,19 +402,13 @@ def _region_error():
     )
 
 
-def _assert_named_422(exc_info):
-    exc = exc_info.value
-    assert exc.status_code == 422
-    assert exc.detail["code"] == "carrier_region_credentials_missing"
-    assert exc.detail["reason"]
-    assert exc.detail["hint"]
-    assert exc.detail["where"]
+def test_region_error_is_not_a_value_error():
+    # The outbound routes turn ValueError into a misleading 400.
+    assert not issubclass(RegionError, ValueError)
 
 
 @pytest.mark.asyncio
-async def test_initiate_call_route_answers_422_for_region_error(monkeypatch):
-    from fastapi import HTTPException
-
+async def test_initiate_call_route_lets_region_error_propagate(monkeypatch):
     from api.routes import telephony as telephony_routes
     from api.services import organization_preferences
 
@@ -434,15 +428,12 @@ async def test_initiate_call_route_answers_422_for_region_error(monkeypatch):
     request = telephony_routes.InitiateCallRequest(
         workflow_id=1, phone_number="+34600000000"
     )
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RegionError):
         await telephony_routes.initiate_call(request, MagicMock())
-    _assert_named_422(exc_info)
 
 
 @pytest.mark.asyncio
-async def test_public_agent_route_answers_422_for_region_error(monkeypatch):
-    from fastapi import HTTPException
-
+async def test_public_agent_route_lets_region_error_propagate(monkeypatch):
     from api.routes import public_agent
 
     monkeypatch.setattr(
@@ -455,7 +446,7 @@ async def test_public_agent_route_answers_422_for_region_error(monkeypatch):
     )
     target = MagicMock()
     target.workflow.user_id = 1
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(RegionError):
         await public_agent._execute_resolved_target(
             target,
             MagicMock(telephony_configuration_id=None),
@@ -463,4 +454,23 @@ async def test_public_agent_route_answers_422_for_region_error(monkeypatch):
             api_key_id=None,
             api_key_created_by=None,
         )
-    _assert_named_422(exc_info)
+
+
+@pytest.mark.asyncio
+async def test_app_handler_answers_a_named_422_for_region_error():
+    import json
+
+    from api.app import app
+
+    handler = app.exception_handlers[RegionError]
+    response = await handler(MagicMock(), _region_error())
+
+    assert response.status_code == 422
+    assert json.loads(response.body) == {
+        "detail": {
+            "code": "carrier_region_credentials_missing",
+            "reason": "no credentials for region ie1",
+            "hint": "add credentials.ie1 to the twilio configuration",
+            "where": "twilio telephony configuration",
+        }
+    }
