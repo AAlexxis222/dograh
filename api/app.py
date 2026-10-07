@@ -174,19 +174,21 @@ async def handle_twilio_region_error(
 ) -> JSONResponse:
     """A Twilio region cannot be used as configured: answer a named 422.
 
-    The body carries the stable code, what is wrong and what to do, so the
-    caller can act on it instead of seeing a generic 400/500.
+    ``detail`` stays a readable string, as in every other handler here (the UI
+    renders it as text); the stable code, reason, hint and where travel in
+    ``error`` so a caller can act on them.
     """
 
     return JSONResponse(
         status_code=422,
         content={
-            "detail": {
+            "detail": f"{exc.code}: {exc.reason}. {exc.hint}",
+            "error": {
                 "code": exc.code,
                 "reason": exc.reason,
                 "hint": exc.hint,
                 "where": exc.where,
-            }
+            },
         },
     )
 

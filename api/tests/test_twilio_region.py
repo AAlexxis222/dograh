@@ -466,11 +466,16 @@ async def test_app_handler_answers_a_named_422_for_region_error():
     response = await handler(MagicMock(), _region_error())
 
     assert response.status_code == 422
-    assert json.loads(response.body) == {
-        "detail": {
-            "code": "carrier_region_credentials_missing",
-            "reason": "no credentials for region ie1",
-            "hint": "add credentials.ie1 to the twilio configuration",
-            "where": "twilio telephony configuration",
-        }
+    body = json.loads(response.body)
+    # The UI renders ``detail`` as text, so it must stay a string; the B0-28
+    # fields travel next to it.
+    assert body["detail"] == (
+        "carrier_region_credentials_missing: no credentials for region ie1. "
+        "add credentials.ie1 to the twilio configuration"
+    )
+    assert body["error"] == {
+        "code": "carrier_region_credentials_missing",
+        "reason": "no credentials for region ie1",
+        "hint": "add credentials.ie1 to the twilio configuration",
+        "where": "twilio telephony configuration",
     }
