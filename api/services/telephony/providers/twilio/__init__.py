@@ -76,6 +76,10 @@ SPEC = ProviderSpec(
     ui_metadata=_UI_METADATA,
     account_id_credential_field="account_sid",
     server_managed_credential_fields=_REGION_KEYS,
+    # Regional credentials belong to the old account: a new account_sid drops
+    # them, so calls fail closed (carrier_region_credentials_missing) instead
+    # of silently using the previous account.
+    account_scoped_server_managed_credential_fields=("credentials",),
 )
 
 

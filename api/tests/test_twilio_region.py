@@ -324,6 +324,18 @@ async def test_update_sending_only_the_editable_fields_keeps_the_regional_setup(
 
 
 @pytest.mark.asyncio
+async def test_account_change_drops_the_old_accounts_regional_credentials():
+    existing = _stored_cell_config()
+    payload = {"account_sid": "ACNEW", "auth_token": "t-new"}
+
+    organization.preserve_masked_fields("twilio", payload, existing)
+    saved = await organization._run_preprocess_hook("twilio", payload, existing)
+
+    assert "credentials" not in saved
+    assert saved["region"] == existing["region"]
+
+
+@pytest.mark.asyncio
 async def test_update_cannot_inject_region_keys_from_the_payload():
     existing = {**US1, "from_numbers": []}
     payload = {**US1, "credentials": {"ie1": {"account_sid": "ACX"}}, "region": "ie1"}
