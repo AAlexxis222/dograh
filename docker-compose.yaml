@@ -267,7 +267,7 @@ services:
       # Telemetry
       ENABLE_TELEMETRY: "${ENABLE_TELEMETRY:-false}"
       POSTHOG_API_KEY: "${POSTHOG_API_KEY:-}"
-      POSTHOG_HOST: "https://us.i.posthog.com"
+      POSTHOG_HOST: "${POSTHOG_HOST:-https://us.i.posthog.com}"
 
     ports:
       - "8000:8000"
@@ -306,7 +306,7 @@ services:
 
       # Posthog
       POSTHOG_KEY: "${POSTHOG_KEY:-}"
-      POSTHOG_HOST: "https://us.posthog.com"
+      POSTHOG_HOST: "${POSTHOG_HOST:-https://us.posthog.com}"
     ports:
       - "3010:3010"
     depends_on:
