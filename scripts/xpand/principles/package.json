@@ -5,6 +5,7 @@
     "eslint": "9.39.2",
     "@typescript-eslint/parser": "8.71.1",
     "@eslint-community/eslint-plugin-eslint-comments": "4.8.1",
-    "dependency-cruiser": "18.5.0"
+    "dependency-cruiser": "18.5.0",
+    "typescript": "6.0.3"
   }
 }

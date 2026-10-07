@@ -1,4 +1,4 @@
-// source: xpand plugin tools/pr-gate @5449572 (the local-hook tests of the source are not ported: hook.mjs is not part of the fork)
+// source: xpand plugin tools/pr-gate @c0477d6 (the local-hook tests of the source are not ported: hook.mjs is not part of the fork)
 // node --test scripts/xpand/pr-gate/pr-gate.test.mjs   (a directory argument does not work on Node ≥ 21)
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'

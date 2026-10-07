@@ -65,12 +65,13 @@ jobs:
           names=$(git diff --no-renames --name-only "origin/$BASE_REF...refs/xpand/pr-head")
           printf '%s\n' "$names" > "$RUNNER_TEMP/changed.txt"
           added=$(git diff -U0 "origin/$BASE_REF...refs/xpand/pr-head" -- .github/workflows)
-          if printf '%s\n' "$added" | grep -qE '^\+.*(pr-body|principles-mechanical)'; then
+          # Here-strings, not `printf | grep -q`: grep -q exits early, printf dies of SIGPIPE and pipefail reads "no match".
+          if grep -qE '^\+.*(pr-body|principles-mechanical)' <<<"$added"; then
             echo "pr-body: this PR adds workflow lines naming a required gate; gate changes need the break-glass in xpand-pr-body.yml" >&2
             exit 1
           fi
           gate='^(\.github/workflows/(principles-mechanical|xpand-pr-body)\.yml|scripts/xpand/pr-gate/(check-body\.mjs|reviewed-sha\.sh)|scripts/xpand/principles/(ratchet\.py|repo\.json|golangci\.yml|ruff\.toml|eslint\.config\.mjs|package\.json|package-lock\.json))$'
-          if printf '%s\n' "$names" | grep -qE "$gate"; then
+          if grep -qE "$gate" <<<"$names"; then
             echo "pr-body: this PR changes a gate file (principles ratchet, pr-body script or workflow); that needs the break-glass in xpand-pr-body.yml" >&2
             exit 1
           fi

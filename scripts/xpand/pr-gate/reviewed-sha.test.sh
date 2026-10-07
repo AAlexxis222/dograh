@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# source: xpand plugin tools/pr-gate @5449572
+# source: xpand plugin tools/pr-gate @c0477d6
 # bash scripts/xpand/pr-gate/reviewed-sha.test.sh  — scenarios from the 3rd adversarial review of the gate.
 set -eo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/reviewed-sha.sh"

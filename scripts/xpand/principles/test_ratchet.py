@@ -1,6 +1,7 @@
 """python -m unittest discover -s tools/principles -p 'test_*.py'"""
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -278,6 +279,26 @@ class Configs(unittest.TestCase):
         self.assertIn(f"complexity: ['error', {r.FUNCTION_LIMITS['complexity']}]", eslint)
         self.assertIn(f"max: {r.FUNCTION_LIMITS['max-lines-per-function']}", eslint)
         self.assertNotIn("BLE001", ruff)
+        self.assertIn("respect-gitignore = false", ruff)
+        self.assertIn("exclude = []", ruff)
+
+    def test_ruff_sees_files_a_pr_gitignores_or_puts_in_default_excluded_dirs(self):
+        probe = subprocess.run([sys.executable, "-m", "ruff", "--version"], capture_output=True)
+        if probe.returncode:
+            self.skipTest("ruff not installed")
+        body = "def big(x):\n    y = 0\n" + "".join(f"    if x == {i}:\n        y += 1\n" for i in range(16)) + "    return y\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp)
+            for rel in ("api/x/c.py", "api/venv/c.py"):
+                (tree / rel).parent.mkdir(parents=True)
+                (tree / rel).write_text(body)
+            (tree / "api/x/.gitignore").write_text("c.py\n")
+            os.environ.pop("RATCHET_RUFF", None)
+            os.environ["RATCHET_RUFF"] = f'"{sys.executable}" -m ruff'.replace(chr(92), "/")
+            self.addCleanup(os.environ.pop, "RATCHET_RUFF", None)
+            here = Path(r.__file__).parent
+            found = r.python_findings(tree, {"roots": ["api"], "config": "ruff.toml"}, here)
+        self.assertEqual(sorted(f.file for f in found if f.rule == "C901"), ["api/venv/c.py", "api/x/c.py"])
 
 
 class InScope(unittest.TestCase):

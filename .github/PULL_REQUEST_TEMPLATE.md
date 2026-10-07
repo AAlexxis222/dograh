@@ -36,7 +36,7 @@ Then: what was fixed / pushed back. -->
 ## XPAND obligations (B9 §8.3)
 
 - [ ] No AI-tool attribution in commits or in this description (VOZ-AT-B9-05)
-- [ ] `fable-code-guides` and `swe-principles` applied to the task
+- [ ] Code-quality guides and engineering principles applied to the task
 - [ ] Every `pin`/`fork` citation this PR implements re-anchored to the reconciled tree before touching it (re-anchor table below); "Informe" citations confirmed by reading
 - [ ] Capability-table test: every pinned knob has a row for the resolved model; loader fails on a missing native field; a date in two places is an error (VOZ-AT-B1-01, -23)
 - [ ] Deprecations test: no default points to a past-dated or `legacy` model (VOZ-AT-B1-13)

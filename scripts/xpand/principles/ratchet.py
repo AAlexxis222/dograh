@@ -5,7 +5,7 @@ A finding blocks when its value at the PR head is above the limit AND above ever
 in the fork, the merge-base with upstream). Function rules: value = metric of that function (file, name).
 Count rules: value = number of findings of that rule in that file, limit 0. New import cycles block.
 Everything above the limit that did not get worse is reported as debt. Exit 0 pass, 1 blocked, 2 tool/git error.
-source: xpand plugin tools/principles @5449572
+source: xpand plugin tools/principles @c0477d6
 """
 from __future__ import annotations
 

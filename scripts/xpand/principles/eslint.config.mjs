@@ -1,4 +1,4 @@
-// source: xpand plugin tools/principles @5449572
+// source: xpand plugin tools/principles @c0477d6
 // Review system v3 ratchet only (spec 2026-10-06 §3.2). Loaded with `eslint -c`; plugins resolve from the
 // node_modules next to this file (installed from package-lock.json in CI), never from the PR.
 import comments from '@eslint-community/eslint-plugin-eslint-comments/configs'

@@ -1,5 +1,6 @@
 name: principles-mechanical
-# Principles ratchet for XPAND's own delta (review system v3). source: xpand plugin .github/workflows @5449572, adapted.
+# Principles ratchet for XPAND's own delta (review system v3). source: xpand plugin .github/workflows @c0477d6, adapted.
+# JS import-cycle detection is off ("cycles": false in repo.json): depcruise --no-config cannot resolve the `@/` alias, so it was mostly blind. Python cycles (grimp) stay on.
 # A finding blocks only when it is above the limit at the PR head AND above both reference trees: the PR base and the
 # merge-base with upstream dograh. Upstream's own debt therefore never blocks a PR here.
 # pull_request + read-only token: linters parse the PR's code; nothing from the PR is executed by our scripts (configs,

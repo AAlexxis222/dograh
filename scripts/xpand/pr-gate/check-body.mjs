@@ -1,5 +1,5 @@
 // Validates a PR description against .github/PULL_REQUEST_TEMPLATE.md. Used by .github/workflows/xpand-pr-body.yml.
-// source: xpand plugin tools/pr-gate @5449572
+// source: xpand plugin tools/pr-gate @c0477d6
 // CLI: node check-body.mjs <body-file> [--no-attribution] [--head-sha <sha>] [--changed-files <file>] [--migration-prefix <prefix>]...
 //      node check-body.mjs <body-file> --print-reviewed   → prints the REVIEWED sha (or nothing), exit 0
 //      validation exits 1 + one line per problem.
