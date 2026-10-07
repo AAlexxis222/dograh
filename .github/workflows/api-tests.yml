@@ -2,11 +2,14 @@ name: API tests
 
 on:
   pull_request:
-    branches: [main]
+    # feat/foundations-base: XPAND fork integration branch; its PRs need the same suite.
+    branches: [main, feat/foundations-base]
     paths:
       - "api/**"
       - "pipecat/**"
       - "scripts/**"
+      - "docker-compose*.yaml"
+      - "deploy/**"
       - ".github/workflows/api-tests.yml"
 
 concurrency:
