@@ -40,12 +40,16 @@ async def create_transport(
             f"Incomplete Twilio configuration for organization {organization_id}"
         )
 
+    # pipecat takes region and edge together or not at all (US1 passes neither).
+    regional_kwargs = (
+        {"region": endpoint.region, "edge": endpoint.edge} if endpoint.edge else {}
+    )
     serializer = TwilioFrameSerializer(
         stream_sid=stream_sid,
         call_sid=call_sid,
         account_sid=endpoint.account_sid,
         auth_token=endpoint.auth_token,
-        **endpoint.serializer_args,
+        **regional_kwargs,
         transfer_strategy=TwilioConferenceStrategy(),
         hangup_strategy=TwilioHangupStrategy(),
     )

@@ -34,7 +34,7 @@ _EEA_REGIONS = frozenset({"ie1"})
 _DEFAULT_EDGE = {"ie1": "dublin", "au1": "sydney"}
 
 
-class RegionError(Exception):
+class RegionError(ValueError):
     """A Twilio region cannot be used as configured (VOZ-AC-B0-28 shape).
 
     ``code`` is stable and machine-readable; ``reason`` says what is wrong and
@@ -68,11 +68,6 @@ class TwilioEndpoint:
     account_sid: str | None
     auth_token: str | None
     base_url: str
-
-    @property
-    def serializer_args(self) -> dict[str, str]:
-        """``region``/``edge`` for pipecat's serializer (both or neither)."""
-        return {"region": self.region, "edge": self.edge} if self.edge else {}
 
 
 def cell_policy_from_env() -> str | None:

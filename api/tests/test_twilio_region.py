@@ -7,7 +7,9 @@ import pytest
 from pipecat.serializers.twilio import TwilioFrameSerializer
 from twilio.request_validator import RequestValidator
 
+from api.errors.failure import ErrorOwner, ErrorSource, ErrorType
 from api.routes import organization
+from api.services.telephony.failure_reporting import classify_telephony_exception
 from api.services.telephony.providers import twilio as twilio_pkg
 from api.services.telephony.providers.twilio import SPEC, transport
 from api.services.telephony.providers.twilio import provider as provider_module
@@ -302,7 +304,7 @@ def test_region_keys_and_regional_token_never_reach_api_clients():
 
     shown = organization._credentials_for_display("twilio", stored)
 
-    assert not set(shown) & set(twilio_pkg._REGION_KEYS)
+    assert not set(shown) & set(twilio_pkg._SERVER_MANAGED_KEYS)
     assert "t-ie1" not in repr(shown)
     assert shown["account_sid"] != US1["account_sid"]  # sensitive top-level masked
     assert stored["credentials"] == {"ie1": IE1}  # source untouched
@@ -319,7 +321,7 @@ async def test_update_sending_only_the_editable_fields_keeps_the_regional_setup(
     saved = await organization._run_preprocess_hook("twilio", payload, existing)
 
     assert saved["auth_token"] == "t-us1-rotated"
-    for key in twilio_pkg._REGION_KEYS:
+    for key in twilio_pkg._SERVER_MANAGED_KEYS:
         assert saved[key] == existing[key]
 
 
@@ -372,3 +374,18 @@ async def test_transport_outside_a_cell_passes_no_region_and_builds_a_real_seria
 
     assert "region" not in built[0] and "edge" not in built[0]
     assert (built[0]["account_sid"], built[0]["auth_token"]) == ("ACUS", "t-us1")
+
+
+def test_region_error_is_classified_as_a_user_config_failure_with_its_code_and_hint():
+    exc = RegionError(
+        "carrier_region_credentials_missing", "no creds", "add credentials.ie1"
+    )
+
+    failure = classify_telephony_exception(exc, provider="twilio")
+
+    assert failure.type == ErrorType.CONFIG_ERROR
+    assert failure.error_owner == ErrorOwner.USER
+    assert failure.source == ErrorSource.TELEPHONY
+    assert failure.code == "carrier-region-credentials-missing"
+    assert failure.external_message == "add credentials.ie1"
+    assert failure.retryable is False

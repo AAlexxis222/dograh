@@ -23,8 +23,8 @@ _REGION_KEYS = (
     "credentials",
     "allow_non_eu_carrier_region",
     "allow_non_eu_carrier_region_reason",
-    "fallback_url",
 )
+_SERVER_MANAGED_KEYS = (*_REGION_KEYS, "fallback_url")
 
 
 def _config_loader(value: Dict[str, Any]) -> Dict[str, Any]:
@@ -34,7 +34,7 @@ def _config_loader(value: Dict[str, Any]) -> Dict[str, Any]:
         "auth_token": value.get("auth_token"),
         "from_numbers": value.get("from_numbers", []),
     }
-    loaded.update({key: value[key] for key in _REGION_KEYS if key in value})
+    loaded.update({key: value[key] for key in _SERVER_MANAGED_KEYS if key in value})
     return loaded
 
 
@@ -75,7 +75,7 @@ SPEC = ProviderSpec(
     config_request_cls=TwilioConfigurationRequest,
     ui_metadata=_UI_METADATA,
     account_id_credential_field="account_sid",
-    server_managed_credential_fields=_REGION_KEYS,
+    server_managed_credential_fields=_SERVER_MANAGED_KEYS,
     # Regional credentials belong to the old account: a new account_sid drops
     # them, so calls fail closed (carrier_region_credentials_missing) instead
     # of silently using the previous account.
