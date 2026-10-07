@@ -24,10 +24,12 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 ###############################################################################
-### 2) Run migrations
+### 2) Run migrations (a cell sets RUN_MIGRATIONS_ON_START=false and migrates out of band)
 ###############################################################################
 
-alembic -c "$BASE_DIR/api/alembic.ini" upgrade head
+if [[ "${RUN_MIGRATIONS_ON_START:-true}" != "false" ]]; then
+  alembic -c "$BASE_DIR/api/alembic.ini" upgrade head
+fi
 
 ###############################################################################
 ### 3) Signal handling — forward TERM/INT to children for clean docker stop

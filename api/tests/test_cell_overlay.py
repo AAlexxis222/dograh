@@ -10,13 +10,15 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 # Every service the base defines under the profiles below, minus cloudflared (the cell never tunnels).
-EXPECTED_SERVICES = {"postgres", "redis", "minio", "dograh-init", "nginx", "coturn", "api", "ui"}
+EXPECTED_SERVICES = {"postgres", "redis", "minio", "dograh-init", "nginx", "coturn", "api", "call", "arq", "coordinators", "ui"}
 LONG_LIVED = EXPECTED_SERVICES - {"dograh-init"}  # dograh-init is a one-shot container
-INTERNAL_ONLY = {"postgres", "redis", "api", "ui", "minio"}
+INTERNAL_ONLY = {"postgres", "redis", "api", "call", "arq", "coordinators", "ui", "minio"}
 # Real profile names of the base file; the tunnel one is on to prove the overlay still drops cloudflared.
 PROFILES = "remote,local-turn,tunnel"
-# Services that share the api cell env anchor; VOZ-N0-08 extends this set when it adds the call/arq/coordinator roles.
-CELL_ROLES = {"api"}
+# Services that share the api cell env anchor: the roles run from one image (VOZ-N0-08).
+CELL_ROLES = {"api", "call", "arq", "coordinators"}
+# Not a secret: any memory size the cell host sets; the placeholder "x" used for the secrets is not a valid size.
+VALID_VALUES = {"CALL_MEM_LIMIT": "1g"}
 AWS_CONFIG_TARGET = "/etc/xpand/aws/config"
 COMPOSE = ["docker", "compose", "-f", "docker-compose.yaml", "-f", "docker-compose.cell.yaml"]
 # Docker on Windows needs these to find its compose plugin (ProgramFiles) and config/context; none is a secret.
@@ -26,6 +28,11 @@ PLATFORM_VARS = ("PATH", "SystemRoot", "ProgramFiles", "ProgramData", "USERPROFI
 def _required_names():
     lines = (ROOT / "deploy/cell/.env.reference").read_text().splitlines()
     return [line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")]
+
+
+def _values(skip=None):
+    """A value for every required variable except `skip`: "x" for secrets, a real size where one is parsed."""
+    return {k: VALID_VALUES.get(k, "x") for k in _required_names() if k != skip}
 
 
 def _platform_env():
@@ -56,7 +63,7 @@ def _render(env_file, values, *extra):
 @pytest.fixture(scope="module")
 def cfg(empty_env_file):
     _require_docker()
-    out = _render(empty_env_file, {k: "x" for k in _required_names()}, "--format", "json")
+    out = _render(empty_env_file, _values(), "--format", "json")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)["services"]
 
@@ -121,7 +128,7 @@ def test_api_ships_the_aws_config_from_the_overlay(cfg):
 
 def test_aws_config_content_is_the_credential_process(empty_env_file):
     _require_docker()
-    out = _render(empty_env_file, {k: "x" for k in _required_names()}, "--format", "json")
+    out = _render(empty_env_file, _values(), "--format", "json")
     assert out.returncode == 0, out.stderr
     content = json.loads(out.stdout)["configs"]["cell-aws-config"]["content"]
     assert "credential_process = /bin/cat /run/aws/credentials.json" in content
@@ -164,6 +171,42 @@ def test_redis_has_aof(cfg):
 @pytest.mark.parametrize("missing", _required_names())
 def test_each_secret_is_required(missing, empty_env_file):
     _require_docker()
-    others = {k: "x" for k in _required_names() if k != missing}
+    others = _values(skip=missing)
     out = _render(empty_env_file, others)
     assert out.returncode != 0 and missing in out.stderr, out.stderr
+
+
+def test_every_role_runs_from_the_api_image(cfg):
+    assert {cfg[r]["image"] for r in CELL_ROLES} == {cfg["api"]["image"]}
+
+
+@pytest.mark.parametrize("role", sorted(CELL_ROLES))
+def test_migrations_are_off_the_startup_path_in_every_role(role, cfg):
+    assert cfg[role]["environment"]["RUN_MIGRATIONS_ON_START"] == "false"
+
+
+def test_call_role_drains_and_is_the_oom_victim(cfg):
+    call = cfg["call"]
+    assert "call_entrypoint.sh" in " ".join(call["entrypoint"])
+    assert call["mem_limit"] == str(1024**3)  # CALL_MEM_LIMIT=1g
+    assert call["oom_score_adj"] == 500
+    assert "stop_grace_period" not in call  # VOZ-N0-20 renders it from durations.py
+
+
+def test_each_duty_runs_in_exactly_one_role(cfg):
+    def env(role):
+        return cfg[role]["environment"]
+
+    # Every other role runs no coordinators and no arq worker inside its start script.
+    for role in CELL_ROLES - {"coordinators"}:
+        assert env(role)["ENABLE_ARI_MANAGER"] == "false" and env(role)["ENABLE_CAMPAIGN_ORCHESTRATOR"] == "false", role
+        assert env(role)["ARQ_WORKERS"] == "0", role
+    # coordinators runs the two singletons and no uvicorn / arq.
+    assert env("coordinators")["ENABLE_ARI_MANAGER"] == "true" and env("coordinators")["ENABLE_CAMPAIGN_ORCHESTRATOR"] == "true"
+    assert env("coordinators")["FASTAPI_WORKERS"] == "0" and env("coordinators")["ARQ_WORKERS"] == "0"
+    assert "run_arq_worker.sh" in " ".join(cfg["arq"]["command"])
+
+
+def test_image_ships_the_call_entrypoint():
+    # The Dockerfile copies scripts by allowlist; a missing line leaves the call role without its entrypoint.
+    assert "scripts/xpand/call_entrypoint.sh" in (ROOT / "api/Dockerfile").read_text()

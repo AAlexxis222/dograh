@@ -25,6 +25,11 @@ sleep "$INITIAL_DELAY"
 # Without the devops secret we cannot read the count — fall back to the old
 # fixed-sleep behavior rather than block the full grace window on every stop.
 if [ -z "${DOGRAH_DEVOPS_SECRET:-}" ]; then
+  # A cell fails closed (VOZ-AC-B0-30): an undrained stop would cut live calls.
+  if [ "${DRAIN_FAIL_CLOSED:-false}" = "true" ]; then
+    echo "code=drain_secret_missing where=drain_web reason=DOGRAH_DEVOPS_SECRET is unset so active calls cannot be counted hint=set DOGRAH_DEVOPS_SECRET in the role environment" >&2
+    exit 1
+  fi
   echo "drain: DOGRAH_DEVOPS_SECRET unset — skipping active-call drain (sleep-only)"
   exit 0
 fi
