@@ -1,0 +1,20 @@
+[
+ {
+  "code": "C901",
+  "message": "`big` is too complex (18 > 15)",
+  "filename": "{TREE}/api/a.py",
+  "location": {
+   "column": 5,
+   "row": 1
+  }
+ },
+ {
+  "code": "S110",
+  "message": "`try`-`except`-`pass` detected, consider logging the exception",
+  "filename": "{TREE}/api/a.py",
+  "location": {
+   "column": 5,
+   "row": 37
+  }
+ }
+]

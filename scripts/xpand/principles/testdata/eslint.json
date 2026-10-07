@@ -1,0 +1,21 @@
+[
+ {
+  "filePath": "{TREE}/ui/a.ts",
+  "messages": [
+   {
+    "ruleId": "complexity",
+    "severity": 2,
+    "message": "Function 'big' has a complexity of 18. Maximum allowed is 15.",
+    "line": 1,
+    "column": 8
+   },
+   {
+    "ruleId": "no-empty",
+    "severity": 2,
+    "message": "Empty block statement.",
+    "line": 19,
+    "column": 25
+   }
+  ]
+ }
+]

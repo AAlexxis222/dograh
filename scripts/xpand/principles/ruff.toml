@@ -1,0 +1,11 @@
+# source: xpand plugin tools/principles @5449572
+# Review system v3 ratchet only (spec 2026-10-06 §3.2). The blind-except rule is deliberately absent (catching Exception is not
+# swallowing it). Ruff measures function size in statements: 50 statements ~ 80 lines.
+[lint]
+select = ["C901", "PLR0915", "S110", "S112", "PGH004"]
+
+[lint.mccabe]
+max-complexity = 15
+
+[lint.pylint]
+max-statements = 50
