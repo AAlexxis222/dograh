@@ -102,6 +102,7 @@ def env_configured_tracing(monkeypatch):
     """Initialise tracing exactly as a deployment with Langfuse env vars would."""
     monkeypatch.setattr(_RecordingExporter, "instances", [])
     monkeypatch.setattr(tracing_config, "OTLPSpanExporter", _RecordingExporter)
+    monkeypatch.setattr(tracing_config, "LANGFUSE_HOST", ENV_HOST, raising=False)
     monkeypatch.setattr(tracing_config, "LANGFUSE_PUBLIC_KEY", "pk-env", raising=False)
     monkeypatch.setattr(tracing_config, "LANGFUSE_SECRET_KEY", "sk-env", raising=False)
     monkeypatch.setattr(tracing_config, "_tracing_initialized", False)
@@ -129,7 +130,8 @@ def test_spans_of_a_non_opted_org_never_reach_the_env_langfuse(
     env_exporters = [
         e for e in _RecordingExporter.instances if e._endpoint.startswith(ENV_HOST)
     ]
-    assert all(not e.exported for e in env_exporters)
+    # Under opt-in no exporter is even built from the deployment's env credentials.
+    assert env_exporters == []
     # Positive control: the org that opted in still gets its own spans.
     org_exporters = [
         e for e in _RecordingExporter.instances if e._endpoint.startswith(ORG_HOST)
