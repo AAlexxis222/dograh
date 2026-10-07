@@ -7,8 +7,6 @@ from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
 from api.constants import (
-    LANGFUSE_HOST,
-    LANGFUSE_PROJECT_ID,
     LANGFUSE_PUBLIC_KEY,
     LANGFUSE_SECRET_KEY,
 )
@@ -385,7 +383,11 @@ def build_remote_parent_context(trace_id: str | None):
 
 
 def get_trace_url(trace_id: str, org_id=None) -> str | None:
-    """Build a Langfuse trace URL, using org-specific host when available.
+    """Build a Langfuse trace URL for an org that registered its own project.
+
+    Returns ``None`` for any other org: its spans are dropped at export, so a
+    link to the deployment-wide Langfuse would point at a trace that was never
+    sent.
 
     Langfuse v4 dropped the trace entity, and with it the ``/trace/<id>``
     shortcut that resolved the project server-side — it 404s for anything
@@ -397,17 +399,10 @@ def get_trace_url(trace_id: str, org_id=None) -> str | None:
     if org_id is None:
         org_id = get_current_org_id()
 
-    host = None
-    project_id = None
-    if org_id and _org_routing_exporter:
-        host = _org_routing_exporter.get_org_host(str(org_id))
-        if host:
-            project_id = _org_routing_exporter.get_org_project_id(str(org_id))
-    if not host:
-        host = normalize_langfuse_host(LANGFUSE_HOST)
-        project_id = LANGFUSE_PROJECT_ID
-    if not host:
+    if not (org_id and _org_routing_exporter and _org_routing_exporter.has_org(org_id)):
         return None
+    host = _org_routing_exporter.get_org_host(str(org_id))
+    project_id = _org_routing_exporter.get_org_project_id(str(org_id))
 
     if project_id:
         return f"{host}/project/{project_id}/traces/{trace_id}"

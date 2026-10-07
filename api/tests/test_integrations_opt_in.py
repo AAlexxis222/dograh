@@ -102,8 +102,6 @@ def env_configured_tracing(monkeypatch):
     """Initialise tracing exactly as a deployment with Langfuse env vars would."""
     monkeypatch.setattr(_RecordingExporter, "instances", [])
     monkeypatch.setattr(tracing_config, "OTLPSpanExporter", _RecordingExporter)
-    monkeypatch.setattr(tracing_config, "LANGFUSE_HOST", ENV_HOST)
-    monkeypatch.setattr(tracing_config, "LANGFUSE_PROJECT_ID", "env-project")
     monkeypatch.setattr(tracing_config, "LANGFUSE_PUBLIC_KEY", "pk-env", raising=False)
     monkeypatch.setattr(tracing_config, "LANGFUSE_SECRET_KEY", "sk-env", raising=False)
     monkeypatch.setattr(tracing_config, "_tracing_initialized", False)

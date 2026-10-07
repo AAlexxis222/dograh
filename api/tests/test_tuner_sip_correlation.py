@@ -238,3 +238,16 @@ async def test_inbound_metadata_survives_run_creation_and_tuner_delivery(provide
         header = "X-Correlation-Id" if provider_name == "twilio" else "Correlation-Id"
         assert payload["sip_headers"] == {header: CORRELATION_ID}
     assert "provider-secret" not in str(payload)
+
+
+def test_create_runtime_sessions_skips_disabled_tuner_node():
+    context = SimpleNamespace(
+        workflow_graph=SimpleNamespace(
+            nodes={
+                "n0": SimpleNamespace(
+                    node_type="tuner", data=SimpleNamespace(tuner_enabled=False)
+                )
+            }
+        )
+    )
+    assert create_runtime_sessions(context) == []
