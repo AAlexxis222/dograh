@@ -19,6 +19,11 @@ x-cell-env: &cell-env
   LOG_LEVEL: "INFO"
   SERIALIZE_LOG_OUTPUT: "true"
   URL_GUARD_ENFORCE: "true"
+  # Recordings go to S3 from day 1: the bundled MinIO bucket has an anonymous read/write policy.
+  # Credentials stay blank on purpose: S3 access is role-based.
+  ENABLE_AWS_S3: "true"
+  S3_BUCKET: "${S3_BUCKET:?S3_BUCKET must be set}"
+  S3_REGION: "${S3_REGION:?S3_REGION must be set}"
   AWS_ACCESS_KEY_ID: ""
   AWS_SECRET_ACCESS_KEY: ""
 
