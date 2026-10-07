@@ -35,3 +35,5 @@ def _parse_state(value, user_id: int) -> OnboardingState:
             f"Invalid onboarding state for user {user_id}: {exc}. Returning defaults."
         )
         return OnboardingState()
+
+# Throwaway note for gate proof, safe to ignore.
