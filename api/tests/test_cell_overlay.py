@@ -15,6 +15,9 @@ LONG_LIVED = EXPECTED_SERVICES - {"dograh-init"}  # dograh-init is a one-shot co
 INTERNAL_ONLY = {"postgres", "redis", "api", "ui", "minio"}
 # Real profile names of the base file; the tunnel one is on to prove the overlay still drops cloudflared.
 PROFILES = "remote,local-turn,tunnel"
+# Services that share the api cell env anchor; VOZ-N0-08 extends this set when it adds the call/arq/coordinator roles.
+CELL_ROLES = {"api"}
+AWS_CONFIG_TARGET = "/etc/xpand/aws/config"
 COMPOSE = ["docker", "compose", "-f", "docker-compose.yaml", "-f", "docker-compose.cell.yaml"]
 # Docker on Windows needs these to find its compose plugin (ProgramFiles) and config/context; none is a secret.
 PLATFORM_VARS = ("PATH", "SystemRoot", "ProgramFiles", "ProgramData", "USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA")
@@ -82,7 +85,7 @@ def test_privacy_and_security_env(cfg):
     assert env["TELEPHONY_WS_TOKEN_ENFORCE"] == "true" and env["ENABLE_SIGNUP"] == "false"
     assert env["LOG_LEVEL"] == "INFO" and env["SERIALIZE_LOG_OUTPUT"] == "true" and "LOG_FILE_PATH" not in env
     assert env["URL_GUARD_ENFORCE"] == "true"
-    assert not env.get("AWS_ACCESS_KEY_ID") and not env.get("AWS_SECRET_ACCESS_KEY")  # S3 by instance role
+    assert not env.get("AWS_ACCESS_KEY_ID") and not env.get("AWS_SECRET_ACCESS_KEY")  # host-vended short-lived credentials (credential_process), never IMDS or static keys
     assert not any(k.startswith("OTEL_EXPORTER") for k in env)  # spans off in cell
     # The env-level trace exporter is the Langfuse triple (api/constants.py); it must stay unset.
     assert not [k for k in ("LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY") if env.get(k)]
@@ -98,10 +101,44 @@ def test_recordings_go_to_s3_not_minio(cfg):
 def test_api_reads_host_vended_credentials_never_imds(cfg):
     # The host vends short-lived credentials as a credential_process file (VOZ-AC-B5-55/-91); no IMDS, no static keys.
     env = cfg["api"]["environment"]
-    assert env["AWS_CONFIG_FILE"] == "/run/aws/config"
+    assert env["AWS_CONFIG_FILE"] == AWS_CONFIG_TARGET
     assert env["AWS_SHARED_CREDENTIALS_FILE"] == "/dev/null"
     assert env["AWS_EC2_METADATA_DISABLED"] == "true"
     assert env["AWS_ACCESS_KEY_ID"] == "" and env["AWS_SECRET_ACCESS_KEY"] == ""
+    assert env["AWS_SESSION_TOKEN"] == ""  # the base passes it through from .env; pipecat's AWS helpers read it
+
+
+def _config_mounts(service):
+    return [c for c in service.get("configs", []) if c["target"] == AWS_CONFIG_TARGET]
+
+
+def test_api_ships_the_aws_config_from_the_overlay(cfg):
+    # botocore reads AWS_CONFIG_FILE once at import; a host-written file could appear after api starts and stay empty.
+    mounts = _config_mounts(cfg["api"])
+    assert len(mounts) == 1, cfg["api"].get("configs")
+    assert mounts[0]["source"] == "cell-aws-config"
+
+
+def test_aws_config_content_is_the_credential_process(empty_env_file):
+    _require_docker()
+    out = _render(empty_env_file, {k: "x" for k in _required_names()}, "--format", "json")
+    assert out.returncode == 0, out.stderr
+    content = json.loads(out.stdout)["configs"]["cell-aws-config"]["content"]
+    assert "credential_process = /bin/cat /run/aws/credentials.json" in content
+
+
+@pytest.mark.parametrize("role", sorted(CELL_ROLES))
+def test_cell_role_with_aws_env_has_both_mounts(role, cfg):
+    # A role that takes the env anchor but forgets a mount would silently lose credentials.
+    service = cfg[role]
+    assert service["environment"].get("AWS_CONFIG_FILE") == AWS_CONFIG_TARGET
+    assert len(_config_mounts(service)) == 1
+    mounts = [v for v in service["volumes"] if v["target"] == "/run/aws"]
+    assert len(mounts) == 1 and mounts[0].get("read_only") is True
+
+
+def test_no_service_has_aws_env_outside_cell_roles(cfg):
+    assert {n for n, s in cfg.items() if s.get("environment", {}).get("AWS_CONFIG_FILE")} == CELL_ROLES
 
 
 def test_api_mounts_credentials_directory_read_only(cfg):
