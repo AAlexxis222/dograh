@@ -1,0 +1,54 @@
+name: principles-mechanical
+# Principles ratchet for XPAND's own delta (review system v3). source: xpand plugin .github/workflows @c0477d6, adapted.
+# JS import-cycle detection is off ("cycles": false in repo.json): depcruise --no-config cannot resolve the `@/` alias, so it was mostly blind. Python cycles (grimp) stay on.
+# A finding blocks only when it is above the limit at the PR head AND above both reference trees: the PR base and the
+# merge-base with upstream dograh. Upstream's own debt therefore never blocks a PR here.
+# pull_request + read-only token: linters parse the PR's code; nothing from the PR is executed by our scripts (configs,
+# ESLint plugins and the ratchet come from the base branch or from pinned packages). A PR cannot loosen its own gate: the
+# script and configs are read from the base with git show, and the xpand-pr-body guard rejects PRs that touch them.
+# No paths filter: a required check that never reports blocks the PR forever.
+on:
+  pull_request:
+    branches: [feat/foundations-base]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  principles-mechanical:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Upstream history is the second reference tree. Same fetch as xpand-pr-body.yml.
+      - name: fetch upstream
+        run: git fetch -q https://github.com/dograh-hq/dograh.git main:refs/xpand/upstream-main
+      # Same reference as the tree the ratchet compares against: HEAD^1, the base tip the merge commit was built on
+      # (not origin/<base>, which may have moved since).
+      - name: gate files from the base branch
+        run: |
+          dir="$RUNNER_TEMP/principles"; mkdir -p "$dir"
+          for f in ratchet.py repo.json golangci.yml ruff.toml eslint.config.mjs package.json package-lock.json; do
+            if git cat-file -e "HEAD^1:scripts/xpand/principles/$f" 2>/dev/null; then
+              git show "HEAD^1:scripts/xpand/principles/$f" > "$dir/$f"
+            else
+              echo "::warning::bootstrap: scripts/xpand/principles/$f is not on the base branch yet, using the PR copy"
+              cp "scripts/xpand/principles/$f" "$dir/$f"
+            fi
+          done
+      - name: install pinned tools
+        run: |
+          npm ci --prefix "$RUNNER_TEMP/principles"
+          pip install ruff==0.16.10 grimp==3.17
+      - name: ratchet
+        # HEAD is GitHub's merge commit on pull_request: its first parent is the base tip the merge was built on, so a
+        # re-run after the base moved still compares against the same reference (not against a newer base).
+        run: python "$RUNNER_TEMP/principles/ratchet.py" --config "$RUNNER_TEMP/principles/repo.json" --base "HEAD^1" --upstream refs/xpand/upstream-main

@@ -1,0 +1,5 @@
+{
+  "exclude": ["*/tests/*", "tests/*", "*.test.*", "*.spec.*", "*/testdata/*", "*/node_modules/*"],
+  "python": {"roots": ["api"], "config": "ruff.toml", "cycles_package": "api"},
+  "js": {"roots": ["ui/src"], "config": "eslint.config.mjs", "cycles": false}
+}

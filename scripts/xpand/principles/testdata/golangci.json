@@ -1,0 +1,14 @@
+{
+ "Issues": [
+  {
+   "FromLinter": "gocyclo",
+   "Text": "cyclomatic complexity 17 of func `big` is high (> 15)",
+   "Pos": {
+    "Filename": "a.go",
+    "Offset": 13,
+    "Line": 3,
+    "Column": 1
+   }
+  }
+ ]
+}

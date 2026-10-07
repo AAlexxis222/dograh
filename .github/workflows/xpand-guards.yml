@@ -14,6 +14,8 @@ jobs:
       - run: git remote add upstream https://github.com/dograh-hq/dograh.git && git fetch upstream main
       - run: bash scripts/xpand/tests/test_guards.sh
       - run: node --test scripts/xpand/pr-gate/pr-gate.test.mjs
+      - run: bash scripts/xpand/pr-gate/reviewed-sha.test.sh
+      - run: python3 -m unittest discover -s scripts/xpand/principles -p 'test_*.py'
       - run: bash scripts/xpand/check_no_ai_attribution.sh upstream/main
       # check_fix_against_g0.sh (VOZ-AT-B9-02) guarded fixes opened BEFORE the G0 sync landed. G0 is merged
       # (#22), so the step is retired (VOZ-G0-14 Step 5): after G0 it would fail every PR touching G0's files.

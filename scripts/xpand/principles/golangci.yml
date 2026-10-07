@@ -1,0 +1,24 @@
+# source: xpand plugin tools/principles @c0477d6
+# Review system v3 ratchet only (spec 2026-10-06 §3.2). NOT the module configs: cli/*/.golangci.yml run in full
+# in the required `test (<module>)` check and in lefthook, where these rules would fail on existing debt.
+run:
+  timeout: 5m
+  tests: false
+# errcheck runs with golangci's default exclusions (unchecked Close/Flush/print are not counted): a proxy, not a proof.
+linters:
+  disable-all: true
+  enable: [gocyclo, funlen, errcheck, nolintlint]
+linters-settings:
+  gocyclo:
+    min-complexity: 15
+  funlen:
+    lines: 80
+    statements: -1
+  nolintlint:
+    require-explanation: true
+    require-specific: true
+issues:
+  exclude-generated: disable  # a `Code generated ... DO NOT EDIT.` header must not hide findings
+  uniq-by-line: false  # keep funlen when gocyclo reports on the same line
+  max-issues-per-linter: 0
+  max-same-issues: 0
