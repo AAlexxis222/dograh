@@ -13,14 +13,27 @@ from .config import TwilioConfigurationRequest
 from .provider import TwilioProvider
 from .transport import create_transport
 
+# Optional keys read by ``region.resolve_twilio_endpoint`` and the provider.
+# Forwarded only when stored, so legacy configs keep their exact shape.
+_REGION_KEYS = (
+    "region",
+    "edge",
+    "credentials",
+    "allow_non_eu_carrier_region",
+    "allow_non_eu_carrier_region_reason",
+    "fallback_url",
+)
+
 
 def _config_loader(value: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+    loaded = {
         "provider": "twilio",
         "account_sid": value.get("account_sid"),
         "auth_token": value.get("auth_token"),
         "from_numbers": value.get("from_numbers", []),
     }
+    loaded.update({key: value[key] for key in _REGION_KEYS if key in value})
+    return loaded
 
 
 _UI_METADATA = ProviderUIMetadata(
