@@ -6,7 +6,7 @@ import pytest
 from loguru import logger
 
 from api import logging_config
-from api.services.security.redaction import redact
+from api.services.security.redaction import known_secret_values, redact
 
 CANARY_KEY = "sk-live-ABCDEF1234567890"
 
@@ -22,12 +22,36 @@ def test_masks_provider_keys_and_bearer_tokens():
 
 @pytest.mark.parametrize(
     "phone",
-    ["+34 612 345 678", "+34612345678", "612345678", "612 34 56 78", "612 345 678"],
+    [
+        "+34 612 345 678",
+        "+34612345678",
+        "%2B34612345678",
+        "0034612345678",
+        "(+34) 612 345 678",
+        "+1 (415) 555-2671",
+        "612345678",
+        "612 34 56 78",
+        "612 345 678",
+        "612-345-678",
+        "612.34.56.78",
+        "34612345678",
+    ],
 )
 def test_masks_spanish_and_e164_phones(phone):
-    out = redact(f"llamando a {phone} ahora")
-    assert "612" not in out
-    assert out.startswith("llamando a ") and out.endswith(" ahora")
+    assert redact(f"llamando a {phone} ahora") == "llamando a <redacted:phone> ahora"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("from sip:34612345678@host.example", "from sip:<redacted:phone>@host.example"),
+        ("to tel:+34612345678 now", "to tel:<redacted:phone> now"),
+        ("to TEL:%2B34612345678 now", "to TEL:<redacted:phone> now"),
+        ("from sips:1001@pbx", "from sips:<redacted:phone>@pbx"),
+    ],
+)
+def test_masks_digits_of_sip_and_tel_uris(text, expected):
+    assert redact(text) == expected
 
 
 @pytest.mark.parametrize(
@@ -38,30 +62,78 @@ def test_masks_spanish_and_e164_phones(phone):
         "at 2026-10-07T12:34:56.789+02:00 done",
         "run 123e4567-e89b-12d3-a456-426614174000 done",
         "order 1234567890123 done",
+        "latency 0.712345678 ms",
+        "ts 1759856123.612345678 done",
     ],
 )
 def test_keeps_dates_times_and_ids(text):
     assert redact(text) == text
 
 
-def test_masks_registered_secret_values(monkeypatch):
+def test_masks_registered_secret_values():
+    out = redact("value canary-secret-xyz here", secrets=("canary-secret-xyz",))
+    assert out == "value <redacted:secret> here"
+
+
+def test_known_secret_values_are_longest_first(monkeypatch):
+    # A secret that is a prefix of another must not leave the tail in clear.
     monkeypatch.setattr(
-        "api.services.security.redaction.known_secret_values",
-        lambda: {"canary-secret-xyz"},
+        "api.services.configuration.secrets_registry.active_secret_values",
+        lambda: ["abcdefgh", "abcdefghTAILTAIL"],
     )
-    assert "canary-secret-xyz" not in redact("value canary-secret-xyz here")
+    values = known_secret_values()
+    assert values == ("abcdefghTAILTAIL", "abcdefgh")
+    assert "TAIL" not in redact("x abcdefghTAILTAIL y", secrets=values)
+
+
+@pytest.mark.parametrize(
+    ("text", "leaked"),
+    [
+        ("Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNz"),
+        ("authorization: bearer abc.DEF_123/xyz+q==", "abc.DEF_123"),
+        ("GET /v1?api_key=hunter2hunter2&x=1", "hunter2hunter2"),
+        ("GET /v1?foo=1&access_token=hunter2hunter2", "hunter2hunter2"),
+        ('cfg password="hunter2 hunter2" end', "hunter2"),
+        ("cfg client_secret=hunter2hunter2 end", "hunter2hunter2"),
+        ("key sk_live_ABCDEF1234567890 end", "ABCDEF1234567890"),
+        ("db postgresql+asyncpg://user:hunter2@db:5432/x", "hunter2"),
+        ("cache redis://:hunter2@cache:6379/0", "hunter2"),
+        ("mq amqp://guest:hunter2@mq/", "hunter2"),
+    ],
+)
+def test_masks_credentials_in_any_shape(text, leaked):
+    out = redact(text, secrets=())
+    assert leaked not in out
+    assert out.split()[0] == text.split()[0]  # surrounding text survives
+
+
+def test_keeps_urls_without_userinfo():
+    text = "GET https://example.com/path@foo and redis://cache:6379/0"
+    assert redact(text, secrets=()) == text
 
 
 def test_active_secret_values_reads_secret_named_env(monkeypatch):
     from api.services.configuration.secrets_registry import active_secret_values
 
-    monkeypatch.setenv("CANARY_API_KEY", "canary-long-value")
+    secret_named = {
+        "CANARY_API_KEY": "canary-api-key-value",
+        "AWS_SECRET_ACCESS_KEY": "canary-aws-secret-value",
+        "STACK_SECRET_SERVER_KEY": "canary-stack-secret-value",
+        "OSS_JWT_SECRET": "canary-jwt-secret-value",
+        "DB_PASSWORD": "canary-db-password-value",
+        "TWILIO_AUTH_TOKEN": "canary-twilio-token-value",
+        "canary_lower_token": "canary-lower-token-value",
+    }
+    for name, value in secret_named.items():
+        monkeypatch.setenv(name, value)
     monkeypatch.setenv("CANARY_TOKEN", "short")
     monkeypatch.setenv("CANARY_FLAG", "canary-not-secret")
+    monkeypatch.setenv("KEYBOARD_LAYOUT", "canary-not-secret-either")
     values = active_secret_values()
-    assert "canary-long-value" in values
+    assert set(secret_named.values()) <= set(values)
     assert "short" not in values
     assert "canary-not-secret" not in values
+    assert "canary-not-secret-either" not in values
 
 
 @pytest.fixture
@@ -143,3 +215,26 @@ def test_stdout_sink_is_asynchronous(monkeypatch, real_logging):
     logging_config.setup_logging()
     (new_id,) = set(logger._core.handlers) - before
     assert logger._core.handlers[new_id]._enqueue is True
+
+
+def test_secret_set_is_computed_once_at_setup(capsys, monkeypatch, real_logging):
+    calls = []
+
+    def counting_active_secret_values():
+        calls.append(1)
+        return {"canary-secret-xyz"}
+
+    monkeypatch.setattr(
+        "api.services.configuration.secrets_registry.active_secret_values",
+        counting_active_secret_values,
+    )
+    monkeypatch.setattr(logging_config, "SERIALIZE_LOG_OUTPUT", False)
+    logging_config.setup_logging()
+    for i in range(5):
+        logger.info("record {} carries canary-secret-xyz", i)
+    logger.complete()
+
+    out = capsys.readouterr().out
+    assert "canary-secret-xyz" not in out
+    assert out.count("<redacted:secret>") == 5
+    assert len(calls) == 1

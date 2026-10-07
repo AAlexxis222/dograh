@@ -211,16 +211,19 @@ def mask_secrets(document: dict[str, Any] | None) -> dict[str, Any] | None:
     return masked
 
 
-_SECRET_ENV_SUFFIXES: tuple[str, ...] = (
-    "_SECRET",
-    "_SECRET_KEY",
-    "_API_KEY",
-    "_TOKEN",
-    "_PASSWORD",
-)
+_SECRET_ENV_MARKERS: tuple[str, ...] = ("SECRET", "PASSWORD", "TOKEN")
 # Shorter values ("true", "dev") are flags, not secrets; redacting them would
 # mangle every log line that contains the word.
 _MIN_SECRET_LENGTH = 8
+
+
+def _is_secret_env_name(name: str) -> bool:
+    """Secret-named variable: a marker anywhere in the name (``AWS_SECRET_ACCESS_KEY``,
+    ``DB_PASSWORD_FILE``), or a ``_KEY`` suffix (``OPENAI_API_KEY``)."""
+    upper = name.upper()
+    return upper.endswith("_KEY") or any(
+        marker in upper for marker in _SECRET_ENV_MARKERS
+    )
 
 
 def active_secret_values() -> set[str]:
@@ -232,6 +235,5 @@ def active_secret_values() -> set[str]:
     return {
         value
         for name, value in os.environ.items()
-        if name.upper().endswith(_SECRET_ENV_SUFFIXES)
-        and len(value) >= _MIN_SECRET_LENGTH
+        if _is_secret_env_name(name) and len(value) >= _MIN_SECRET_LENGTH
     }

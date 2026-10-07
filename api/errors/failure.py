@@ -60,6 +60,14 @@ _QUOTED_SECRET_ASSIGNMENT_RE = re.compile(
 _SECRET_ASSIGNMENT_RE = re.compile(
     rf"(?i)([\"']?{_SECRET_NAME_PATTERN}[\"']?\s*[:=]\s*)([^\s,;\"'}}]+)"
 )
+_SECRET_NAME_MARKERS = (
+    "key",
+    "token",
+    "authorization",
+    "signature",
+    "secret",
+    "password",
+)
 _AUTH_HEADER_RE = re.compile(r"(?i)(\b(?:basic|bearer)\s+)[A-Za-z0-9._~+/=-]+")
 _URL_USERINFO_RE = re.compile(r"(?i)(\b(?:https?|wss?)://)([^/@\s]+)@")
 _HTTP_STATUS_IN_MESSAGE_RE = re.compile(
@@ -76,6 +84,23 @@ def _redact_quoted_secret_assignment(match: re.Match[str]) -> str:
     return f"{match.group('prefix')}{quote}[REDACTED]{quote}"
 
 
+def redact_credentials(text: str) -> str:
+    """Replace credential shapes in ``text`` with ``[REDACTED]``; never truncates."""
+
+    text = _URL_USERINFO_RE.sub(r"\1[REDACTED]@", text)
+    text = _SECRET_QUERY_RE.sub(r"\1[REDACTED]", text)
+    text = _AUTH_HEADER_RE.sub(r"\1[REDACTED]", text)
+    # The two assignment regexes dominate the cost on a line with no secret name
+    # (~70us on 200 chars); every name in _SECRET_NAME_PATTERN contains one of
+    # these markers, so without one neither can match. casefold() mirrors
+    # IGNORECASE (it folds the long s and the Kelvin sign too).
+    folded = text.casefold()
+    if not any(marker in folded for marker in _SECRET_NAME_MARKERS):
+        return text
+    text = _QUOTED_SECRET_ASSIGNMENT_RE.sub(_redact_quoted_secret_assignment, text)
+    return _SECRET_ASSIGNMENT_RE.sub(r"\1[REDACTED]", text)
+
+
 def redact_failure_message(message: object) -> str:
     """Remove common credentials from exception text before it reaches a log sink."""
 
@@ -84,11 +109,7 @@ def redact_failure_message(message: object) -> str:
     except Exception:
         value = f"<{type(message).__name__}>"
 
-    value = _URL_USERINFO_RE.sub(r"\1[REDACTED]@", value)
-    value = _SECRET_QUERY_RE.sub(r"\1[REDACTED]", value)
-    value = _AUTH_HEADER_RE.sub(r"\1[REDACTED]", value)
-    value = _QUOTED_SECRET_ASSIGNMENT_RE.sub(_redact_quoted_secret_assignment, value)
-    value = _SECRET_ASSIGNMENT_RE.sub(r"\1[REDACTED]", value)
+    value = redact_credentials(value)
     if len(value) > _MAX_MESSAGE_LENGTH:
         value = f"{value[:_MAX_MESSAGE_LENGTH]}…"
     return value
