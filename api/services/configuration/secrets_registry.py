@@ -16,6 +16,7 @@ and lists of strings.
 from __future__ import annotations
 
 import copy
+import os
 from collections.abc import Iterator
 from typing import Any
 
@@ -208,3 +209,29 @@ def mask_secrets(document: dict[str, Any] | None) -> dict[str, Any] | None:
             ):
                 container[key] = [mask_key(item) for item in value]
     return masked
+
+
+_SECRET_ENV_SUFFIXES: tuple[str, ...] = (
+    "_SECRET",
+    "_SECRET_KEY",
+    "_API_KEY",
+    "_TOKEN",
+    "_PASSWORD",
+)
+# Shorter values ("true", "dev") are flags, not secrets; redacting them would
+# mangle every log line that contains the word.
+_MIN_SECRET_LENGTH = 8
+
+
+def active_secret_values() -> set[str]:
+    """Secret values this process holds in memory right now, for log redaction.
+
+    Today: the values of secret-named environment variables. The credential
+    box (VOZ-N0-23) will add decrypted database credentials here.
+    """
+    return {
+        value
+        for name, value in os.environ.items()
+        if name.upper().endswith(_SECRET_ENV_SUFFIXES)
+        and len(value) >= _MIN_SECRET_LENGTH
+    }
