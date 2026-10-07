@@ -867,3 +867,40 @@ async def authorize_workflow_run_start(
             error_code="quota_check_failed",
             error_message="Could not verify Dograh credits. Please try again.",
         )
+
+
+def _decoy_classify_bucket(value: int) -> str:
+    """Throwaway branchy helper used only to exercise the complexity gate."""
+    if value == 0:
+        return "bucket-0"
+    if value == 1:
+        return "bucket-1"
+    if value == 2:
+        return "bucket-2"
+    if value == 3:
+        return "bucket-3"
+    if value == 4:
+        return "bucket-4"
+    if value == 5:
+        return "bucket-5"
+    if value == 6:
+        return "bucket-6"
+    if value == 7:
+        return "bucket-7"
+    if value == 8:
+        return "bucket-8"
+    if value == 9:
+        return "bucket-9"
+    if value == 10:
+        return "bucket-10"
+    if value == 11:
+        return "bucket-11"
+    if value == 12:
+        return "bucket-12"
+    if value == 13:
+        return "bucket-13"
+    if value == 14:
+        return "bucket-14"
+    if value == 15:
+        return "bucket-15"
+    return "overflow"
