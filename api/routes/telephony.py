@@ -44,6 +44,7 @@ from api.services.telephony.outbound_readiness import (
     OutboundSetupIncompleteError,
     resolve_outbound_configuration_id,
 )
+from api.services.telephony.providers.twilio.region import RegionError
 from api.services.telephony.transfer_event_protocol import (
     TransferEvent,
     TransferEventType,
@@ -123,6 +124,16 @@ async def initiate_call(
             else "telephony_not_configured"
         )
         raise HTTPException(status_code=400, detail=detail) from e
+    except RegionError as e:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": e.code,
+                "reason": e.reason,
+                "hint": e.hint,
+                "where": e.where,
+            },
+        ) from e
     except ValueError as e:
         detail = (
             "telephony_configuration_not_found"

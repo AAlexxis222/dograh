@@ -389,3 +389,78 @@ def test_region_error_is_classified_as_a_user_config_failure_with_its_code_and_h
     assert failure.code == "carrier-region-credentials-missing"
     assert failure.external_message == "add credentials.ie1"
     assert failure.retryable is False
+
+
+# --- outbound call routes answer a named 422 for region errors (VOZ-AC-B4-41) ---
+
+
+def _region_error():
+    return RegionError(
+        "carrier_region_credentials_missing",
+        "no credentials for region ie1",
+        "add credentials.ie1 to the twilio configuration",
+    )
+
+
+def _assert_named_422(exc_info):
+    exc = exc_info.value
+    assert exc.status_code == 422
+    assert exc.detail["code"] == "carrier_region_credentials_missing"
+    assert exc.detail["reason"]
+    assert exc.detail["hint"]
+    assert exc.detail["where"]
+
+
+@pytest.mark.asyncio
+async def test_initiate_call_route_answers_422_for_region_error(monkeypatch):
+    from fastapi import HTTPException
+
+    from api.routes import telephony as telephony_routes
+    from api.services import organization_preferences
+
+    monkeypatch.setattr(
+        organization_preferences,
+        "get_organization_preferences",
+        AsyncMock(return_value=MagicMock()),
+    )
+    monkeypatch.setattr(
+        telephony_routes, "resolve_outbound_configuration_id", AsyncMock(return_value=7)
+    )
+    monkeypatch.setattr(
+        telephony_routes,
+        "get_telephony_provider_by_id",
+        AsyncMock(side_effect=_region_error()),
+    )
+    request = telephony_routes.InitiateCallRequest(
+        workflow_id=1, phone_number="+34600000000"
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await telephony_routes.initiate_call(request, MagicMock())
+    _assert_named_422(exc_info)
+
+
+@pytest.mark.asyncio
+async def test_public_agent_route_answers_422_for_region_error(monkeypatch):
+    from fastapi import HTTPException
+
+    from api.routes import public_agent
+
+    monkeypatch.setattr(
+        public_agent, "resolve_outbound_configuration_id", AsyncMock(return_value=7)
+    )
+    monkeypatch.setattr(
+        public_agent,
+        "get_telephony_provider_by_id",
+        AsyncMock(side_effect=_region_error()),
+    )
+    target = MagicMock()
+    target.workflow.user_id = 1
+    with pytest.raises(HTTPException) as exc_info:
+        await public_agent._execute_resolved_target(
+            target,
+            MagicMock(telephony_configuration_id=None),
+            use_draft=False,
+            api_key_id=None,
+            api_key_created_by=None,
+        )
+    _assert_named_422(exc_info)

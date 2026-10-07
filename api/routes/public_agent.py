@@ -25,6 +25,7 @@ from api.services.telephony.outbound_readiness import (
     OutboundSetupIncompleteError,
     resolve_outbound_configuration_id,
 )
+from api.services.telephony.providers.twilio.region import RegionError
 from api.services.workflow.initial_context import merge_external_initial_context
 from api.services.workflow.run_creation import prepare_workflow_run_inputs
 from api.services.workflow_run_failure import mark_workflow_run_failed
@@ -213,6 +214,16 @@ async def _execute_resolved_target(
         raise HTTPException(
             status_code=400,
             detail="Telephony provider not configured for this organization",
+        ) from e
+    except RegionError as e:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": e.code,
+                "reason": e.reason,
+                "hint": e.hint,
+                "where": e.where,
+            },
         ) from e
     except ValueError as e:
         detail = (
