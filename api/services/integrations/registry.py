@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from api.errors.failure import ErrorSource, classify_exception, log_failure
@@ -144,3 +145,21 @@ async def run_completion_handlers(
         if package_result:
             results.update(package_result)
     return results
+
+
+def is_active(name: str, org_entry: Any) -> bool:
+    """Whether observability integration ``name`` may receive an org's call data.
+
+    ``org_entry`` is what the org itself configured for ``name``, as the
+    runtime holds it: its registered Langfuse credentials, or the data of a
+    ``name`` node in one of its workflows; ``None`` when it configured nothing.
+    Environment variables never count: a deployment-wide credential must not
+    export the calls of a client that did not opt in. An entry can still
+    switch itself off with ``<name>_enabled = False``.
+    """
+    if not org_entry:
+        return False
+    enabled_flag = f"{name}_enabled"
+    if isinstance(org_entry, Mapping):
+        return org_entry.get(enabled_flag) is not False
+    return getattr(org_entry, enabled_flag, None) is not False

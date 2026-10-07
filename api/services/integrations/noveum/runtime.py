@@ -8,6 +8,7 @@ from api.services.integrations.base import (
     IntegrationRuntimeContext,
     IntegrationRuntimeSession,
 )
+from api.services.integrations.registry import is_active
 
 from .collector import (
     NOVEUM_PAYLOAD_LOG_KEY,
@@ -117,7 +118,7 @@ def create_runtime_sessions(
     noveum_nodes = [
         node
         for node in context.workflow_graph.nodes.values()
-        if node.node_type == "noveum" and getattr(node.data, "noveum_enabled", True)
+        if node.node_type == "noveum" and is_active("noveum", node.data)
     ]
     if not noveum_nodes:
         return []

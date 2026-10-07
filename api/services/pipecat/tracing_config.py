@@ -12,6 +12,7 @@ from api.constants import (
     LANGFUSE_PUBLIC_KEY,
     LANGFUSE_SECRET_KEY,
 )
+from api.services.integrations.registry import is_active
 from pipecat.utils.run_context import get_current_org_id
 from pipecat.utils.tracing.langfuse_helpers import (
     set_trace_public_resolver,
@@ -61,7 +62,8 @@ class _OrgRoutingExporter(SpanExporter):
 
     Spans with a ``dograh.org_id`` attribute whose org has registered
     credentials are forwarded to that org's exporter.  All other spans
-    go to the default exporter (env-var credentials).
+    go to the default exporter, which ``ensure_tracing`` leaves unset so
+    that they are dropped.
     """
 
     def __init__(self, default_exporter):
@@ -148,7 +150,7 @@ class _OrgRoutingExporter(SpanExporter):
                 continue
 
             org_id = span.attributes.get("dograh.org_id") if span.attributes else None
-            if org_id and str(org_id) in self._org_exporters:
+            if org_id and is_active("langfuse", self._org_exporters.get(str(org_id))):
                 org_buckets.setdefault(str(org_id), []).append(span)
             else:
                 default_spans.append(span)
@@ -188,8 +190,7 @@ def _resolve_trace_public() -> bool:
     Deliberately mirrors the routing rule in ``_OrgRoutingExporter.export`` so
     the two can never disagree: an org whose own Langfuse credentials are
     registered gets the visibility it chose in the UI, and every other span —
-    all of them bound for the env-configured project — follows
-    ``LANGFUSE_TRACES_PUBLIC``.
+    dropped at export — follows ``LANGFUSE_TRACES_PUBLIC``.
 
     Routing reads ``dograh.org_id``, stamped from this same context var by
     ``_OrgAttributeSpanProcessor.on_start``, so both see one org id per span.
@@ -205,8 +206,8 @@ def ensure_tracing() -> bool:
 
     Installs an ``_OrgRoutingExporter`` so that spans can be routed to
     org-specific Langfuse projects at export time. Spans without a matching
-    exporter (no env-var defaults, no registered org) are silently dropped, so
-    this is safe to call unconditionally.
+    exporter (no registered org) are silently dropped, so this is safe to call
+    unconditionally.
 
     Idempotent — safe to call from both the pipeline process and the ARQ worker.
     """
@@ -214,18 +215,18 @@ def ensure_tracing() -> bool:
     if _tracing_initialized:
         return True
 
-    # Build the default exporter from env-var credentials (may be None)
-    default_exporter = None
-    if all([LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY]):
-        langfuse_auth = base64.b64encode(
-            f"{LANGFUSE_PUBLIC_KEY}:{LANGFUSE_SECRET_KEY}".encode()
-        ).decode()
-        default_exporter = OTLPSpanExporter(
-            endpoint=f"{LANGFUSE_HOST}/api/public/otel/v1/traces",
-            headers={"Authorization": f"Basic {langfuse_auth}"},
+    # Env-var credentials get no exporter: one deployment serves several
+    # clients, and a client's traces leave only for the Langfuse project that
+    # client registered itself.
+    if LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY:
+        logger.warning(
+            "langfuse_env_credentials_ignored: LANGFUSE_PUBLIC_KEY/"
+            "LANGFUSE_SECRET_KEY are set but export no traces; reason: Langfuse "
+            "is per-org opt-in; hint: register the org's own credentials with "
+            "POST /organizations/langfuse-credentials"
         )
 
-    _org_routing_exporter = _OrgRoutingExporter(default_exporter)
+    _org_routing_exporter = _OrgRoutingExporter(default_exporter=None)
     setup_tracing(service_name="dograh-pipeline", exporter=_org_routing_exporter)
 
     # Spans fan out to per-org Langfuse projects, so trace visibility can't come
@@ -278,7 +279,7 @@ def register_org_langfuse_credentials(
 
 
 def unregister_org_langfuse_credentials(org_id):
-    """Remove org-specific Langfuse credentials. Spans will fall back to the default exporter."""
+    """Remove org-specific Langfuse credentials. The org's spans are then dropped."""
     if not ensure_tracing():
         return
     _org_routing_exporter.unregister_org(org_id)
