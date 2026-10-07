@@ -3,7 +3,7 @@ from typing import Any, Optional
 from loguru import logger
 from posthog import Posthog
 
-from api.constants import POSTHOG_API_KEY, POSTHOG_HOST
+from api.constants import ENABLE_TELEMETRY, POSTHOG_API_KEY, POSTHOG_HOST
 
 _posthog_client: Posthog | None = None
 POSTHOG_SERVER_GROUP_IDENTIFY_DISTINCT_ID = "server-group-identify"
@@ -11,9 +11,13 @@ POSTHOG_ORGANIZATION_GROUP_TYPE = "organization"
 
 
 def get_posthog() -> Posthog | None:
-    """Return the lazily-initialised PostHog client, or None if not configured."""
+    """Return the lazily-initialised PostHog client.
+
+    None unless telemetry is explicitly enabled AND an API key is configured:
+    no opt-in means no client, so nothing can leave the process.
+    """
     global _posthog_client
-    if _posthog_client is None and POSTHOG_API_KEY:
+    if _posthog_client is None and ENABLE_TELEMETRY and POSTHOG_API_KEY:
         _posthog_client = Posthog(POSTHOG_API_KEY, host=POSTHOG_HOST)
     return _posthog_client
 
