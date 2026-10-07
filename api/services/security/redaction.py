@@ -7,6 +7,7 @@ that is the privacy-first choice, since the raw exception values would
 otherwise reach Sentry unredacted.
 """
 
+import os
 import re
 import traceback
 from collections.abc import Iterable
@@ -73,11 +74,39 @@ _PATTERNS = [
 ]
 
 
+_SECRET_ENV_MARKERS: tuple[str, ...] = ("SECRET", "PASSWORD", "TOKEN")
+# Shorter values ("true", "dev") are flags, not secrets; redacting them would
+# mangle every log line that contains the word.
+_MIN_SECRET_LENGTH = 8
+
+
+def _is_secret_env_name(name: str) -> bool:
+    """Secret-named variable: a marker anywhere in the name (``AWS_SECRET_ACCESS_KEY``,
+    ``DB_PASSWORD_FILE``), or a ``_KEY`` suffix (``OPENAI_API_KEY``)."""
+    upper = name.upper()
+    return upper.endswith("_KEY") or any(
+        marker in upper for marker in _SECRET_ENV_MARKERS
+    )
+
+
+def active_secret_values() -> set[str]:
+    """Secret values this process holds in memory right now, for log redaction.
+
+    Today: the values of secret-named environment variables. The log patcher
+    binds this set once, at ``setup_logging``, so a secret loaded later (the
+    decrypted database credentials of VOZ-N0-23) is not redacted until the
+    credential box rebuilds that binding with a refreshed set.
+    """
+    return {
+        value
+        for name, value in os.environ.items()
+        if _is_secret_env_name(name) and len(value) >= _MIN_SECRET_LENGTH
+    }
+
+
 def known_secret_values() -> tuple[str, ...]:
     """Secret values held by this process, longest first, so a secret that is a
     prefix of another cannot leave the tail of the longer one in clear."""
-    from api.services.configuration.secrets_registry import active_secret_values
-
     return tuple(sorted(active_secret_values(), key=len, reverse=True))
 
 

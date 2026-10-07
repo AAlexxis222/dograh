@@ -111,7 +111,7 @@ def test_masks_registered_secret_values():
 def test_known_secret_values_are_longest_first(monkeypatch):
     # A secret that is a prefix of another must not leave the tail in clear.
     monkeypatch.setattr(
-        "api.services.configuration.secrets_registry.active_secret_values",
+        "api.services.security.redaction.active_secret_values",
         lambda: ["abcdefgh", "abcdefghTAILTAIL"],
     )
     values = known_secret_values()
@@ -146,7 +146,7 @@ def test_keeps_urls_without_userinfo():
 
 
 def test_active_secret_values_reads_secret_named_env(monkeypatch):
-    from api.services.configuration.secrets_registry import active_secret_values
+    from api.services.security.redaction import active_secret_values
 
     secret_named = {
         "CANARY_API_KEY": "canary-api-key-value",
@@ -258,7 +258,7 @@ def test_secret_set_is_computed_once_at_setup(capsys, monkeypatch, real_logging)
         return {"canary-secret-xyz"}
 
     monkeypatch.setattr(
-        "api.services.configuration.secrets_registry.active_secret_values",
+        "api.services.security.redaction.active_secret_values",
         counting_active_secret_values,
     )
     monkeypatch.setattr(logging_config, "SERIALIZE_LOG_OUTPUT", False)

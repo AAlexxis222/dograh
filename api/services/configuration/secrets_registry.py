@@ -16,7 +16,6 @@ and lists of strings.
 from __future__ import annotations
 
 import copy
-import os
 from collections.abc import Iterator
 from typing import Any
 
@@ -209,33 +208,3 @@ def mask_secrets(document: dict[str, Any] | None) -> dict[str, Any] | None:
             ):
                 container[key] = [mask_key(item) for item in value]
     return masked
-
-
-_SECRET_ENV_MARKERS: tuple[str, ...] = ("SECRET", "PASSWORD", "TOKEN")
-# Shorter values ("true", "dev") are flags, not secrets; redacting them would
-# mangle every log line that contains the word.
-_MIN_SECRET_LENGTH = 8
-
-
-def _is_secret_env_name(name: str) -> bool:
-    """Secret-named variable: a marker anywhere in the name (``AWS_SECRET_ACCESS_KEY``,
-    ``DB_PASSWORD_FILE``), or a ``_KEY`` suffix (``OPENAI_API_KEY``)."""
-    upper = name.upper()
-    return upper.endswith("_KEY") or any(
-        marker in upper for marker in _SECRET_ENV_MARKERS
-    )
-
-
-def active_secret_values() -> set[str]:
-    """Secret values this process holds in memory right now, for log redaction.
-
-    Today: the values of secret-named environment variables. The log patcher
-    binds this set once, at ``setup_logging``, so a secret loaded later (the
-    decrypted database credentials of VOZ-N0-23) is not redacted until the
-    credential box rebuilds that binding with a refreshed set.
-    """
-    return {
-        value
-        for name, value in os.environ.items()
-        if _is_secret_env_name(name) and len(value) >= _MIN_SECRET_LENGTH
-    }
