@@ -1,6 +1,8 @@
-// Validates a PR description against .github/pull_request_template.md (skill `pr-ready`).
-// Shared by the CI job (.github/workflows/xpand-pr-body.yml, job pr-body).
-// CLI: node check-body.mjs <body-file> [--no-attribution] [--head-sha <sha>]  → exit 1 + one line per problem.
+// Validates a PR description against .github/PULL_REQUEST_TEMPLATE.md. Used by .github/workflows/xpand-pr-body.yml.
+// source: xpand plugin tools/pr-gate @5449572
+// CLI: node check-body.mjs <body-file> [--no-attribution] [--head-sha <sha>] [--changed-files <file>] [--migration-prefix <prefix>]...
+//      node check-body.mjs <body-file> --print-reviewed   → prints the REVIEWED sha (or nothing), exit 0
+//      validation exits 1 + one line per problem.
 
 const SECTIONS = ['Blast radius', 'Gate / rollback', 'Proof', 'Confidence', 'Review']
 
@@ -34,8 +36,28 @@ export function reviewedSha(body) {
   return shas.length === 1 ? shas[0] : null
 }
 
-/** → list of problems; empty list = valid. headSha: when given, `REVIEWED: <sha>` must match it. */
-export function checkBody(body, { noAttribution = false, headSha = null } = {}) {
+const PRINCIPLES_RE = /^ {0,3}\**PRINCIPLES\**:\**[ \t]*(.*)$/gim
+const PRINCIPLES_OK = /^(n\/a \(no code\)|\d+ MAJOR \/ \d+ MINOR[ \t]*(→|->)[ \t]*(fixed\b.*|accepted:[ \t]*\S.*))$/i
+const REHEARSAL_RE = /^ {0,3}\**MIGRATION-REHEARSAL:?\**:?[ \t]*\S.*?[ \t]*(→|->)[ \t]*\S.*$/im
+
+function principlesProblems(review) {
+  if (!review) return []
+  const lines = [...review.matchAll(PRINCIPLES_RE)].map((m) => m[1].trim())
+  if (lines.length === 0) return ['"## Review" has no line "PRINCIPLES: <n> MAJOR / <n> MINOR → <fixed | accepted: why>" (or "PRINCIPLES: n/a (no code)")']
+  if (lines.length > 1) return [`"## Review" has ${lines.length} PRINCIPLES lines: keep only one`]
+  return PRINCIPLES_OK.test(lines[0]) ? [] : [`PRINCIPLES line "${lines[0]}" must read "<n> MAJOR / <n> MINOR → <fixed | accepted: why>" or "n/a (no code)"`]
+}
+
+function rehearsalProblems(text, { changedFiles = null, migrationPrefixes = [] }) {
+  const proof = sections(text, 'Proof')[0] ?? ''
+  const touches = (changedFiles ?? []).some((f) => migrationPrefixes.some((p) => f.startsWith(p)))
+  if (!touches || REHEARSAL_RE.test(proof)) return []
+  return [`this PR touches migrations (${migrationPrefixes.join(', ')}): "## Proof" needs "MIGRATION-REHEARSAL: <test or command> → <result>" run on a database seeded with every row shape the migration reads`]
+}
+
+/** → list of problems; empty list = valid. headSha: when given, `REVIEWED: <sha>` must match it. changedFiles + migrationPrefixes: a migration touch requires MIGRATION-REHEARSAL. */
+export function checkBody(body, options = {}) {
+  const { noAttribution = false, headSha = null } = options
   const problems = []
   const text = visible(body ?? '')
   for (const name of SECTIONS) {
@@ -59,6 +81,8 @@ export function checkBody(body, { noAttribution = false, headSha = null } = {}) 
   else if (reviewed && headSha && !headSha.startsWith(reviewed)) {
     problems.push(`review covered ${reviewed}, but the PR head is ${headSha.slice(0, 12)}: re-run the review on the new commits and update the line`)
   }
+  problems.push(...principlesProblems(review))
+  problems.push(...rehearsalProblems(text, options))
   if (noAttribution && /claude|anthropic/i.test(body ?? '')) problems.push('mentions Claude/Anthropic (forbidden in the Dograh fork, VOZ-AC-B9-27)')
   return problems
 }
@@ -67,16 +91,25 @@ if (process.argv[1]?.endsWith('check-body.mjs')) {
   const { readFileSync } = await import('node:fs')
   const args = process.argv.slice(2)
   const file = args[0]
-  if (!file) { console.error('usage: node check-body.mjs <body-file> [--no-attribution] [--head-sha <sha>]'); process.exit(2) }
+  if (!file) { console.error('usage: node check-body.mjs <body-file> [--print-reviewed | [--no-attribution] [--head-sha <sha>] [--changed-files <file>] [--migration-prefix <prefix>]...]'); process.exit(2) }
+  const fail = (msg) => { console.error(`pr-body: ${msg}`); process.exit(2) }
   if (args.includes('--print-reviewed')) {
     const sha = reviewedSha(readFileSync(file, 'utf8'))
     if (sha) console.log(sha)
     process.exit(0)
   }
-  const shaAt = args.indexOf('--head-sha')
+  const valueAt = (i) => (args[i + 1] === undefined || args[i + 1].startsWith('--') ? fail(`${args[i]} needs a value`) : args[i + 1])
+  const valueOf = (flag) => { const i = args.indexOf(flag); return i > 0 ? valueAt(i) : null }
+  const changed = valueOf('--changed-files')
+  let changedFiles = null
+  if (changed) {
+    try { changedFiles = readFileSync(changed, 'utf8').split(/\r?\n/).filter(Boolean) } catch { fail(`cannot read --changed-files ${changed}`) }
+  }
   const problems = checkBody(readFileSync(file, 'utf8'), {
     noAttribution: args.includes('--no-attribution'),
-    headSha: shaAt > 0 ? args[shaAt + 1] : null,
+    headSha: valueOf('--head-sha'),
+    changedFiles,
+    migrationPrefixes: args.flatMap((a, i) => (a === '--migration-prefix' ? [valueAt(i)] : [])),
   })
   for (const p of problems) console.error(`pr-body: ${p}`)
   process.exit(problems.length ? 1 : 0)

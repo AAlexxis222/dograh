@@ -8,7 +8,23 @@ name: xpand-pr-body
 # Consequence: changes to the gate take effect only after they are merged into the default branch, and
 # while the default branch has no such file pr-body does not run at all (also for PRs into other bases).
 # Those PRs' bodies must carry a local run instead:
-#   node scripts/xpand/pr-gate/check-body.mjs <body.md> --no-attribution --head-sha $(git rev-parse HEAD)
+#   node scripts/xpand/pr-gate/check-body.mjs <body.md> --no-attribution --head-sha $(git rev-parse HEAD) \
+#     --changed-files <names.txt> --migration-prefix api/alembic/versions/
+# A PR that adds workflow lines naming `pr-body` or `principles-mechanical`, or touches a gate file
+# (.github/workflows/{principles-mechanical,xpand-pr-body}.yml, scripts/xpand/principles/{ratchet.py,repo.json,
+# golangci.yml,ruff.toml,eslint.config.mjs,package.json,package-lock.json}, scripts/xpand/pr-gate/{check-body.mjs,
+# reviewed-sha.sh}), fails in the "No decoy or weakened gate" step: that stops an accidental or casual decoy
+# check with the same name (not a determined one). Any PR that adds or edits such a line, even a comment in
+# this file, needs the break-glass below.
+# The required checks are pinned to the GitHub Actions app (app_id 15368), so a commit status posted
+# with a personal token can't satisfy them.
+#
+# Break-glass (Alexis only, e.g. this gate is broken on the default branch). Current required checks: guards, pr-body.
+#   gh api -X DELETE repos/AAlexxis222/dograh/branches/feat/foundations-base/protection/required_status_checks/contexts -f "contexts[]=pr-body"
+#   ...merge the fix..., then re-add it WITH the app pin (the contexts endpoint drops it):
+#   gh api -X PATCH repos/AAlexxis222/dograh/branches/feat/foundations-base/protection/required_status_checks --input checks.json
+#   where checks.json = {"strict": true, "checks": [{"context": "guards", "app_id": 15368}, {"context": "pr-body", "app_id": 15368}]}
+#   (keep every required check in the list; add {"context": "principles-mechanical", "app_id": 15368} once it is required)
 on:
   pull_request_target:
     types: [opened, edited, synchronize, reopened]
@@ -40,6 +56,24 @@ jobs:
           # Upstream commits legitimately carry vendor co-author trailers: exclude them, as xpand-guards.yml does.
           git fetch -q https://github.com/dograh-hq/dograh.git main:refs/xpand/upstream-main
           bash scripts/xpand/check_no_ai_attribution.sh "origin/$BASE_REF" refs/xpand/pr-head refs/xpand/upstream-main
+      - name: No decoy or weakened gate in the PR (files fetched as objects, never checked out)
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # Separate assignments: a git failure must fail this step (closed), not read as "no hits".
+          # --no-renames lists both the old and the new path of a rename, so moving a gate file away is caught.
+          names=$(git diff --no-renames --name-only "origin/$BASE_REF...refs/xpand/pr-head")
+          printf '%s\n' "$names" > "$RUNNER_TEMP/changed.txt"
+          added=$(git diff -U0 "origin/$BASE_REF...refs/xpand/pr-head" -- .github/workflows)
+          if printf '%s\n' "$added" | grep -qE '^\+.*(pr-body|principles-mechanical)'; then
+            echo "pr-body: this PR adds workflow lines naming a required gate; gate changes need the break-glass in xpand-pr-body.yml" >&2
+            exit 1
+          fi
+          gate='^(\.github/workflows/(principles-mechanical|xpand-pr-body)\.yml|scripts/xpand/pr-gate/(check-body\.mjs|reviewed-sha\.sh)|scripts/xpand/principles/(ratchet\.py|repo\.json|golangci\.yml|ruff\.toml|eslint\.config\.mjs|package\.json|package-lock\.json))$'
+          if printf '%s\n' "$names" | grep -qE "$gate"; then
+            echo "pr-body: this PR changes a gate file (principles ratchet, pr-body script or workflow); that needs the break-glass in xpand-pr-body.yml" >&2
+            exit 1
+          fi
       - name: Check PR description (pr-ready sections, verdict, REVIEWED sha, no attribution)
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
@@ -50,4 +84,4 @@ jobs:
           printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
           git fetch -q origin "refs/pull/$PR/head"
           ok_sha=$(bash scripts/xpand/pr-gate/reviewed-sha.sh "$RUNNER_TEMP/pr-body.md" "$HEAD_SHA" "origin/$BASE_REF")
-          node scripts/xpand/pr-gate/check-body.mjs "$RUNNER_TEMP/pr-body.md" --no-attribution --head-sha "$ok_sha"
+          node scripts/xpand/pr-gate/check-body.mjs "$RUNNER_TEMP/pr-body.md" --no-attribution --head-sha "$ok_sha" --changed-files "$RUNNER_TEMP/changed.txt" --migration-prefix api/alembic/versions/

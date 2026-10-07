@@ -18,15 +18,19 @@
 <!-- flag/config + default OFF | revert-only | ONE-WAY DOOR: what and why -->
 
 ## Proof
-<!-- commands run + result (build/lint/test), runtime logs, screenshots. Old path with gate OFF, new path with gate ON. -->
+<!-- commands run + result (build/lint/test), runtime logs, screenshots. Old path with gate OFF, new path with gate ON.
+If the PR touches migrations: MIGRATION-REHEARSAL: <test or command> → <result> (DB seeded with every row shape).
+If it is part of a planned merge list sharing files with another PR: MERGE-ORDER: <order> → <result per step>. -->
 
 ## Confidence
 <!-- high / medium / low per area, one reason each -->
 
 ## Review
-<!-- Required, checked by the pr-body gate: the two lines below, as adversarial-reviewer prints them, for the PR head commit.
+<!-- Required, checked by the pr-body gate: the two lines below, as adversarial-reviewer prints them, for the PR head commit,
+plus the principles-reviewer line.
 VERDICT: SAFE TO MERGE
 REVIEWED: <head commit sha>
+PRINCIPLES: <n> MAJOR / <n> MINOR → <fixed | accepted: why>   (or: PRINCIPLES: n/a (no code))
 Then: what was fixed / pushed back. -->
 
 ## XPAND obligations (B9 §8.3)
