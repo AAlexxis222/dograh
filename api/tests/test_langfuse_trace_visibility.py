@@ -115,7 +115,17 @@ def test_visibility_agrees_with_routing(exporter):
         assert resolve(None) is routed_to_own_project
 
 
-def test_trace_url_is_none_for_org_that_did_not_opt_in(exporter):
+def test_trace_url_is_none_for_org_that_did_not_opt_in(exporter, monkeypatch):
+    # A deployment-wide Langfuse project: the old fallback built a link to it.
+    monkeypatch.setattr(
+        tracing_config,
+        "LANGFUSE_HOST",
+        "https://env-langfuse.example.com",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tracing_config, "LANGFUSE_PROJECT_ID", "env-project", raising=False
+    )
     assert tracing_config.get_trace_url("abc", org_id=ORG) is None
 
 

@@ -10,7 +10,6 @@ from api.constants import (
     LANGFUSE_PUBLIC_KEY,
     LANGFUSE_SECRET_KEY,
 )
-from api.services.integrations.registry import is_active
 from pipecat.utils.run_context import get_current_org_id
 from pipecat.utils.tracing.langfuse_helpers import (
     set_trace_public_resolver,
@@ -65,6 +64,7 @@ class _OrgRoutingExporter(SpanExporter):
     """
 
     def __init__(self, default_exporter):
+        # This fork never passes a default exporter (opt-in only); kept to stay close to upstream.
         self._default_exporter = default_exporter
         self._org_exporters = {}
         self._org_hosts = {}
@@ -148,7 +148,7 @@ class _OrgRoutingExporter(SpanExporter):
                 continue
 
             org_id = span.attributes.get("dograh.org_id") if span.attributes else None
-            if org_id and is_active("langfuse", self._org_exporters.get(str(org_id))):
+            if org_id and self.has_org(org_id):
                 org_buckets.setdefault(str(org_id), []).append(span)
             else:
                 default_spans.append(span)

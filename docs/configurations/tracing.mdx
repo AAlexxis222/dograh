@@ -128,7 +128,7 @@ Traces sent to your own Langfuse project are private by default — opening a tr
 A public trace is readable by anyone holding its URL, with no Langfuse login, and it exposes the full call transcript, prompts, and tool payloads. Only enable it if you intend to share trace links outside your Langfuse project.
 </Warning>
 
-`LANGFUSE_TRACES_PUBLIC` is the equivalent switch for the Langfuse project configured by environment variables. It has no effect on organizations that have connected their own Langfuse project — those follow the setting above.
+`LANGFUSE_TRACES_PUBLIC` only sets the visibility of spans that follow the environment default. Organizations that have connected their own Langfuse project follow the setting above, and environment credentials export nothing (see the note below).
 
 <Note>
 The Langfuse [environment variables](/developer/environment-variables#tracing-langfuse) (`LANGFUSE_SECRET_KEY`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_HOST`, `LANGFUSE_PROJECT_ID`) no longer export any traces, and calls from organizations that did not register their own Langfuse credentials are not exported at all. Each organization opts in by registering its own Langfuse credentials as described above.
