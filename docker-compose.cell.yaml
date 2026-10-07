@@ -1,0 +1,63 @@
+# Cell overlay: hardened deployment for one client cell.
+# Apply: docker compose -f docker-compose.yaml -f docker-compose.cell.yaml ...
+# Required secrets are listed in deploy/cell/.env.reference; compose fails if one is unset.
+# The base file interpolates POSTGRES_PASSWORD, REDIS_PASSWORD and the MinIO credentials into the
+# api DATABASE_URL, REDIS_URL and MINIO_* settings, so requiring them here keeps api in step.
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "50m", max-file: "5" }
+
+# Cell environment of api; the roles that share its code (call, arq, coordinators) reuse it.
+x-cell-env: &cell-env
+  ENABLE_TELEMETRY: "false"
+  POSTHOG_API_KEY: ""
+  POSTHOG_HOST: ""
+  TELEPHONY_WS_TOKEN_ENFORCE: "true"
+  TELEPHONY_WS_TOKEN_SECRET: "${TELEPHONY_WS_TOKEN_SECRET:?TELEPHONY_WS_TOKEN_SECRET must be set}"
+  DOGRAH_DEVOPS_SECRET: "${DOGRAH_DEVOPS_SECRET:?DOGRAH_DEVOPS_SECRET must be set}"
+  ENABLE_SIGNUP: "false"
+  LOG_LEVEL: "INFO"
+  SERIALIZE_LOG_OUTPUT: "true"
+  URL_GUARD_ENFORCE: "true"
+  AWS_ACCESS_KEY_ID: ""
+  AWS_SECRET_ACCESS_KEY: ""
+
+services:
+  postgres:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
+  redis:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+    command: >
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+      --appendonly yes --appendfsync everysec
+  minio:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}"
+  api:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+    environment: *cell-env
+  ui:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      ENABLE_TELEMETRY: "false"
+      POSTHOG_KEY: ""
+      POSTHOG_HOST: ""
+  nginx: { restart: unless-stopped, logging: *logging }
+  coturn: { restart: unless-stopped, logging: *logging }
+  # One-shot init container: runs to completion, so no restart policy and no ports.
+  dograh-init: { logging: *logging }
+  cloudflared: !reset null
