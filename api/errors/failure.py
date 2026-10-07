@@ -84,6 +84,16 @@ def _redact_quoted_secret_assignment(match: re.Match[str]) -> str:
     return f"{match.group('prefix')}{quote}[REDACTED]{quote}"
 
 
+def fold_for_gate(text: str) -> str:
+    """Lowercase ``text`` the way ``re.IGNORECASE`` compares it, for substring gates.
+
+    casefold() already folds the long s and the Kelvin sign; the dotless i and
+    the dotted capital I (which casefolds to "i" + a combining dot) only match
+    "i" under IGNORECASE, so they are mapped here.
+    """
+    return text.casefold().replace("ı", "i").replace("i̇", "i")
+
+
 def redact_credentials(text: str) -> str:
     """Replace credential shapes in ``text`` with ``[REDACTED]``; never truncates."""
 
@@ -92,9 +102,8 @@ def redact_credentials(text: str) -> str:
     text = _AUTH_HEADER_RE.sub(r"\1[REDACTED]", text)
     # The two assignment regexes dominate the cost on a line with no secret name
     # (~70us on 200 chars); every name in _SECRET_NAME_PATTERN contains one of
-    # these markers, so without one neither can match. casefold() mirrors
-    # IGNORECASE (it folds the long s and the Kelvin sign too).
-    folded = text.casefold()
+    # these markers, so without one neither can match.
+    folded = fold_for_gate(text)
     if not any(marker in folded for marker in _SECRET_NAME_MARKERS):
         return text
     text = _QUOTED_SECRET_ASSIGNMENT_RE.sub(_redact_quoted_secret_assignment, text)

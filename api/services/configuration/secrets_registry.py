@@ -229,8 +229,10 @@ def _is_secret_env_name(name: str) -> bool:
 def active_secret_values() -> set[str]:
     """Secret values this process holds in memory right now, for log redaction.
 
-    Today: the values of secret-named environment variables. The credential
-    box (VOZ-N0-23) will add decrypted database credentials here.
+    Today: the values of secret-named environment variables. The log patcher
+    binds this set once, at ``setup_logging``, so a secret loaded later (the
+    decrypted database credentials of VOZ-N0-23) is not redacted until the
+    credential box rebuilds that binding with a refreshed set.
     """
     return {
         value

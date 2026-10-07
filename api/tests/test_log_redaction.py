@@ -6,6 +6,8 @@ import pytest
 from loguru import logger
 
 from api import logging_config
+from api.errors import failure
+from api.errors.failure import redact_credentials, redact_failure_message
 from api.services.security.redaction import known_secret_values, redact
 
 CANARY_KEY = "sk-live-ABCDEF1234567890"
@@ -35,6 +37,9 @@ def test_masks_provider_keys_and_bearer_tokens():
         "612-345-678",
         "612.34.56.78",
         "34612345678",
+        "+491234567890123",
+        "00491234567890123",
+        "612.345.678",
     ],
 )
 def test_masks_spanish_and_e164_phones(phone):
@@ -44,6 +49,11 @@ def test_masks_spanish_and_e164_phones(phone):
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
+        ("msg=call+me+at+612345678", "msg=call+me+at+<redacted:phone>"),
+        ("a=%22%2B34612345678", "a=%22<redacted:phone>"),
+        ("Hello%20%2B34612345678", "Hello%20<redacted:phone>"),
+        ("x%3A%2b34612345678", "x%3A<redacted:phone>"),
+        ("q=%252B34612345678", "q=<redacted:phone>"),
         ("from sip:34612345678@host.example", "from sip:<redacted:phone>@host.example"),
         ("to tel:+34612345678 now", "to tel:<redacted:phone> now"),
         ("to TEL:%2B34612345678 now", "to TEL:<redacted:phone> now"),
@@ -64,10 +74,33 @@ def test_masks_digits_of_sip_and_tel_uris(text, expected):
         "order 1234567890123 done",
         "latency 0.712345678 ms",
         "ts 1759856123.612345678 done",
+        "+1234567890123456",
+        "took 712.345678 s",
+        "latency=812.123456",
+        "amount 71234.5678",
+        "v=6543.21987",
     ],
 )
 def test_keeps_dates_times_and_ids(text):
     assert redact(text) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "authorızation=abcdef123",
+        "sıgnature=abcdef123",
+        "sİgnature=abcdef123",
+        "x-api-kEy: abcdef123",
+        "no secret name here",
+    ],
+)
+def test_marker_gate_matches_ungated_redaction(text, monkeypatch):
+    gated = redact_failure_message(text)
+    monkeypatch.setattr(failure, "_SECRET_NAME_MARKERS", ("",))  # gate always open
+    assert gated == redact_failure_message(text) == redact_credentials(text)
+    if "=" in text or ":" in text:
+        assert "abcdef123" not in gated
 
 
 def test_masks_registered_secret_values():

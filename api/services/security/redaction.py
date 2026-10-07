@@ -11,7 +11,7 @@ import re
 import traceback
 from collections.abc import Iterable
 
-from api.errors.failure import redact_credentials
+from api.errors.failure import fold_for_gate, redact_credentials
 
 _PHONE = "<redacted:phone>"
 
@@ -40,25 +40,34 @@ _PATTERNS = [
         re.compile(r"(?i)\b(tel:)(?:%2B|\+)?\d(?:[.\-()]*\d)*"),
         rf"\1{_PHONE}",
     ),
-    # International: "+", "%2B" or "00" then 8-14 digits, each separated by at
-    # most two of space . - ( ), so "(+34) 612 345 678" and "+1 (415) 555-2671"
-    # go whole, prefix included. The lookbehind keeps the "+02:00" of a
-    # timestamp out (it follows a digit).
+    # International: "+", "00", or a url-encoded "+" ("%2B", "%252B") then 8-15
+    # digits (E.164), each separated by at most two of space . - ( ), so
+    # "(+34) 612 345 678" and "+1 (415) 555-2671" go whole, prefix included.
+    # The lookbehind keeps the "+02:00" of a timestamp out (it follows a digit);
+    # the encoded form needs none, as "%22%2B34..." and "Hello%20%2B34..." are
+    # common in logged URLs and bodies.
     (
-        ("+", "%2b", "00"),
+        ("+", "%2b", "%252b", "00"),
         re.compile(
-            r"(?<![\w+])\(?(?:\+|%2[Bb]|00(?=[1-9]))(?:[ .\-()]{0,2}\d){8,14}(?!\d)"
+            r"(?:(?<![\w+])\(?(?:\+|00(?=[1-9]))|\(?%(?:25)?2[Bb])"
+            r"(?:[ .\-()]{0,2}\d){8,15}(?!\d)"
         ),
         _PHONE,
     ),
     # Spanish number, with or without the bare "34" country code: 9 digits
-    # starting 6-9, single separators allowed. The lookbehind keeps out ISO
-    # dates, UUID segments, longer ids and decimal fractions ("0.712345678").
+    # starting 6-9, single space/hyphen separators allowed; dots only in the
+    # grouped shapes 3-2-2-2 and 3-3-3, so decimals ("712.345678") stay. The
+    # lookbehind keeps out ISO dates, UUID segments, longer ids and decimal
+    # fractions ("0.712345678"). "+" is not in it: "call+me+at+612345678" is a
+    # form-encoded text, and a real "+34..." was already taken above.
     # Accepted false positive: a standalone 9-digit id starting 6-9
     # (workflow_run_id=712345678) is redacted; privacy first.
     (
         ("6", "7", "8", "9"),
-        re.compile(r"(?<![\w.\-+%])(?:34)?[6-9]\d{2}(?:[ .\-]?\d){6}(?!\w)"),
+        re.compile(
+            r"(?<![\w.\-%])(?:34)?[6-9]\d{2}"
+            r"(?:(?:[ \-]?\d){6}|(?:\.\d{2}){3}|(?:\.\d{3}){2})(?!\w)"
+        ),
         _PHONE,
     ),
 ]
@@ -81,7 +90,7 @@ def redact(text: str, secrets: Iterable[str] | None = None) -> str:
     for value in secrets:
         text = text.replace(value, "<redacted:secret>")
     text = redact_credentials(text)
-    folded = text.casefold()
+    folded = fold_for_gate(text)
     for needles, pattern, repl in _PATTERNS:
         if any(needle in folded for needle in needles):
             text = pattern.sub(repl, text)
