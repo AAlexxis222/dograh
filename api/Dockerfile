@@ -156,6 +156,10 @@ COPY --chown=dograh:dograh \
      ./scripts/drain_web.sh \
      ./scripts/
 
+# Entrypoint of the cell `call` role (drains live calls before uvicorn gets TERM).
+# require_db_head.sh gates every cell role (api and coordinators through the start script, call, arq).
+COPY --chown=dograh:dograh ./scripts/xpand/call_entrypoint.sh ./scripts/xpand/require_db_head.sh ./scripts/xpand/
+
 # ts_validator Node deps (built in ts-deps stage with full node:22-slim image).
 # The validator runs as a short-lived subprocess from api/mcp_server/ts_bridge.py.
 COPY --from=ts-deps --chown=dograh:dograh /ts_validator/node_modules ./api/mcp_server/ts_validator/node_modules
