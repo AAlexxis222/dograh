@@ -88,6 +88,30 @@ def verify_ws_token(
 
 
 _EVENTS_MSG_PREFIX = "telnyx-events:"
+_CONNECT_ACTION_MSG_PREFIX = "twilio-connect-action:"
+
+
+def _mint_run_token(prefix: str, workflow_run_id: Id) -> str | None:
+    """HMAC over ``prefix + run id``; ``None`` when no secret is set.
+
+    The distinct *prefix* keeps tokens minted for different surfaces from being
+    interchangeable.
+    """
+    secret = constants.TELEPHONY_WS_TOKEN_SECRET
+    if not secret:
+        return None
+    msg = f"{prefix}{workflow_run_id}".encode()
+    return hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()
+
+
+def _verify_run_token(prefix: str, workflow_run_id: Id, token: str | None) -> bool:
+    expected = _mint_run_token(prefix, workflow_run_id)
+    if not expected or not token:
+        return False
+    try:
+        return hmac.compare_digest(expected.encode("utf-8"), token.encode("utf-8"))
+    except (TypeError, UnicodeError):
+        return False
 
 
 def mint_events_token(workflow_run_id: Id) -> str | None:
@@ -101,11 +125,7 @@ def mint_events_token(workflow_run_id: Id) -> str | None:
 
     Returns ``None`` when no secret is set, mirroring :func:`mint_ws_token`.
     """
-    secret = constants.TELEPHONY_WS_TOKEN_SECRET
-    if not secret:
-        return None
-    msg = f"{_EVENTS_MSG_PREFIX}{workflow_run_id}".encode()
-    return hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()
+    return _mint_run_token(_EVENTS_MSG_PREFIX, workflow_run_id)
 
 
 def verify_events_token(workflow_run_id: Id, token: str | None) -> bool:
@@ -115,13 +135,26 @@ def verify_events_token(workflow_run_id: Id, token: str | None) -> bool:
     so callers should gate on :func:`token_configured` before treating
     ``False`` as a rejection.
     """
-    expected = mint_events_token(workflow_run_id)
-    if not expected or not token:
-        return False
-    try:
-        return hmac.compare_digest(expected.encode("utf-8"), token.encode("utf-8"))
-    except (TypeError, UnicodeError):
-        return False
+    return _verify_run_token(_EVENTS_MSG_PREFIX, workflow_run_id, token)
+
+
+def mint_connect_action_token(workflow_run_id: Id) -> str | None:
+    """Return the HMAC token for a Twilio ``<Connect action>`` callback URL.
+
+    Bound to the run id alone, so the callback can verify it from its path
+    before touching the database. Twilio keeps the query string of an ``action``
+    URL, so it rides as ``?t=``. ``None`` when no secret is set.
+    """
+    return _mint_run_token(_CONNECT_ACTION_MSG_PREFIX, workflow_run_id)
+
+
+def verify_connect_action_token(workflow_run_id: Id, token: str | None) -> bool:
+    """Constant-time compare for the ``<Connect action>`` callback token.
+
+    ``False`` when no secret is configured or no token was presented, so callers
+    gate on :func:`token_configured` before treating ``False`` as a rejection.
+    """
+    return _verify_run_token(_CONNECT_ACTION_MSG_PREFIX, workflow_run_id, token)
 
 
 def build_media_ws_url(
@@ -166,11 +199,13 @@ def build_media_ws_url(
 
 # Stops at whatever delimits the token in the surrounding document: whitespace,
 # a quote (TwiML/CXML attribute), & (another query param) or < (element text).
-_TOKEN_IN_TEXT = re.compile(r"(token=)[^\s\"'&<>]+")
+# ``t=`` only counts as a query parameter (after ``?`` or ``&``): it is the
+# Twilio ``<Connect action>`` token.
+_TOKEN_IN_TEXT = re.compile(r"(token=|(?<=[?&])t=)[^\s\"'&<>]+")
 
 
 def redact_token(text: str) -> str:
-    """Mask any ``token=…`` in *text* so it is safe to log.
+    """Mask any ``token=…`` (and a ``?t=…`` action token) in *text* so it is safe to log.
 
     Only the query form. Since the carrier token moved into the URL path it is
     no longer masked anywhere — deliberately: uvicorn and nginx both log the

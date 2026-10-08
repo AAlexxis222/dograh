@@ -25,6 +25,22 @@ def classify_telephony_exception(
     except Exception:
         raw_message = type(exc).__name__
     message = raw_message.lower()
+    # Deferred: the provider packages import the factory, which imports this module.
+    from api.services.telephony.providers.twilio.region import RegionError
+
+    if isinstance(exc, RegionError):
+        # The code and hint are stable and already user-actionable (VOZ-AC-B0-28).
+        provider_value = getattr(provider, "value", provider) or "twilio"
+        return DograhFailure(
+            source=ErrorSource.TELEPHONY,
+            type=ErrorType.CONFIG_ERROR,
+            code=exc.code,
+            internal_message=raw_message,
+            external_message=exc.hint,
+            provider=str(provider_value),
+            error_owner="user",
+            retryable=False,
+        )
     if isinstance(exc, ValueError) and any(
         marker in message
         for marker in (
