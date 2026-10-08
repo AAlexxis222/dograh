@@ -61,7 +61,11 @@ from loguru import logger
 
 from api.services.managed_model_services import MPS_CORRELATION_ID_CONTEXT_KEY
 from api.services.workflow import pipecat_engine_callbacks as engine_callbacks
-from api.services.workflow.answer_handling import ANSWER_TERMINAL_REASONS, handle_answer
+from api.services.workflow.answer_handling import (
+    ANSWER_DECIDED_REASONS,
+    ANSWER_TERMINAL_REASONS,
+    handle_answer,
+)
 from api.services.workflow.disposition_extraction import (
     CALL_DISPOSITION_CONTEXT_KEY,
     DispositionExtractionService,
@@ -85,6 +89,7 @@ from api.services.workflow.pipecat_engine_custom_tools import (
 from api.services.workflow.pipecat_engine_variable_extractor import (
     VariableExtractionManager,
 )
+from api.services.workflow.run_ending import get_run_ending
 from api.services.workflow.tools.knowledge_base import (
     retrieve_from_knowledge_base,
 )
@@ -124,6 +129,24 @@ class NodeOpeningResult:
 
     action: Literal["none", "greeting", "llm"]
     playback: SpeechPlayback | None = None
+
+
+# Reasons where our side decides to end the call (see `_mark_run_ending_by_intent`).
+_INTENTIONAL_END_REASONS = frozenset(
+    {
+        EndTaskReason.END_CALL.value,  # the bot's end-call tool or end node
+        EndTaskReason.TRANSFER_CALL.value,  # the bot hands the call to a human
+        EndTaskReason.CALL_TRANSFERRED.value,  # an external PBX took the call over
+        EndTaskReason.CALL_DURATION_EXCEEDED.value,  # our max-duration limit
+        EndTaskReason.USER_IDLE_MAX_DURATION_EXCEEDED.value,  # our idle limit
+        EndTaskReason.VOICEMAIL_DETECTED.value,  # our answer supervisor's verdict
+        # The answer supervisor's own decisions. A named tuple, not
+        # `ANSWER_TERMINAL_REASONS`, so a reason added there later is not marked
+        # until someone decides it is ours (`answer_message_failed` is a failed
+        # playback, not a decision, and a person may be on the line).
+        *ANSWER_DECIDED_REASONS,
+    }
+)
 
 
 class PipecatEngine:
@@ -1264,6 +1287,24 @@ class PipecatEngine:
             )
         await asyncio.shield(self._shutdown_task)
 
+    async def _mark_run_ending_by_intent(self, call_status: str) -> None:
+        """Tell the carrier callback this end is our own decision, before hanging up.
+
+        The run row turns ``completed`` only at the end of teardown, after the
+        hangup and the socket close; this mark closes that window for a caller
+        who already got a proper goodbye. It is an allowlist: only a reason where
+        our side decides to end the call is marked. Everything else, including
+        reasons added later, leaves the caller to hear the "cannot take your
+        call" message, because it may mean the caller is still on the line:
+        ``user_hangup`` is any close of the media socket we did not start, not
+        necessarily the caller hanging up, and ``system_cancelled`` is a dead
+        socket found by the write watchdog.
+        """
+        if call_status not in _INTENTIONAL_END_REASONS:
+            return
+        run_ending = await get_run_ending()
+        await run_ending.mark(self._workflow_run_id)
+
     async def _end_call(
         self,
         call_status: str,
@@ -1284,6 +1325,9 @@ class PipecatEngine:
 
         # Mute the pipeline
         self._mute_pipeline = True
+
+        # Before anything below can hang up or close the socket.
+        await self._mark_run_ending_by_intent(call_status)
 
         # A handoff in flight is invalidated before anything else, so no later
         # phase can activate an agent into a call that is ending.

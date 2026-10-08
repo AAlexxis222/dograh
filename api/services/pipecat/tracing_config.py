@@ -7,8 +7,6 @@ from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
 from api.constants import (
-    LANGFUSE_HOST,
-    LANGFUSE_PROJECT_ID,
     LANGFUSE_PUBLIC_KEY,
     LANGFUSE_SECRET_KEY,
 )
@@ -61,10 +59,12 @@ class _OrgRoutingExporter(SpanExporter):
 
     Spans with a ``dograh.org_id`` attribute whose org has registered
     credentials are forwarded to that org's exporter.  All other spans
-    go to the default exporter (env-var credentials).
+    go to the default exporter, which ``ensure_tracing`` leaves unset so
+    that they are dropped.
     """
 
     def __init__(self, default_exporter):
+        # This fork never passes a default exporter (opt-in only); kept to stay close to upstream.
         self._default_exporter = default_exporter
         self._org_exporters = {}
         self._org_hosts = {}
@@ -148,7 +148,7 @@ class _OrgRoutingExporter(SpanExporter):
                 continue
 
             org_id = span.attributes.get("dograh.org_id") if span.attributes else None
-            if org_id and str(org_id) in self._org_exporters:
+            if org_id and self.has_org(org_id):
                 org_buckets.setdefault(str(org_id), []).append(span)
             else:
                 default_spans.append(span)
@@ -188,8 +188,7 @@ def _resolve_trace_public() -> bool:
     Deliberately mirrors the routing rule in ``_OrgRoutingExporter.export`` so
     the two can never disagree: an org whose own Langfuse credentials are
     registered gets the visibility it chose in the UI, and every other span —
-    all of them bound for the env-configured project — follows
-    ``LANGFUSE_TRACES_PUBLIC``.
+    dropped at export — follows ``LANGFUSE_TRACES_PUBLIC``.
 
     Routing reads ``dograh.org_id``, stamped from this same context var by
     ``_OrgAttributeSpanProcessor.on_start``, so both see one org id per span.
@@ -205,8 +204,8 @@ def ensure_tracing() -> bool:
 
     Installs an ``_OrgRoutingExporter`` so that spans can be routed to
     org-specific Langfuse projects at export time. Spans without a matching
-    exporter (no env-var defaults, no registered org) are silently dropped, so
-    this is safe to call unconditionally.
+    exporter (no registered org) are silently dropped, so this is safe to call
+    unconditionally.
 
     Idempotent — safe to call from both the pipeline process and the ARQ worker.
     """
@@ -214,18 +213,18 @@ def ensure_tracing() -> bool:
     if _tracing_initialized:
         return True
 
-    # Build the default exporter from env-var credentials (may be None)
-    default_exporter = None
-    if all([LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY]):
-        langfuse_auth = base64.b64encode(
-            f"{LANGFUSE_PUBLIC_KEY}:{LANGFUSE_SECRET_KEY}".encode()
-        ).decode()
-        default_exporter = OTLPSpanExporter(
-            endpoint=f"{LANGFUSE_HOST}/api/public/otel/v1/traces",
-            headers={"Authorization": f"Basic {langfuse_auth}"},
+    # Env-var credentials get no exporter: one deployment serves several
+    # clients, and a client's traces leave only for the Langfuse project that
+    # client registered itself.
+    if LANGFUSE_PUBLIC_KEY or LANGFUSE_SECRET_KEY:
+        logger.warning(
+            "langfuse_env_credentials_ignored: LANGFUSE_PUBLIC_KEY/"
+            "LANGFUSE_SECRET_KEY are set but export no traces; reason: Langfuse "
+            "is per-org opt-in; hint: register the org's own credentials with "
+            "POST /organizations/langfuse-credentials"
         )
 
-    _org_routing_exporter = _OrgRoutingExporter(default_exporter)
+    _org_routing_exporter = _OrgRoutingExporter(default_exporter=None)
     setup_tracing(service_name="dograh-pipeline", exporter=_org_routing_exporter)
 
     # Spans fan out to per-org Langfuse projects, so trace visibility can't come
@@ -278,7 +277,7 @@ def register_org_langfuse_credentials(
 
 
 def unregister_org_langfuse_credentials(org_id):
-    """Remove org-specific Langfuse credentials. Spans will fall back to the default exporter."""
+    """Remove org-specific Langfuse credentials. The org's spans are then dropped."""
     if not ensure_tracing():
         return
     _org_routing_exporter.unregister_org(org_id)
@@ -384,7 +383,11 @@ def build_remote_parent_context(trace_id: str | None):
 
 
 def get_trace_url(trace_id: str, org_id=None) -> str | None:
-    """Build a Langfuse trace URL, using org-specific host when available.
+    """Build a Langfuse trace URL for an org that registered its own project.
+
+    Returns ``None`` for any other org: its spans are dropped at export, so a
+    link to the deployment-wide Langfuse would point at a trace that was never
+    sent.
 
     Langfuse v4 dropped the trace entity, and with it the ``/trace/<id>``
     shortcut that resolved the project server-side — it 404s for anything
@@ -396,17 +399,10 @@ def get_trace_url(trace_id: str, org_id=None) -> str | None:
     if org_id is None:
         org_id = get_current_org_id()
 
-    host = None
-    project_id = None
-    if org_id and _org_routing_exporter:
-        host = _org_routing_exporter.get_org_host(str(org_id))
-        if host:
-            project_id = _org_routing_exporter.get_org_project_id(str(org_id))
-    if not host:
-        host = normalize_langfuse_host(LANGFUSE_HOST)
-        project_id = LANGFUSE_PROJECT_ID
-    if not host:
+    if not (org_id and _org_routing_exporter and _org_routing_exporter.has_org(org_id)):
         return None
+    host = _org_routing_exporter.get_org_host(str(org_id))
+    project_id = _org_routing_exporter.get_org_project_id(str(org_id))
 
     if project_id:
         return f"{host}/project/{project_id}/traces/{trace_id}"

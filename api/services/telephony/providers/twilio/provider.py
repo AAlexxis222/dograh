@@ -4,6 +4,7 @@ Twilio implementation of the TelephonyProvider interface.
 
 import json
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from xml.sax.saxutils import escape
 
 import aiohttp
 from fastapi import HTTPException
@@ -20,12 +21,62 @@ from api.services.telephony.base import (
     TelephonyProvider,
 )
 from api.services.telephony.providers.twilio.introduction import introduction_urls
+from api.services.telephony.providers.twilio.region import (
+    cell_policy_from_env,
+    resolve_twilio_endpoint,
+)
 from api.services.telephony.sip import first_sip_string, normalize_sip_headers
 from api.utils.common import get_backend_endpoints
 from api.utils.telephony_address import normalize_telephony_address
 
 if TYPE_CHECKING:
     from fastapi import WebSocket
+
+
+# Where the `<Connect action>` callback is mounted, relative to the telephony
+# router. The route decorator and the URL builder below both use it.
+CONNECT_ACTION_ROUTE = "/twilio/connect-action"
+
+
+def _xml_attr(value: str) -> str:
+    return escape(value, {'"': "&quot;"})
+
+
+def build_connect_action_url(backend_endpoint: str, workflow_run_id: int) -> str:
+    """URL Twilio requests when the ``<Connect>`` ends, i.e. the media socket closed.
+
+    Carries a short HMAC token when ``TELEPHONY_WS_TOKEN_SECRET`` is set; the
+    callback decides by the run's state in our database, so no other
+    information needs to travel in the URL.
+    """
+    url = (
+        f"{backend_endpoint.rstrip('/')}/api/v1/telephony"
+        f"{CONNECT_ACTION_ROUTE}/{workflow_run_id}"
+    )
+    token = ws_auth.mint_connect_action_token(workflow_run_id)
+    return f"{url}?t={token}" if token else url
+
+
+def build_stream_twiml(
+    ws_url: str, action_url: str, status_callback_url: str | None = None
+) -> str:
+    """TwiML that streams the call to *ws_url* and asks *action_url* what to do next.
+
+    There is deliberately no ``<Pause>`` after the ``<Connect>``: when the stream
+    ends, Twilio requests *action_url* and plays its answer instead of leaving
+    the caller in silence.
+    """
+    status_attr = (
+        f' statusCallback="{_xml_attr(status_callback_url)}"'
+        if status_callback_url
+        else ""
+    )
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Connect action="{_xml_attr(action_url)}">
+        <Stream url="{_xml_attr(ws_url)}"{status_attr}></Stream>
+    </Connect>
+</Response>"""
 
 
 class TwilioProvider(TelephonyProvider):
@@ -43,12 +94,25 @@ class TwilioProvider(TelephonyProvider):
 
         Args:
             config: Dictionary containing:
-                - account_sid: Twilio Account SID
-                - auth_token: Twilio Auth Token
+                - account_sid / auth_token: Twilio credentials (legacy flat
+                  form, read as the credentials of region ``us1``)
+                - credentials: per-region credentials, ``{region: {...}}``
+                - region / edge: Twilio region, see ``region.py``
+                - fallback_url: optional ``VoiceFallbackUrl`` for inbound numbers
                 - from_numbers: List of phone numbers to use
+
+        Raises:
+            RegionError: the configured region cannot be used (policy,
+                credentials or edge), see ``region.py``.
         """
-        self.account_sid = config.get("account_sid")
-        self.auth_token = config.get("auth_token")
+        endpoint = resolve_twilio_endpoint(config, cell_policy_from_env())
+        self.region = endpoint.region
+        self.edge = endpoint.edge
+        # The region's own credentials: also the token that signs the
+        # webhooks this region sends us (see verify_webhook_signature).
+        self.account_sid = endpoint.account_sid
+        self.auth_token = endpoint.auth_token
+        self.fallback_url = config.get("fallback_url")
         self.from_numbers = config.get("from_numbers", [])
         self.default_from_number = config.get("default_from_number")
 
@@ -56,7 +120,7 @@ class TwilioProvider(TelephonyProvider):
         if isinstance(self.from_numbers, str):
             self.from_numbers = [self.from_numbers]
 
-        self.base_url = f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}"
+        self.base_url = endpoint.base_url
 
     async def initiate_call(
         self,
@@ -169,18 +233,13 @@ class TwilioProvider(TelephonyProvider):
         """
         Generate TwiML response for starting a call session.
         """
-        _, wss_backend_endpoint = await get_backend_endpoints()
+        backend_endpoint, wss_backend_endpoint = await get_backend_endpoints()
         ws_url = ws_auth.build_media_ws_url(
             wss_backend_endpoint, workflow_id, organization_id, workflow_run_id
         )
-
-        twiml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Connect>
-        <Stream url="{ws_url}"></Stream>
-    </Connect>
-    <Pause length="40"/>
-</Response>"""
+        twiml_content = build_stream_twiml(
+            ws_url, build_connect_action_url(backend_endpoint, workflow_run_id)
+        )
         # Redacted: the stream URL carries a bearer capability token, and this
         # log line is the one place it would otherwise reach a log sink.
         logger.info(f"Twiml content generated - {ws_auth.redact_token(twiml_content)}")
@@ -455,16 +514,7 @@ class TwilioProvider(TelephonyProvider):
             )
 
         endpoint = f"{self.base_url}/IncomingPhoneNumbers/{sid}.json"
-        if webhook_url:
-            data = {
-                "VoiceUrl": webhook_url,
-                "VoiceMethod": "POST",
-            }
-        else:
-            # Clearing — Twilio treats empty string as "unset".
-            data = {
-                "VoiceUrl": "",
-            }
+        data = self._voice_update_data(webhook_url)
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -487,6 +537,23 @@ class TwilioProvider(TelephonyProvider):
         action = "set" if webhook_url else "cleared"
         logger.info(f"Twilio VoiceUrl {action} for {e164} (sid={sid})")
         return ProviderSyncResult(ok=True)
+
+    def _voice_update_data(self, webhook_url: str | None) -> dict[str, str]:
+        if webhook_url:
+            data = {"VoiceUrl": webhook_url, "VoiceMethod": "POST"}
+            if self.fallback_url:
+                data.update(
+                    {
+                        "VoiceFallbackUrl": self.fallback_url,
+                        "VoiceFallbackMethod": "POST",
+                    }
+                )
+            return data
+        # Clearing — Twilio treats empty string as "unset".
+        data = {"VoiceUrl": ""}
+        if self.fallback_url:
+            data["VoiceFallbackUrl"] = ""
+        return data
 
     async def validate_phone_number(self, address: str) -> ProviderSyncResult:
         """Verify PSTN ownership through Twilio's IncomingPhoneNumbers list."""
@@ -556,18 +623,15 @@ class TwilioProvider(TelephonyProvider):
         from fastapi import Response
 
         # Generate StatusCallback URL using same pattern as outbound calls
-        status_callback_attr = ""
+        status_callback_url = None
         if workflow_run_id:
             status_callback_url = f"{backend_endpoint}/api/v1/telephony/twilio/status-callback/{workflow_run_id}"
-            status_callback_attr = f' statusCallback="{status_callback_url}"'
 
-        twiml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Connect>
-        <Stream url="{websocket_url}"{status_callback_attr}></Stream>
-    </Connect>
-    <Pause length="40"/>
-</Response>"""
+        twiml_content = build_stream_twiml(
+            websocket_url,
+            build_connect_action_url(backend_endpoint, workflow_run_id),
+            status_callback_url,
+        )
 
         return Response(content=twiml_content, media_type="application/xml")
 

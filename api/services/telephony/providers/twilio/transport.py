@@ -11,6 +11,7 @@ from api.services.pipecat.audio_mixer import build_audio_out_mixer
 from api.services.pipecat.transport_params import realtime_param_overrides
 from api.services.telephony.factory import load_credentials_for_transport
 
+from .region import cell_policy_from_env, resolve_twilio_endpoint
 from .serializers import TwilioFrameSerializer
 from .strategies import TwilioConferenceStrategy, TwilioHangupStrategy
 
@@ -32,19 +33,23 @@ async def create_transport(
         organization_id, telephony_configuration_id, expected_provider="twilio"
     )
 
-    account_sid = config.get("account_sid")
-    auth_token = config.get("auth_token")
+    endpoint = resolve_twilio_endpoint(config, cell_policy_from_env())
 
-    if not account_sid or not auth_token:
+    if not endpoint.account_sid or not endpoint.auth_token:
         raise ValueError(
             f"Incomplete Twilio configuration for organization {organization_id}"
         )
 
+    # pipecat takes region and edge together or not at all (US1 passes neither).
+    regional_kwargs = (
+        {"region": endpoint.region, "edge": endpoint.edge} if endpoint.edge else {}
+    )
     serializer = TwilioFrameSerializer(
         stream_sid=stream_sid,
         call_sid=call_sid,
-        account_sid=account_sid,
-        auth_token=auth_token,
+        account_sid=endpoint.account_sid,
+        auth_token=endpoint.auth_token,
+        **regional_kwargs,
         transfer_strategy=TwilioConferenceStrategy(),
         hangup_strategy=TwilioHangupStrategy(),
     )

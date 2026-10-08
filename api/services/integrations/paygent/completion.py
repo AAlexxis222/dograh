@@ -21,6 +21,7 @@ from typing import Any
 from loguru import logger
 
 from api.services.integrations.base import IntegrationCompletionContext
+from api.services.integrations.registry import is_active
 
 from .client import PaygentCallSnapshot, PaygentDeliveryConfig, deliver
 from .node import PaygentNodeData
@@ -82,7 +83,7 @@ async def run_completion(
             results[f"paygent_{node_id}"] = {"error": "validation_failed"}
             continue
 
-        if not node_data.paygent_enabled:
+        if not is_active("paygent", node_data):
             continue
 
         # ---- Guard: runtime snapshot must exist ----------------------------

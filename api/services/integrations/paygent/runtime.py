@@ -21,6 +21,7 @@ from api.services.integrations.base import (
     IntegrationRuntimeContext,
     IntegrationRuntimeSession,
 )
+from api.services.integrations.registry import is_active
 
 from .collector import PaygentCollector
 
@@ -107,7 +108,7 @@ def create_runtime_sessions(
     paygent_nodes = [
         node
         for node in context.workflow_graph.nodes.values()
-        if node.node_type == "paygent" and getattr(node.data, "paygent_enabled", True)
+        if node.node_type == "paygent" and is_active("paygent", node.data)
     ]
     if not paygent_nodes:
         return []
