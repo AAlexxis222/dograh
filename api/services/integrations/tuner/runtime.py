@@ -9,6 +9,7 @@ from api.services.integrations.base import (
     IntegrationRuntimeContext,
     IntegrationRuntimeSession,
 )
+from api.services.integrations.registry import is_active
 
 from .collector import DeferredTunerObserver, mode_to_tuner_call_type
 from .sip import get_sip_metadata
@@ -86,7 +87,7 @@ def create_runtime_sessions(
     tuner_nodes = [
         node
         for node in context.workflow_graph.nodes.values()
-        if node.node_type == "tuner" and getattr(node.data, "tuner_enabled", True)
+        if node.node_type == "tuner" and is_active("tuner", node.data)
     ]
     if not tuner_nodes:
         return []

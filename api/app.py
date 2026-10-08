@@ -19,7 +19,7 @@ if SENTRY_DSN and (
 ):
     sentry_sdk.init(
         dsn=SENTRY_DSN,
-        send_default_pii=True,
+        send_default_pii=False,
         environment=ENVIRONMENT,
     )
     print(f"Sentry initialized in environment: {ENVIRONMENT}")

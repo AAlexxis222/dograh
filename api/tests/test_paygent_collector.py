@@ -157,3 +157,18 @@ async def test_nova_usage_with_single_modality(nova_collector, audio_tokens, exp
         "schemaVersion": 1,
         **expected,
     }
+
+
+def test_create_runtime_sessions_skips_disabled_paygent_node():
+    from api.services.integrations.paygent.runtime import create_runtime_sessions
+
+    context = SimpleNamespace(
+        workflow_graph=SimpleNamespace(
+            nodes={
+                "n0": SimpleNamespace(
+                    node_type="paygent", data=SimpleNamespace(paygent_enabled=False)
+                )
+            }
+        )
+    )
+    assert create_runtime_sessions(context) == []
