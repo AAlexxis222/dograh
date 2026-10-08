@@ -3,7 +3,7 @@ from typing import Any, Optional
 from loguru import logger
 from posthog import Posthog
 
-from api.constants import POSTHOG_API_KEY, POSTHOG_HOST
+from api import constants
 
 _posthog_client: Posthog | None = None
 POSTHOG_SERVER_GROUP_IDENTIFY_DISTINCT_ID = "server-group-identify"
@@ -11,10 +11,21 @@ POSTHOG_ORGANIZATION_GROUP_TYPE = "organization"
 
 
 def get_posthog() -> Posthog | None:
-    """Return the lazily-initialised PostHog client, or None if not configured."""
+    """Return the lazily-initialised PostHog client.
+
+    None unless telemetry is explicitly enabled AND an API key is configured:
+    no opt-in means no client, so nothing can leave the process. Sentry keeps
+    its own upstream rule in app.py (DSN-gated; cells ship without a DSN).
+    """
     global _posthog_client
-    if _posthog_client is None and POSTHOG_API_KEY:
-        _posthog_client = Posthog(POSTHOG_API_KEY, host=POSTHOG_HOST)
+    if (
+        _posthog_client is None
+        and constants.ENABLE_TELEMETRY
+        and constants.POSTHOG_API_KEY
+    ):
+        _posthog_client = Posthog(
+            constants.POSTHOG_API_KEY, host=constants.POSTHOG_HOST
+        )
     return _posthog_client
 
 
