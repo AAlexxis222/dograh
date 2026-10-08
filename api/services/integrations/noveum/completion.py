@@ -10,6 +10,7 @@ from loguru import logger
 
 from api.constants import BACKEND_API_ENDPOINT
 from api.services.integrations.base import IntegrationCompletionContext
+from api.services.integrations.registry import is_active
 from api.services.storage import storage_fs
 
 from .client import build_noveum_client
@@ -149,7 +150,7 @@ async def run_completion(
             results[f"noveum_{node_id}"] = {"error": "validation_failed"}
             continue
 
-        if not noveum_data.noveum_enabled:
+        if not is_active("noveum", noveum_data):
             logger.debug(f"Noveum node '{noveum_data.name}' is disabled, skipping")
             continue
 

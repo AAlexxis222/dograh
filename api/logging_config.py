@@ -1,3 +1,4 @@
+import functools
 import logging
 import os
 import sys
@@ -15,6 +16,7 @@ from api.constants import (
     SERIALIZE_LOG_OUTPUT,
 )
 from api.enums import Environment
+from api.services.security.redaction import known_secret_values, redact_log_record
 from api.utils.worker import get_worker_id, is_worker_process
 
 # Track if logging has been initialized
@@ -71,6 +73,15 @@ def enrich_log_record(record):
     extra["classification_mode"] = "fallback"
 
 
+def patch_log_record(record, secrets=None):
+    """Single loguru patcher: run context and classification, then redaction.
+
+    ``secrets`` is the longest-first secret set; ``setup_logging`` binds it once
+    so the hot path never scans ``os.environ``."""
+    enrich_log_record(record)
+    redact_log_record(record, secrets)
+
+
 def setup_logging():
     """Set up logging for the main application"""
     global _logging_initialized
@@ -96,7 +107,7 @@ def setup_logging():
     # before this runs) get the same run and ownership metadata.
     loguru.logger.configure(
         extra={"run_id": None},
-        patcher=enrich_log_record,
+        patcher=functools.partial(patch_log_record, secrets=known_secret_values()),
     )
     patched = loguru.logger
 
@@ -146,6 +157,10 @@ def setup_logging():
             colorize=not SERIALIZE_LOG_OUTPUT,
             backtrace=True,
             diagnose=False,
+            # Formatting and the write happen on loguru's worker thread, so a slow
+            # stdout pipe does not stall the caller; the record is still pickled
+            # on the caller's thread.
+            enqueue=True,
         )
 
     loguru.logger = patched
