@@ -13,14 +13,29 @@ from .config import TwilioConfigurationRequest
 from .provider import TwilioProvider
 from .transport import create_transport
 
+# Optional keys read by ``region.resolve_twilio_endpoint`` and the provider.
+# Forwarded only when stored, so legacy configs keep their exact shape. They are
+# operator-seeded, so the API never shows them (``credentials`` holds a token)
+# and an update that sends only the editable fields keeps them.
+_REGION_KEYS = (
+    "region",
+    "edge",
+    "credentials",
+    "allow_non_eu_carrier_region",
+    "allow_non_eu_carrier_region_reason",
+)
+_SERVER_MANAGED_KEYS = (*_REGION_KEYS, "fallback_url")
+
 
 def _config_loader(value: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+    loaded = {
         "provider": "twilio",
         "account_sid": value.get("account_sid"),
         "auth_token": value.get("auth_token"),
         "from_numbers": value.get("from_numbers", []),
     }
+    loaded.update({key: value[key] for key in _SERVER_MANAGED_KEYS if key in value})
+    return loaded
 
 
 _UI_METADATA = ProviderUIMetadata(
@@ -60,6 +75,11 @@ SPEC = ProviderSpec(
     config_request_cls=TwilioConfigurationRequest,
     ui_metadata=_UI_METADATA,
     account_id_credential_field="account_sid",
+    server_managed_credential_fields=_SERVER_MANAGED_KEYS,
+    # Regional credentials belong to the old account: a new account_sid drops
+    # them, so calls fail closed (carrier_region_credentials_missing) instead
+    # of silently using the previous account.
+    account_scoped_server_managed_credential_fields=("credentials",),
 )
 
 
