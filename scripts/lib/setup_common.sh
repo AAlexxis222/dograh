@@ -399,7 +399,11 @@ dograh_render_remote_turn_conf() {
             gsub(/__DOGRAH_TURN_SECRET__/, turn_secret)
             print
         }
-    ' "$template" > "$destination"
+        END { if (skipping) exit 1 }
+    ' "$template" > "$destination" || {
+        rm -f "$destination"
+        dograh_fail "code=turn_template_unterminated where=$template reason=internal-peer deny block has a BEGIN marker but no END marker, so the rest of the config would be cut hint=restore the END marker line (# END internal-peer deny) in the template"
+    }
 }
 
 dograh_preflight_remote_init_render() {

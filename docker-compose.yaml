@@ -92,6 +92,8 @@ services:
       MINIO_PUBLIC_ENDPOINT: "${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}"
       TURN_HOST: "${TURN_HOST:-}"
       TURN_SECRET: "${TURN_SECRET:-}"
+      # true/false forces the internal-peer deny block of the coturn config; empty = decided from the relay address.
+      TURN_DENY_INTERNAL_PEERS: "${TURN_DENY_INTERNAL_PEERS:-}"
       FASTAPI_WORKERS: "${FASTAPI_WORKERS:-1}"
     volumes:
       - ./scripts:/workspace/scripts:ro

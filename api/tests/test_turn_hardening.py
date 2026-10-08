@@ -13,7 +13,6 @@ TEMPLATE = ROOT / "deploy/templates/turnserver.remote.conf.template"
 SETUP_COMMON = ROOT / "scripts/lib/setup_common.sh"
 BEGIN_DENY = "# BEGIN internal-peer deny"
 END_DENY = "# END internal-peer deny"
-RELAY_PORTS = range(49152, 49201)  # min-port / max-port of the template
 DENIED_PEER_LINES = (
     "denied-peer-ip=0.0.0.0-0.255.255.255",
     "denied-peer-ip=10.0.0.0-10.255.255.255",
@@ -70,13 +69,21 @@ def test_template_keeps_the_unconditional_hardening():
     assert not [line for line in lines if line.startswith("user-quota")]
 
 
+def _template_int(key):
+    values = [
+        int(line.split("=", 1)[1])
+        for line in _template_text().splitlines()
+        if line.startswith(f"{key}=")
+    ]
+    assert len(values) == 1, key
+    return values[0]
+
+
 def test_total_quota_matches_the_relay_port_range():
     # One relay port per allocation: a quota above the range can never be reached, below it wastes ports.
-    t = _template_text()
-    assert (
-        f"min-port={RELAY_PORTS.start}" in t and f"max-port={RELAY_PORTS.stop - 1}" in t
+    assert _template_int("total-quota") == (
+        _template_int("max-port") - _template_int("min-port") + 1
     )
-    assert f"total-quota={len(RELAY_PORTS)}" in t.splitlines()
 
 
 def test_turn_ttl_default_is_short():
@@ -195,7 +202,15 @@ def _rendered_lines(tmp_path, **kwargs):
 @linux_only
 @pytest.mark.parametrize(
     "external_ip",
-    ["203.0.113.7", "8.8.8.8", "172.32.0.1", "100.128.0.1", "turn.example.test"],
+    [
+        "203.0.113.7",
+        "8.8.8.8",
+        "172.15.255.255",  # just below 172.16/12
+        "172.32.0.0",  # just above it
+        "100.63.255.255",  # just below 100.64/10
+        "100.128.0.0",  # just above it
+        "turn.example.test",
+    ],
 )
 def test_render_denies_internal_peers_when_the_relay_is_public(external_ip, tmp_path):
     lines = _rendered_lines(tmp_path, external_ip=external_ip)
@@ -268,3 +283,26 @@ def test_render_leaves_a_template_without_markers_unchanged(deny, tmp_path):
         "external-ip=203.0.113.7",
         f"static-auth-secret={key}",
     ]
+
+
+@linux_only
+def test_render_fails_on_a_deny_block_without_end(tmp_path):
+    # Dropping "everything after BEGIN" would silently cut the rest of the config (fail open).
+    templates = tmp_path / "deploy/templates"
+    templates.mkdir(parents=True)
+    lines = [
+        "listening-port=3478",
+        "# BEGIN internal-peer deny",
+        "denied-peer-ip=::1",
+        "no-tcp-relay",
+    ]
+    (templates / "turnserver.remote.conf.template").write_text(
+        os.linesep.join(lines) + os.linesep
+    )
+    result, out = _render(
+        secrets.token_hex(32), tmp_path, external_ip="192.168.1.10", deny="false"
+    )
+    assert result.returncode != 0
+    for key in ("code=turn_template_unterminated", "where=", "reason=", "hint="):
+        assert key in result.stderr, result.stderr
+    assert not out.exists()  # no truncated config left for coturn to load

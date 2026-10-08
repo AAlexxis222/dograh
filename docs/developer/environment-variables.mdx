@@ -136,6 +136,7 @@ Presigned URLs point at `S3_ENDPOINT_URL`, so that host must be reachable from t
 | `TURN_PORT` | `3478` | TURN server port |
 | `TURN_TLS_PORT` | `5349` | TURN server TLS port |
 | `TURN_SECRET` | `null` | **Required for WebRTC.** Shared secret for TURN credential generation |
+| `TURN_DENY_INTERNAL_PEERS` | _(auto)_ | `true` or `false`. Whether the generated coturn config refuses to relay to internal addresses (RFC 1918, loopback, link-local, CGNAT). Unset: `false` when the relay address is a private IPv4 (LAN, Tailscale, local-turn), `true` otherwise. Set `false` if a hostname relay (`localhost`, `.local`) must reach private peers |
 | `TURN_CREDENTIAL_TTL` | `300` | TURN credential validity in seconds (default: 5 minutes) |
 | `FORCE_TURN_RELAY` | `false` | Diagnostic flag. When `true`, restricts ICE to relay-only candidates on both server (SDP filter) and browser (`iceTransportPolicy: 'relay'`). Use to verify TURN connectivity end-to-end — calls fail cleanly if TURN is misconfigured instead of silently falling back to a direct path. |
 

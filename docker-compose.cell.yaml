@@ -88,8 +88,13 @@ services:
   # The api mints TURN credentials locally (HMAC), so nothing in the cell talks to coturn.
   coturn: { restart: unless-stopped, logging: *logging, networks: !override [turn-net] }
   # One-shot init container: runs to completion, so no restart policy and no ports.
-  # TURN_DENY_INTERNAL_PEERS: fail closed in a cell, even if someone gives it a private SERVER_IP (VOZ-AC-B0-30).
-  dograh-init: { logging: *logging, environment: { TURN_DENY_INTERNAL_PEERS: "true" } }
+  # Fail closed in a cell (VOZ-AC-B0-30):
+  # - ENVIRONMENT production: outside it dograh-init does nothing without TURN_HOST, and coturn then starts on its
+  #   defaults (an open relay). The remote branch renders the config and refuses to start on a missing SERVER_IP or certs.
+  # - TURN_DENY_INTERNAL_PEERS: the deny block stays even if someone gives the cell a private SERVER_IP.
+  dograh-init:
+    logging: *logging
+    environment: { ENVIRONMENT: production, TURN_DENY_INTERNAL_PEERS: "true" }
   cloudflared: !reset null
 networks:
   turn-net: {}

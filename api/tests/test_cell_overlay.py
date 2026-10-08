@@ -162,6 +162,12 @@ def test_turn_init_denies_internal_peers_even_on_a_private_address(cfg):
     assert cfg["dograh-init"]["environment"]["TURN_DENY_INTERNAL_PEERS"] == "true"
 
 
+def test_turn_init_always_takes_the_render_branch(cfg):
+    # Outside production dograh-init no-ops without TURN_HOST, coturn then starts on its defaults (an open relay).
+    # The remote branch renders the config and fails closed on a missing SERVER_IP or certs.
+    assert cfg["dograh-init"]["environment"]["ENVIRONMENT"] == "production"
+
+
 def test_ui_has_no_telemetry(cfg):
     env = cfg["ui"]["environment"]
     assert env["ENABLE_TELEMETRY"] == "false" and not env.get("POSTHOG_KEY")
