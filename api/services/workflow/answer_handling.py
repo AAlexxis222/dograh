@@ -14,15 +14,17 @@ from api.services.pipecat.speech_playback import PlaybackOutcome, SpeechPlayback
 if TYPE_CHECKING:
     from api.services.workflow.pipecat_engine import PipecatEngine
 
-ANSWER_TERMINAL_REASONS = (
+# Why the supervisor ended the call by its own decision (a timer, a verdict or one
+# of its limits), as opposed to a playback that failed.
+ANSWER_DECIDED_REASONS = (
     "machine_timeout",
     "voicemail_no_message",
     "ivr_detected",
     "screening_timeout",
     "screening_limit",
     "screening_message_missing",
-    "answer_message_failed",
 )
+ANSWER_TERMINAL_REASONS = (*ANSWER_DECIDED_REASONS, "answer_message_failed")
 
 
 async def _speak(
