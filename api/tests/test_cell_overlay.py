@@ -151,6 +151,12 @@ def test_api_mounts_credentials_directory_read_only(cfg):
     assert mount["bind"].get("create_host_path") is False
 
 
+def test_coturn_is_on_its_own_network(cfg):
+    # VOZ-AC-B4-05b: a relay in app-network could reach postgres, redis and api. The api mints TURN credentials locally.
+    assert set(cfg["coturn"]["networks"]) == {"turn-net"}
+    assert not [n for n, s in cfg.items() if n != "coturn" and "turn-net" in s.get("networks", {})]
+
+
 def test_ui_has_no_telemetry(cfg):
     env = cfg["ui"]["environment"]
     assert env["ENABLE_TELEMETRY"] == "false" and not env.get("POSTHOG_KEY")

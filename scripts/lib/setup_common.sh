@@ -344,6 +344,11 @@ dograh_render_remote_turn_conf() {
 
     template="$(dograh_template_path "turnserver.remote.conf.template")"
     [[ -n "$external_ip" ]] || dograh_fail "TURN external IP/host is missing"
+    # Both dograh-init branches render here, so a placeholder fails init and coturn (which waits on it) never starts.
+    # A placeholder is any value that says "change" (the .env.example ones do); a generated hex value never does.
+    if [[ -z "${TURN_SECRET:-}" || "$TURN_SECRET" == *[Cc][Hh][Aa][Nn][Gg][Ee]* ]]; then
+        dograh_fail "code=turn_secret_default where=dograh_render_remote_turn_conf reason=TURN_SECRET is empty or still a placeholder from an .env.example hint=generate one with: openssl rand -hex 32"
+    fi
 
     awk \
         -v external_ip="$external_ip" \

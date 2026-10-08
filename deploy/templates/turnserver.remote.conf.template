@@ -24,5 +24,29 @@ fingerprint
 no-cli
 no-multicast-peers
 
+# Never relay into the cell: deny loopback, RFC 1918 (this already covers the VPC CIDR and the Docker
+# networks), link-local (cloud metadata at 169.254.169.254) and CGNAT, for IPv4 and IPv6.
+denied-peer-ip=0.0.0.0-0.255.255.255
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=::1
+denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+
+# Relay over UDP only (aiortc needs nothing else); RFC 6062 TCP relay is off.
+no-tcp-relay
+
+# Quotas are static until B3's web_calls_max exists (follow-up).
+# user-quota=4: a browser may allocate once per TURN URL (udp, tcp, tls).
+# total-quota=49: the size of the relay port range above.
+# max-bps: bytes/s per session, about 8x one Opus voice stream.
+user-quota=4
+total-quota=49
+max-bps=64000
+
 # Logging
 log-file=stdout
