@@ -21,6 +21,10 @@ from api.services.telephony.base import (
     TelephonyProvider,
 )
 from api.services.telephony.providers.twilio.introduction import introduction_urls
+from api.services.telephony.providers.twilio.region import (
+    cell_policy_from_env,
+    resolve_twilio_endpoint,
+)
 from api.services.telephony.sip import first_sip_string, normalize_sip_headers
 from api.utils.common import get_backend_endpoints
 from api.utils.telephony_address import normalize_telephony_address
@@ -90,12 +94,25 @@ class TwilioProvider(TelephonyProvider):
 
         Args:
             config: Dictionary containing:
-                - account_sid: Twilio Account SID
-                - auth_token: Twilio Auth Token
+                - account_sid / auth_token: Twilio credentials (legacy flat
+                  form, read as the credentials of region ``us1``)
+                - credentials: per-region credentials, ``{region: {...}}``
+                - region / edge: Twilio region, see ``region.py``
+                - fallback_url: optional ``VoiceFallbackUrl`` for inbound numbers
                 - from_numbers: List of phone numbers to use
+
+        Raises:
+            RegionError: the configured region cannot be used (policy,
+                credentials or edge), see ``region.py``.
         """
-        self.account_sid = config.get("account_sid")
-        self.auth_token = config.get("auth_token")
+        endpoint = resolve_twilio_endpoint(config, cell_policy_from_env())
+        self.region = endpoint.region
+        self.edge = endpoint.edge
+        # The region's own credentials: also the token that signs the
+        # webhooks this region sends us (see verify_webhook_signature).
+        self.account_sid = endpoint.account_sid
+        self.auth_token = endpoint.auth_token
+        self.fallback_url = config.get("fallback_url")
         self.from_numbers = config.get("from_numbers", [])
         self.default_from_number = config.get("default_from_number")
 
@@ -103,7 +120,7 @@ class TwilioProvider(TelephonyProvider):
         if isinstance(self.from_numbers, str):
             self.from_numbers = [self.from_numbers]
 
-        self.base_url = f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}"
+        self.base_url = endpoint.base_url
 
     async def initiate_call(
         self,
@@ -497,16 +514,7 @@ class TwilioProvider(TelephonyProvider):
             )
 
         endpoint = f"{self.base_url}/IncomingPhoneNumbers/{sid}.json"
-        if webhook_url:
-            data = {
-                "VoiceUrl": webhook_url,
-                "VoiceMethod": "POST",
-            }
-        else:
-            # Clearing — Twilio treats empty string as "unset".
-            data = {
-                "VoiceUrl": "",
-            }
+        data = self._voice_update_data(webhook_url)
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -529,6 +537,23 @@ class TwilioProvider(TelephonyProvider):
         action = "set" if webhook_url else "cleared"
         logger.info(f"Twilio VoiceUrl {action} for {e164} (sid={sid})")
         return ProviderSyncResult(ok=True)
+
+    def _voice_update_data(self, webhook_url: str | None) -> dict[str, str]:
+        if webhook_url:
+            data = {"VoiceUrl": webhook_url, "VoiceMethod": "POST"}
+            if self.fallback_url:
+                data.update(
+                    {
+                        "VoiceFallbackUrl": self.fallback_url,
+                        "VoiceFallbackMethod": "POST",
+                    }
+                )
+            return data
+        # Clearing — Twilio treats empty string as "unset".
+        data = {"VoiceUrl": ""}
+        if self.fallback_url:
+            data["VoiceFallbackUrl"] = ""
+        return data
 
     async def validate_phone_number(self, address: str) -> ProviderSyncResult:
         """Verify PSTN ownership through Twilio's IncomingPhoneNumbers list."""
