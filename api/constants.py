@@ -156,7 +156,7 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG").upper()
 LOG_ROTATION_SIZE = os.getenv("LOG_ROTATION_SIZE", "100 MB")
 LOG_RETENTION = os.getenv("LOG_RETENTION", "7 days")
 LOG_COMPRESSION = os.getenv("LOG_COMPRESSION", "gz")
-ENABLE_TELEMETRY = os.getenv("ENABLE_TELEMETRY", "true").lower() == "true"
+ENABLE_TELEMETRY = os.getenv("ENABLE_TELEMETRY", "false").lower() == "true"
 
 
 def _get_version() -> str:
