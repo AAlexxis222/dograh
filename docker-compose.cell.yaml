@@ -15,6 +15,7 @@ x-cell-env: &cell-env
   TELEPHONY_WS_TOKEN_ENFORCE: "true"
   TELEPHONY_WS_TOKEN_SECRET: "${TELEPHONY_WS_TOKEN_SECRET:?TELEPHONY_WS_TOKEN_SECRET must be set}"
   DOGRAH_DEVOPS_SECRET: "${DOGRAH_DEVOPS_SECRET:?DOGRAH_DEVOPS_SECRET must be set}"
+  TURN_SECRET: "${TURN_SECRET:?TURN_SECRET must be set}"
   ENABLE_SIGNUP: "false"
   LOG_LEVEL: "INFO"
   SERIALIZE_LOG_OUTPUT: "true"
@@ -134,7 +135,17 @@ services:
       POSTHOG_KEY: ""
       POSTHOG_HOST: ""
   nginx: { restart: unless-stopped, logging: *logging }
-  coturn: { restart: unless-stopped, logging: *logging }
+  # Own network, not app-network: coturn cannot reach postgres, redis, minio or api (VOZ-AC-B4-05b).
+  # The api mints TURN credentials locally (HMAC), so nothing in the cell talks to coturn.
+  coturn: { restart: unless-stopped, logging: *logging, networks: !override [turn-net] }
   # One-shot init container: runs to completion, so no restart policy and no ports.
-  dograh-init: { logging: *logging }
+  # Fail closed in a cell (VOZ-AC-B0-30):
+  # - ENVIRONMENT production: outside it dograh-init does nothing without TURN_HOST, and coturn then starts on its
+  #   defaults (an open relay). The remote branch renders the config and refuses to start on a missing SERVER_IP or certs.
+  # - TURN_DENY_INTERNAL_PEERS: the deny block stays even if someone gives the cell a private SERVER_IP.
+  dograh-init:
+    logging: *logging
+    environment: { ENVIRONMENT: production, TURN_DENY_INTERNAL_PEERS: "true" }
   cloudflared: !reset null
+networks:
+  turn-net: {}

@@ -160,6 +160,23 @@ def test_api_mounts_credentials_directory_read_only(cfg):
     assert mount["bind"].get("create_host_path") is False
 
 
+def test_coturn_is_on_its_own_network(cfg):
+    # VOZ-AC-B4-05b: a relay in app-network could reach postgres, redis and api. The api mints TURN credentials locally.
+    assert set(cfg["coturn"]["networks"]) == {"turn-net"}
+    assert not [n for n, s in cfg.items() if n != "coturn" and "turn-net" in s.get("networks", {})]
+
+
+def test_turn_init_denies_internal_peers_even_on_a_private_address(cfg):
+    # Fail closed in a cell (VOZ-AC-B0-30): the render would otherwise skip the deny block for a private SERVER_IP.
+    assert cfg["dograh-init"]["environment"]["TURN_DENY_INTERNAL_PEERS"] == "true"
+
+
+def test_turn_init_always_takes_the_render_branch(cfg):
+    # Outside production dograh-init no-ops without TURN_HOST, coturn then starts on its defaults (an open relay).
+    # The remote branch renders the config and fails closed on a missing SERVER_IP or certs.
+    assert cfg["dograh-init"]["environment"]["ENVIRONMENT"] == "production"
+
+
 def test_ui_has_no_telemetry(cfg):
     env = cfg["ui"]["environment"]
     assert env["ENABLE_TELEMETRY"] == "false" and not env.get("POSTHOG_KEY")
