@@ -8,7 +8,7 @@ CALL_CMD="${CALL_CMD:-uvicorn api.app:app --host 0.0.0.0 --port ${WEB_PORT:-8000
 DRAIN_CMD="${DRAIN_CMD:-DRAIN_FAIL_CLOSED=true scripts/drain_web.sh}"
 
 # VOZ-AC-B5-44: refuse to serve calls on a database whose schema is behind this image.
-"$(dirname "${BASH_SOURCE[0]}")/require_db_head.sh" call || exit 1
+"$(dirname "${BASH_SOURCE[0]}")/require_db_head.sh" "${CELL_ROLE:-call}" || exit 1
 
 bash -c "$CALL_CMD" &
 child=$!
@@ -24,7 +24,7 @@ on_term() {
   local child_status=$?
   if [[ "$drain_status" -ne 0 ]]; then
     # VOZ-AC-B0-28 shape; a failed drain is never reported as a clean stop.
-    echo "code=drain_failed where=call_entrypoint reason=drain command exited with status ${drain_status} hint=check DOGRAH_DEVOPS_SECRET and /health/active-calls" >&2
+    echo "code=drain_failed where=call_entrypoint reason=drain command exited with status ${drain_status} hint=check DOGRAH_DEVOPS_SECRET and /api/v1/health/active-calls" >&2
     exit 1
   fi
   exit "$child_status"

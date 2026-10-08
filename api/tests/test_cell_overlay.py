@@ -210,6 +210,12 @@ def test_each_duty_runs_in_exactly_one_role(cfg):
     assert "run_arq_worker.sh" in " ".join(cfg["arq"]["command"])
 
 
+@pytest.mark.parametrize("role", sorted(CELL_ROLES))
+def test_each_role_names_itself_for_the_schema_gate(role, cfg):
+    # The gate's failure line reports where=$CELL_ROLE, so operators can tell which role refused to start.
+    assert cfg[role]["environment"]["CELL_ROLE"] == role
+
+
 def test_arq_refuses_a_stale_schema_before_it_starts(cfg):
     # VOZ-AC-B5-44: the worker is not launched through the base start script, so its command carries the gate.
     command = " ".join(cfg["arq"]["command"])

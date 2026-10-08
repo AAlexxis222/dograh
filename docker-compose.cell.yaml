@@ -7,7 +7,7 @@ x-logging: &logging
   driver: json-file
   options: { max-size: "50m", max-file: "5" }
 
-# Cell environment of api; the roles that share its code (call, arq, coordinators) reuse it.
+# Cell environment of api; the roles that share its code (call, arq, coordinators) reuse it. Each role adds CELL_ROLE (its name) for the schema gate.
 x-cell-env: &cell-env
   ENABLE_TELEMETRY: "false"
   POSTHOG_API_KEY: ""
@@ -90,7 +90,9 @@ services:
   # api serves HTTP only: the singletons and the arq worker run in their own roles below.
   api:
     <<: *cell-role
-    environment: *cell-env
+    environment:
+      <<: *cell-env
+      CELL_ROLE: api
   # call holds the live phone calls; its entrypoint drains them before uvicorn receives TERM.
   # stop_grace_period is not set here: VOZ-N0-20 renders it from durations.py.
   call:
@@ -99,14 +101,18 @@ services:
     entrypoint: ["bash", "scripts/xpand/call_entrypoint.sh"]
     mem_limit: ${CALL_MEM_LIMIT:?CALL_MEM_LIMIT must be set}
     oom_score_adj: 500
-    environment: *cell-env
+    environment:
+      <<: *cell-env
+      CELL_ROLE: call
   arq:
     <<: *cell-role
     extends: { file: docker-compose.yaml, service: api }
     # The base start script (which gates api and coordinators) is not on arq's path, so the gate wraps its command.
     command: ["bash", "-c", "scripts/xpand/require_db_head.sh arq && exec ./scripts/run_arq_worker.sh"]
     healthcheck: { disable: true } # no HTTP server in this role
-    environment: *cell-env
+    environment:
+      <<: *cell-env
+      CELL_ROLE: arq
   # ari_manager and campaign_orchestrator, through the base start script with uvicorn and arq off.
   coordinators:
     <<: *cell-role
@@ -114,6 +120,7 @@ services:
     healthcheck: { disable: true }
     environment:
       <<: *cell-env
+      CELL_ROLE: coordinators
       ENABLE_ARI_MANAGER: "true"
       ENABLE_CAMPAIGN_ORCHESTRATOR: "true"
       FASTAPI_WORKERS: "0"

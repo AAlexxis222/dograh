@@ -31,7 +31,7 @@ if [[ "${RUN_MIGRATIONS_ON_START:-true}" != "false" ]]; then
   alembic -c "$BASE_DIR/api/alembic.ini" upgrade head
 else
   # VOZ-AC-B5-44: without migrating, refuse to start on a database whose schema is behind this image.
-  "$BASE_DIR/scripts/xpand/require_db_head.sh" start_services_docker
+  "$BASE_DIR/scripts/xpand/require_db_head.sh" "${CELL_ROLE:-start_services_docker}"
 fi
 
 ###############################################################################
