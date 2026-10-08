@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -212,7 +213,8 @@ def test_each_duty_runs_in_exactly_one_role(cfg):
 def test_arq_refuses_a_stale_schema_before_it_starts(cfg):
     # VOZ-AC-B5-44: the worker is not launched through the base start script, so its command carries the gate.
     command = " ".join(cfg["arq"]["command"])
-    assert command.index("require_db_head.sh") < command.index("run_arq_worker.sh")
+    # `&&` chains the two: with `;` the worker would start after a refused gate.
+    assert re.search(r"require_db_head\.sh\s+arq\s*&&\s*(exec\s+)?\S*run_arq_worker\.sh", command), command
 
 
 def test_image_ships_the_call_entrypoint():

@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -19,13 +20,25 @@ DRAIN_SCRIPT = ROOT / "scripts/drain_web.sh"
 
 posix_only = pytest.mark.skipif(os.name == "nt", reason="GATED bash_missing: POSIX signals; runs in CI")
 
-# Stands in for `alembic -c api/alembic.ini <current|heads>`; prints the revisions in FAKE_CURRENT / FAKE_HEADS
-# the way alembic does ("<rev> (head)"), after a log line, and records every call.
+# Stands in for `alembic -c api/alembic.ini <current|heads>`, with the output shapes captured from the real tool
+# (fork head d7e3a915c2b8, real Postgres): two INFO lines, then one revision per line, "(head)" only on a head
+# (a behind database prints the bare id). FAKE_AHEAD: the database holds a revision this tree lacks, so `current`
+# prints alembic's own error and fails. FAKE_CURRENT_ERROR: `current` fails for any other reason. Records every call.
 FAKE_ALEMBIC = """\
 echo "$@" >> "$FAKE_ALEMBIC_LOG"
 echo "INFO  [alembic.runtime.migration] Context impl PostgresqlImpl."
+echo "INFO  [alembic.runtime.migration] Will assume transactional DDL."
 case "${@: -1}" in
-  current) for r in $FAKE_CURRENT; do echo "$r (head)"; done ;;
+  current)
+    if [[ -n "${FAKE_AHEAD:-}" ]]; then
+      echo "ERROR [alembic.util.messaging] Can't locate revision identified by '$FAKE_AHEAD'"
+      echo "FAILED: Can't locate revision identified by '$FAKE_AHEAD'"
+      exit 255
+    fi
+    if [[ -n "${FAKE_CURRENT_ERROR:-}" ]]; then echo "$FAKE_CURRENT_ERROR"; exit 1; fi
+    for r in $FAKE_CURRENT; do
+      if [[ " $FAKE_HEADS " == *" $r "* ]]; then echo "$r (head)"; else echo "$r"; fi
+    done ;;
   heads) for r in $FAKE_HEADS; do echo "$r (head)"; done ;;
 esac
 """
@@ -38,13 +51,15 @@ def alembic_env(tmp_path):
     fake.write_text(FAKE_ALEMBIC)
     log = tmp_path / "alembic.log"
 
-    def make(current="abc123", heads="abc123"):
+    def make(current="abc123", heads="abc123", ahead="", current_error=""):
         return {
             **os.environ,
             "ALEMBIC_CMD": f"bash {fake}",
             "FAKE_ALEMBIC_LOG": str(log),
             "FAKE_CURRENT": current,
             "FAKE_HEADS": heads,
+            "FAKE_AHEAD": ahead,
+            "FAKE_CURRENT_ERROR": current_error,
         }
 
     make.log = log
@@ -153,6 +168,8 @@ def test_require_head_fails_with_a_named_message_when_behind(alembic_env):
     for key in ("code=db_schema_behind", "where=call", "reason=", "hint=", "cellctl migrate"):
         assert key in r.stderr, r.stderr
     assert len(r.stderr.strip().splitlines()) == 1
+    # Without the overlay file compose starts the upstream image, whose tree lacks the fork head.
+    assert "docker compose -f docker-compose.yaml -f docker-compose.cell.yaml run --rm api ./scripts/run_migrate.sh" in r.stderr
 
 
 @posix_only
@@ -170,10 +187,29 @@ def test_require_head_fails_on_multiple_heads(alembic_env):
 
 
 @posix_only
-def test_require_head_fails_when_alembic_itself_fails(alembic_env):
-    env = {**alembic_env(), "ALEMBIC_CMD": "false"}
+def test_require_head_starts_with_a_named_warning_when_db_is_ahead(alembic_env):
+    # B5-43/45: an old image restarted after a migration, or a rolled-back image, sees a revision it does not know.
+    r = subprocess.run(["bash", str(REQUIRE_HEAD), "call"], env=alembic_env(ahead="ffffffffffff"), capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    # VOZ-AC-B0-28 one-line shape, every field non-empty.
+    assert re.fullmatch(r"code=db_schema_ahead where=call reason=\S.* hint=\S.*", r.stderr.strip()), r.stderr
+    assert "ffffffffffff" in r.stderr
+
+
+@posix_only
+@pytest.mark.parametrize(
+    "current_error, alembic_cmd",
+    [("ConnectionRefusedError: [Errno 111] Connect call failed", None), ("", "false")],
+    ids=["current_fails_database_unreachable", "alembic_fails_before_reading"],
+)
+def test_require_head_fails_when_alembic_itself_fails(alembic_env, current_error, alembic_cmd):
+    env = alembic_env(current_error=current_error)
+    if alembic_cmd:
+        env["ALEMBIC_CMD"] = alembic_cmd
     r = subprocess.run(["bash", str(REQUIRE_HEAD), "call"], env=env, capture_output=True, text=True)
     assert r.returncode != 0 and "code=db_schema_unreadable" in r.stderr
+    hint = r.stderr.split("hint=", 1)[1]
+    assert "DATABASE_URL" in hint and "migrat" not in hint, hint  # about reaching the database, not about migrating
 
 
 def _start_script_env(base):
