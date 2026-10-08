@@ -1604,6 +1604,33 @@ class TestEndByIntentMark:
 
         assert marked == {**dict.fromkeys(ours, True), **dict.fromkeys(not_ours, False)}
 
+    def test_a_reason_added_to_the_answer_supervisor_is_not_marked_automatically(
+        self, monkeypatch
+    ):
+        """The allowlist is explicit, so a new end reason defaults to "no mark".
+
+        The set is built when the engine module is imported, so the module is
+        executed again (as a private copy) with an extra supervisor reason.
+        """
+        import importlib.util
+
+        from api.services.workflow import answer_handling, pipecat_engine
+
+        monkeypatch.setattr(
+            answer_handling,
+            "ANSWER_TERMINAL_REASONS",
+            (*answer_handling.ANSWER_TERMINAL_REASONS, "a_new_supervisor_drop"),
+        )
+        spec = importlib.util.spec_from_file_location(
+            "engine_with_extra_reason", pipecat_engine.__file__
+        )
+        fresh = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fresh)
+
+        assert "a_new_supervisor_drop" not in fresh._INTENTIONAL_END_REASONS
+        # ...while the reasons that are ours are still there.
+        assert "machine_timeout" in fresh._INTENTIONAL_END_REASONS
+
     @pytest.mark.asyncio
     async def test_a_stuck_redis_does_not_stop_the_call_from_ending(
         self, simple_workflow: WorkflowGraph

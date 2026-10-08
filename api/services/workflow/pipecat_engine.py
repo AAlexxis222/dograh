@@ -135,10 +135,16 @@ _INTENTIONAL_END_REASONS = frozenset(
         EndTaskReason.CALL_DURATION_EXCEEDED.value,  # our max-duration limit
         EndTaskReason.USER_IDLE_MAX_DURATION_EXCEEDED.value,  # our idle limit
         EndTaskReason.VOICEMAIL_DETECTED.value,  # our answer supervisor's verdict
-        # The answer supervisor's own drops (machine timeout, no message, IVR,
-        # screening limits). `answer_message_failed` is a failed playback, not a
-        # decision, and a person may be on the line: it stays unmarked.
-        *(r for r in ANSWER_TERMINAL_REASONS if r != "answer_message_failed"),
+        # The answer supervisor's own drops. Spelled out rather than derived from
+        # `ANSWER_TERMINAL_REASONS`, so a reason added there later is not marked
+        # until someone decides it is ours. `answer_message_failed` is a failed
+        # playback, not a decision, and a person may be on the line: unmarked.
+        "machine_timeout",
+        "voicemail_no_message",
+        "ivr_detected",
+        "screening_timeout",
+        "screening_limit",
+        "screening_message_missing",
     }
 )
 
