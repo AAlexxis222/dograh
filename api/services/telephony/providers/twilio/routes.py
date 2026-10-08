@@ -5,6 +5,7 @@ provider registry — see ProviderSpec.router.
 """
 
 import json
+from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
@@ -12,6 +13,8 @@ from pipecat.utils.run_context import set_current_run_id
 from starlette.responses import HTMLResponse, Response
 
 from api.db import db_client
+from api.enums import WorkflowRunState
+from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.factory import get_telephony_provider_for_run
 from api.services.telephony.providers.twilio.introduction import (
@@ -27,6 +30,29 @@ from api.services.telephony.transfer_audio import get_transfer_audio
 from api.services.telephony.transfer_event_protocol import TransferEventType
 
 router = APIRouter()
+
+# Played when the media socket ended and the call did not finish normally.
+_CALL_NOT_ATTENDED_ES = (
+    "Ahora mismo no podemos atender tu llamada. "
+    "Por favor, inténtalo de nuevo en unos minutos."
+)
+
+
+def _connect_action_twiml(run_state: str) -> str:
+    """What the caller gets once the media socket is gone, by the run's state.
+
+    A finished run hangs up silently (the goodbye already played; the rejection
+    message here would be wrong). Any other state means the call dropped or never
+    got going: say so and hang up. Never a new ``<Connect>``: a run past
+    ``initialized`` cannot be re-attached to a fresh bot.
+    """
+    if run_state == WorkflowRunState.COMPLETED.value:
+        return "<Response><Hangup/></Response>"
+    return (
+        '<Response><Say language="es-ES">'
+        f"{escape(_CALL_NOT_ATTENDED_ES)}"
+        "</Say><Hangup/></Response>"
+    )
 
 
 @router.post("/twiml", include_in_schema=False)
@@ -134,6 +160,42 @@ async def handle_twilio_status_callback(
     await _process_status_update(workflow_run_id, status_update)
 
     return {"status": "success"}
+
+
+@router.post("/twilio/connect-action/{workflow_run_id}", include_in_schema=False)
+async def handle_twilio_connect_action(
+    workflow_run_id: int, request: Request, t: str | None = None
+):
+    """Twilio requests this when ``<Connect>`` ends; answer by the run's state.
+
+    Fails closed with 403 and no side effects: the token (when configured), the
+    run and the ``X-Twilio-Signature`` must all check out. The state is read
+    from the database, never from the parameters Twilio sends.
+    """
+    if ws_auth.token_configured() and not ws_auth.verify_connect_action_token(
+        workflow_run_id, t
+    ):
+        logger.warning(f"[run {workflow_run_id}] Invalid connect-action token")
+        raise HTTPException(status_code=403, detail="Invalid callback token")
+
+    run = await db_client.get_workflow_run_by_id(workflow_run_id)
+    workflow = await db_client.get_workflow_by_id(run.workflow_id) if run else None
+    if not workflow:
+        logger.warning(f"[run {workflow_run_id}] connect-action for unknown run")
+        raise HTTPException(status_code=403, detail="Invalid callback")
+
+    provider = await get_telephony_provider_for_run(run, workflow.organization_id)
+    is_valid = provider.PROVIDER_NAME == "twilio" and (
+        await provider.verify_inbound_signature(
+            str(request.url), dict(await request.form()), dict(request.headers)
+        )
+    )
+    if not is_valid:
+        logger.warning(f"[run {workflow_run_id}] Invalid connect-action signature")
+        raise HTTPException(status_code=403, detail="Invalid webhook signature")
+
+    logger.info(f"[run {workflow_run_id}] connect-action, run state {run.state}")
+    return Response(_connect_action_twiml(run.state), media_type="application/xml")
 
 
 @router.get("/twilio/transfer-audio/{token}", include_in_schema=False)
