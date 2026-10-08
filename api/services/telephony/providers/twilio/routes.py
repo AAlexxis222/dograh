@@ -22,12 +22,14 @@ from api.services.telephony.providers.twilio.introduction import (
     introduction_twiml,
     process_introduction_status,
 )
+from api.services.telephony.providers.twilio.provider import CONNECT_ACTION_ROUTE
 from api.services.telephony.status_processor import (
     StatusCallbackRequest,
     _process_status_update,
 )
 from api.services.telephony.transfer_audio import get_transfer_audio
 from api.services.telephony.transfer_event_protocol import TransferEventType
+from api.services.workflow.run_ending import get_run_ending
 
 router = APIRouter()
 
@@ -162,7 +164,7 @@ async def handle_twilio_status_callback(
     return {"status": "success"}
 
 
-@router.post("/twilio/connect-action/{workflow_run_id}", include_in_schema=False)
+@router.post(f"{CONNECT_ACTION_ROUTE}/{{workflow_run_id}}", include_in_schema=False)
 async def handle_twilio_connect_action(
     workflow_run_id: int, request: Request, t: str | None = None
 ):
@@ -203,9 +205,9 @@ async def handle_twilio_connect_action(
 
     # The row turns `completed` only at the end of teardown, after the hangup
     # that triggers this request; the mark covers the gap.
-    manager = await get_call_transfer_manager()
+    run_ending = await get_run_ending()
     call_ended = run.state == WorkflowRunState.COMPLETED.value or (
-        await manager.is_run_ending(workflow_run_id)
+        await run_ending.is_marked(workflow_run_id)
     )
     logger.info(
         f"[run {workflow_run_id}] connect-action, run state {run.state}, "

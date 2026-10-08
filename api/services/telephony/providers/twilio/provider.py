@@ -29,7 +29,9 @@ if TYPE_CHECKING:
     from fastapi import WebSocket
 
 
-_CONNECT_ACTION_PATH = "/api/v1/telephony/twilio/connect-action"
+# Where the `<Connect action>` callback is mounted, relative to the telephony
+# router. The route decorator and the URL builder below both use it.
+CONNECT_ACTION_ROUTE = "/twilio/connect-action"
 
 
 def _xml_attr(value: str) -> str:
@@ -43,7 +45,10 @@ def build_connect_action_url(backend_endpoint: str, workflow_run_id: int) -> str
     callback decides by the run's state in our database, so no other
     information needs to travel in the URL.
     """
-    url = f"{backend_endpoint.rstrip('/')}{_CONNECT_ACTION_PATH}/{workflow_run_id}"
+    url = (
+        f"{backend_endpoint.rstrip('/')}/api/v1/telephony"
+        f"{CONNECT_ACTION_ROUTE}/{workflow_run_id}"
+    )
     token = ws_auth.mint_connect_action_token(workflow_run_id)
     return f"{url}?t={token}" if token else url
 

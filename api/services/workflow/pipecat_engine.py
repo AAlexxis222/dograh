@@ -61,7 +61,11 @@ from loguru import logger
 
 from api.services.managed_model_services import MPS_CORRELATION_ID_CONTEXT_KEY
 from api.services.workflow import pipecat_engine_callbacks as engine_callbacks
-from api.services.workflow.answer_handling import ANSWER_TERMINAL_REASONS, handle_answer
+from api.services.workflow.answer_handling import (
+    ANSWER_DECIDED_REASONS,
+    ANSWER_TERMINAL_REASONS,
+    handle_answer,
+)
 from api.services.workflow.disposition_extraction import (
     CALL_DISPOSITION_CONTEXT_KEY,
     DispositionExtractionService,
@@ -85,6 +89,7 @@ from api.services.workflow.pipecat_engine_custom_tools import (
 from api.services.workflow.pipecat_engine_variable_extractor import (
     VariableExtractionManager,
 )
+from api.services.workflow.run_ending import get_run_ending
 from api.services.workflow.tools.knowledge_base import (
     retrieve_from_knowledge_base,
 )
@@ -135,16 +140,11 @@ _INTENTIONAL_END_REASONS = frozenset(
         EndTaskReason.CALL_DURATION_EXCEEDED.value,  # our max-duration limit
         EndTaskReason.USER_IDLE_MAX_DURATION_EXCEEDED.value,  # our idle limit
         EndTaskReason.VOICEMAIL_DETECTED.value,  # our answer supervisor's verdict
-        # The answer supervisor's own drops. Spelled out rather than derived from
+        # The answer supervisor's own decisions. A named tuple, not
         # `ANSWER_TERMINAL_REASONS`, so a reason added there later is not marked
-        # until someone decides it is ours. `answer_message_failed` is a failed
-        # playback, not a decision, and a person may be on the line: unmarked.
-        "machine_timeout",
-        "voicemail_no_message",
-        "ivr_detected",
-        "screening_timeout",
-        "screening_limit",
-        "screening_message_missing",
+        # until someone decides it is ours (`answer_message_failed` is a failed
+        # playback, not a decision, and a person may be on the line).
+        *ANSWER_DECIDED_REASONS,
     }
 )
 
@@ -1302,12 +1302,8 @@ class PipecatEngine:
         """
         if call_status not in _INTENTIONAL_END_REASONS:
             return
-        from api.services.telephony.call_transfer_manager import (
-            get_call_transfer_manager,
-        )
-
-        manager = await get_call_transfer_manager()
-        await manager.mark_run_ending(self._workflow_run_id)
+        run_ending = await get_run_ending()
+        await run_ending.mark(self._workflow_run_id)
 
     async def _end_call(
         self,

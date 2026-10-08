@@ -18,13 +18,13 @@ from twilio.request_validator import RequestValidator
 
 from api import constants
 from api.services.telephony import ws_auth
-from api.services.telephony.call_transfer_manager import CallTransferManager
 from api.services.telephony.providers.twilio import provider as provider_module
 from api.services.telephony.providers.twilio.provider import (
     TwilioProvider,
     build_stream_twiml,
 )
 from api.services.telephony.providers.twilio.routes import router
+from api.services.workflow.run_ending import RunEnding
 
 ROUTES = "api.services.telephony.providers.twilio.routes"
 RUN_ID = 42
@@ -95,9 +95,9 @@ def db(twilio, fake_redis):
             return_value=twilio,
         ),
         patch(
-            f"{ROUTES}.get_call_transfer_manager",
+            f"{ROUTES}.get_run_ending",
             new_callable=AsyncMock,
-            return_value=CallTransferManager(redis_client=fake_redis),
+            return_value=RunEnding(fake_redis),
         ),
     ):
         db_client.get_workflow_run_by_id = AsyncMock(
@@ -311,7 +311,7 @@ def test_no_secret_means_no_token_in_the_url_and_no_token_check(
 
 
 async def _mark_ending(fake_redis):
-    await CallTransferManager(redis_client=fake_redis).mark_run_ending(RUN_ID)
+    await RunEnding(fake_redis).mark(RUN_ID)
 
 
 @pytest.mark.parametrize("run_state", ["running", "initialized"])
@@ -334,7 +334,7 @@ def test_run_without_the_mark_still_gets_the_message(client, twilio, db, no_secr
 async def test_mark_of_another_run_does_not_hang_this_one_up(
     client, twilio, db, no_secret, fake_redis
 ):
-    await CallTransferManager(redis_client=fake_redis).mark_run_ending(RUN_ID + 1)
+    await RunEnding(fake_redis).mark(RUN_ID + 1)
     _set_state(db, "running")
     assert "<Say" in _post(client, twilio).text
 
@@ -345,9 +345,9 @@ async def test_mark_expires(fake_redis):
 
 
 async def test_unreadable_mark_falls_toward_the_message(client, twilio, db, no_secret):
-    broken = CallTransferManager(redis_client=BrokenRedis())
+    broken = RunEnding(BrokenRedis())
     with patch(
-        f"{ROUTES}.get_call_transfer_manager",
+        f"{ROUTES}.get_run_ending",
         new_callable=AsyncMock,
         return_value=broken,
     ):
@@ -365,16 +365,16 @@ async def test_a_stuck_redis_write_is_abandoned_after_the_cap():
         async def setex(self, *_args):
             await asyncio.sleep(10)
 
-    manager = CallTransferManager(redis_client=SlowRedis())
+    manager = RunEnding(SlowRedis())
     started = time.monotonic()
-    await manager.mark_run_ending(RUN_ID)
+    await manager.mark(RUN_ID)
     assert time.monotonic() - started < 3
 
 
 async def test_unwritable_mark_does_not_stop_the_call_from_ending():
-    manager = CallTransferManager(redis_client=BrokenRedis())
-    await manager.mark_run_ending(RUN_ID)  # must not raise
-    assert await manager.is_run_ending(RUN_ID) is False
+    manager = RunEnding(BrokenRedis())
+    await manager.mark(RUN_ID)  # must not raise
+    assert await manager.is_marked(RUN_ID) is False
 
 
 # --------------------------------------------------------------------------
