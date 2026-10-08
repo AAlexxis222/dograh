@@ -372,7 +372,6 @@ dograh_render_remote_turn_conf() {
     local template=""
     local external_ip="${TURN_EXTERNAL_IP:-${SERVER_IP:-}}"
     local deny_internal_peers=""
-    local denied_peers_file=""
 
     template="$(dograh_template_path "turnserver.remote.conf.template")"
     [[ -n "$external_ip" ]] || dograh_fail "TURN external IP/host is missing"
@@ -384,24 +383,17 @@ dograh_render_remote_turn_conf() {
     fi
 
     deny_internal_peers="$(dograh_turn_deny_internal_peers "$external_ip")" || exit 1
-    if [[ "$deny_internal_peers" == true ]]; then
-        denied_peers_file="$(dograh_template_path "turnserver.denied-peers.conf.template")"
-    fi
 
+    # The template carries the deny block between two marker lines. The markers always go; the lines between them
+    # go only when the relay needs private peers. A template without markers renders unchanged.
     awk \
-        -v denied_peers_file="$denied_peers_file" \
+        -v deny_internal_peers="$deny_internal_peers" \
         -v external_ip="$external_ip" \
         -v turn_secret="$TURN_SECRET" \
         '
-        BEGIN {
-            if (denied_peers_file != "") {
-                while ((getline line < denied_peers_file) > 0) {
-                    denied_peers = denied_peers line ORS
-                }
-                close(denied_peers_file)
-            }
-        }
-        $0 == "__DOGRAH_TURN_DENIED_PEERS__" { printf "%s", denied_peers; next }
+        index($0, "# BEGIN internal-peer deny") == 1 { skipping = (deny_internal_peers != "true"); next }
+        index($0, "# END internal-peer deny") == 1 { skipping = 0; next }
+        skipping { next }
         {
             gsub(/__DOGRAH_TURN_EXTERNAL_IP__/, external_ip)
             gsub(/__DOGRAH_TURN_SECRET__/, turn_secret)

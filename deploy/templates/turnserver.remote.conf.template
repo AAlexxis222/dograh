@@ -24,9 +24,24 @@ fingerprint
 no-cli
 no-multicast-peers
 
-# Peers the relay must not reach (internal ranges): rendered from turnserver.denied-peers.conf.template
-# where the relay is public, left out where it is private (see dograh_render_remote_turn_conf).
-__DOGRAH_TURN_DENIED_PEERS__
+# Never relay into the network the relay sits on: deny loopback, RFC 1918 (this already covers the VPC CIDR and
+# the Docker networks), link-local (cloud metadata at 169.254.169.254) and CGNAT, for IPv4 and IPv6.
+# The block stays in this file on purpose: a renderer that does not know the markers keeps it (fail closed).
+# BEGIN internal-peer deny (rendered only when TURN_DENY_INTERNAL_PEERS is true)
+denied-peer-ip=0.0.0.0-0.255.255.255
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=::1
+denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+# coturn compares address families strictly: the IPv4 ranges above do not cover IPv4-mapped IPv6 or NAT64.
+denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255
+denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff
+# END internal-peer deny
 
 # Relay over UDP only (aiortc needs nothing else); RFC 6062 TCP relay is off.
 no-tcp-relay

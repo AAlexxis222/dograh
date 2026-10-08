@@ -11,7 +11,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = ROOT / "deploy/templates/turnserver.remote.conf.template"
 SETUP_COMMON = ROOT / "scripts/lib/setup_common.sh"
-DENIED_PEERS = ROOT / "deploy/templates/turnserver.denied-peers.conf.template"
+BEGIN_DENY = "# BEGIN internal-peer deny"
+END_DENY = "# END internal-peer deny"
 RELAY_PORTS = range(49152, 49201)  # min-port / max-port of the template
 DENIED_PEER_LINES = (
     "denied-peer-ip=0.0.0.0-0.255.255.255",
@@ -46,20 +47,22 @@ def _line_set(path):
     return set(path.read_text(encoding="utf-8").splitlines())
 
 
-def test_denied_peers_template_covers_internal_ranges():
-    # The ranges are rendered only where the relay is public (see the render tests below).
-    lines = _line_set(DENIED_PEERS)
-    for needle in DENIED_PEER_LINES:
-        assert needle in lines, needle
+def test_template_denies_internal_ranges_between_markers():
+    # The deny lines stay in the main template (the only file every install path fetches): an install that renders
+    # with an older setup_common.sh then still denies. The markers let the render drop them for a private relay.
+    lines = _template_text().splitlines()
+    begin = next(i for i, line in enumerate(lines) if line.startswith(BEGIN_DENY))
+    end = next(i for i, line in enumerate(lines) if line.startswith(END_DENY))
+    assert begin < end
+    assert set(DENIED_PEER_LINES) <= set(lines[begin:end])
+    assert [line for line in lines if line.startswith("denied-peer-ip")] == [
+        line for line in lines[begin:end] if line.startswith("denied-peer-ip")
+    ]  # no deny line outside the block
 
 
 def test_template_keeps_the_unconditional_hardening():
     lines = _line_set(TEMPLATE)
     assert "no-tcp-relay" in lines
-    assert (
-        "__DOGRAH_TURN_DENIED_PEERS__" in lines
-    )  # where the render puts the deny block
-    assert not [line for line in lines if line.startswith("denied-peer-ip")]
     for prefix in ("total-quota=", "max-bps="):
         assert any(line.startswith(prefix) for line in lines), prefix
     # coturn counts user-quota per bare user id (it strips the timestamp), and embed calls all use the token
@@ -133,6 +136,9 @@ def _render(turn_secret, tmp_path, external_ip="203.0.113.7", deny=None):
     env = {
         **os.environ,
         "TURN_EXTERNAL_IP": external_ip,
+        "DOGRAH_DEPLOY_PROJECT_DIR": str(
+            tmp_path
+        ),  # templates here win over the repo ones
         "DOGRAH_DEPLOY_REPO_ROOT": str(ROOT),
     }
     env.pop("TURN_SECRET", None)
@@ -194,7 +200,7 @@ def _rendered_lines(tmp_path, **kwargs):
 def test_render_denies_internal_peers_when_the_relay_is_public(external_ip, tmp_path):
     lines = _rendered_lines(tmp_path, external_ip=external_ip)
     assert set(DENIED_PEER_LINES) <= set(lines)
-    assert "__DOGRAH_TURN_DENIED_PEERS__" not in lines
+    assert not [line for line in lines if line.startswith(("# BEGIN", "# END"))]
 
 
 @linux_only
@@ -215,7 +221,7 @@ def test_render_keeps_internal_peers_for_a_private_relay(external_ip, tmp_path):
     # A relay on a private address (local-turn, LAN, Tailscale) needs private peers or every TURN path fails.
     lines = _rendered_lines(tmp_path, external_ip=external_ip)
     assert not [line for line in lines if line.startswith("denied-peer-ip")]
-    assert "__DOGRAH_TURN_DENIED_PEERS__" not in lines
+    assert not [line for line in lines if line.startswith(("# BEGIN", "# END"))]
     assert "no-tcp-relay" in lines  # the rest of the hardening is unconditional
 
 
@@ -223,12 +229,14 @@ def test_render_keeps_internal_peers_for_a_private_relay(external_ip, tmp_path):
 def test_deny_variable_forces_the_block_on_a_private_relay(tmp_path):
     lines = _rendered_lines(tmp_path, external_ip="192.168.1.10", deny="true")
     assert set(DENIED_PEER_LINES) <= set(lines)
+    assert not [line for line in lines if line.startswith(("# BEGIN", "# END"))]
 
 
 @linux_only
 def test_deny_variable_can_switch_the_block_off_on_a_public_relay(tmp_path):
     lines = _rendered_lines(tmp_path, external_ip="203.0.113.7", deny="false")
     assert not [line for line in lines if line.startswith("denied-peer-ip")]
+    assert not [line for line in lines if line.startswith(("# BEGIN", "# END"))]
 
 
 @linux_only
@@ -238,3 +246,25 @@ def test_render_refuses_an_unknown_deny_value(tmp_path):
     for key in ("code=turn_deny_internal_peers_invalid", "where=", "reason=", "hint="):
         assert key in result.stderr, result.stderr
     assert not out.exists()
+
+
+@linux_only
+@pytest.mark.parametrize("deny", ["true", "false"])
+def test_render_leaves_a_template_without_markers_unchanged(deny, tmp_path):
+    # dograh_template_path prefers <project>/deploy/templates, so a custom template can stand in for the shipped one.
+    templates = tmp_path / "deploy/templates"
+    templates.mkdir(parents=True)
+    lines = [
+        "listening-port=3478",
+        "external-ip=__DOGRAH_TURN_EXTERNAL_IP__",
+        "static-auth-secret=__DOGRAH_TURN_SECRET__",
+    ]
+    (templates / "turnserver.remote.conf.template").write_text("\n".join(lines) + "\n")
+    key = secrets.token_hex(32)
+    result, out = _render(key, tmp_path, external_ip="203.0.113.7", deny=deny)
+    assert result.returncode == 0, result.stderr
+    assert out.read_text().splitlines() == [
+        "listening-port=3478",
+        "external-ip=203.0.113.7",
+        f"static-auth-secret={key}",
+    ]
