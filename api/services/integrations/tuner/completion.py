@@ -8,6 +8,7 @@ from loguru import logger
 
 from api.constants import BACKEND_API_ENDPOINT, TUNER_BASE_URL
 from api.services.integrations.base import IntegrationCompletionContext
+from api.services.integrations.registry import is_active
 
 from .client import TunerDeliveryConfig, post_call
 from .collector import TUNER_RECORDING_PLACEHOLDER
@@ -42,7 +43,7 @@ async def run_completion(
             results[f"tuner_{node_id}"] = {"error": "validation_failed"}
             continue
 
-        if not tuner_data.tuner_enabled:
+        if not is_active("tuner", tuner_data):
             logger.debug(f"Tuner node '{tuner_data.name}' is disabled, skipping")
             continue
 

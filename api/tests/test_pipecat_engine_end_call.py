@@ -19,6 +19,7 @@ and CallbackUserMuteStrategy) matching the production run_pipeline.py configurat
 """
 
 import asyncio
+import time
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, patch
 
@@ -1437,3 +1438,231 @@ class TestOrganizationDispositionMapping:
 
         final = await engine.get_gathered_context()
         assert final["mapped_call_disposition"] == EndTaskReason.USER_HANGUP.value
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.store = {}
+
+    async def setex(self, key, ttl, value):
+        self.store[key] = value
+
+    async def get(self, key):
+        return self.store.get(key)
+
+
+class _SlowRedis(_FakeRedis):
+    """A Redis that accepts the connection and then never answers the write."""
+
+    async def setex(self, key, ttl, value):
+        await asyncio.sleep(10)
+
+
+class TestEndByIntentMark:
+    """`_end_call` marks the run as ending by intent, before anything hangs up.
+
+    Twilio asks the `<Connect action>` callback within a few hundred ms of the
+    media socket closing, while the run row still says `running` (it turns
+    `completed` at the very end of teardown). The callback reads this mark so a
+    caller who heard the goodbye does not also hear the "cannot take your call"
+    message. Only a decision of our own to end the call is marked. A close of
+    the media socket that we did not start (`user_hangup`, `system_cancelled`)
+    may leave the caller on the line, and a pipeline failure is a dropped call:
+    those callers must hear the message, so they get no mark.
+    """
+
+    @staticmethod
+    async def _run_ending(simple_workflow, manager, reason):
+        """End a running mock call with *reason*.
+
+        Returns what the mark read as at each terminal frame, and how long
+        ``end_call_with_reason`` took.
+        """
+        llm = MockLLMService(
+            mock_steps=[MockLLMService.create_text_chunks("Hello!")], chunk_delay=0.001
+        )
+        engine, _tts, transport, task = await create_engine_with_tracking(
+            simple_workflow, llm, EndCallTestHelper()
+        )
+        # What the callback would see the instant the media socket closes.
+        at_terminal_frame: list[bool] = []
+        seconds_to_end: list[float] = []
+        original_queue = task.queue_frame
+
+        async def watching_queue(frame):
+            at_terminal_frame.append(await manager.is_marked(1))
+            return await original_queue(frame)
+
+        task.queue_frame = watching_queue
+
+        with (
+            patch(
+                "api.services.workflow.pipecat_engine.get_run_ending",
+                new_callable=AsyncMock,
+                return_value=manager,
+            ),
+            patch(
+                "api.db:db_client.get_organization_id_by_workflow_run_id",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch("api.db:db_client.update_workflow_run", new_callable=AsyncMock),
+            patch.object(
+                VariableExtractionManager,
+                "_perform_extraction",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+        ):
+
+            async def end_after_response():
+                await engine.set_node(engine.active_agent.workflow.start_node_id)
+                await engine.active_agent.llm.queue_frame(
+                    LLMContextFrame(engine.context)
+                )
+                await asyncio.sleep(0.1)
+                started = time.monotonic()
+                try:
+                    await asyncio.wait_for(
+                        engine.end_call_with_reason(reason, abort_immediately=True), 8
+                    )
+                finally:
+                    seconds_to_end.append(time.monotonic() - started)
+
+            await run_engine_test_pipeline(
+                task, engine, transport, on_ready=end_after_response
+            )
+        return at_terminal_frame, seconds_to_end[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reason,expect_mark",
+        [
+            (EndTaskReason.END_CALL.value, True),
+            (EndTaskReason.USER_HANGUP.value, False),
+            (EndTaskReason.SYSTEM_CANCELLED.value, False),
+            (EndTaskReason.PIPELINE_ERROR.value, False),
+            (EndTaskReason.UNEXPECTED_ERROR.value, False),
+        ],
+    )
+    async def test_mark_is_written_for_our_own_decision_to_end_only(
+        self, simple_workflow: WorkflowGraph, reason: str, expect_mark: bool
+    ):
+        from api.services.workflow.run_ending import RunEnding
+
+        manager = RunEnding(_FakeRedis())
+        at_terminal_frame, _ = await self._run_ending(simple_workflow, manager, reason)
+
+        assert await manager.is_marked(1) is expect_mark
+        if expect_mark:
+            # Written before the terminal frame is queued, not after.
+            assert at_terminal_frame and at_terminal_frame[-1] is True
+
+    @pytest.mark.asyncio
+    async def test_only_listed_reasons_are_marked_and_unknown_ones_are_not(
+        self, simple_workflow: WorkflowGraph
+    ):
+        from api.services.workflow.run_ending import RunEnding
+
+        ours = [
+            "end_call",
+            "transfer_call",
+            "call_transferred",
+            "call_duration_exceeded",
+            "user_idle_max_duration_exceeded",
+            "voicemail_detected",
+            "machine_timeout",
+            "voicemail_no_message",
+            "ivr_detected",
+            "screening_timeout",
+            "screening_limit",
+            "screening_message_missing",
+        ]
+        not_ours = [
+            "user_hangup",
+            "system_cancelled",
+            "pipeline_error",
+            "unexpected_error",
+            "answer_message_failed",
+            "a_reason_added_later",
+        ]
+        engine, _tts, _transport, _task = await create_engine_with_tracking(
+            simple_workflow,
+            MockLLMService(mock_steps=[], chunk_delay=0.001),
+            EndCallTestHelper(),
+        )
+        marked = {}
+        for reason in [*ours, *not_ours]:
+            manager = RunEnding(_FakeRedis())
+            with patch(
+                "api.services.workflow.pipecat_engine.get_run_ending",
+                new_callable=AsyncMock,
+                return_value=manager,
+            ):
+                await engine._mark_run_ending_by_intent(reason)
+            marked[reason] = await manager.is_marked(1)
+
+        assert marked == {**dict.fromkeys(ours, True), **dict.fromkeys(not_ours, False)}
+
+    def test_a_reason_added_to_the_answer_supervisor_is_not_marked_automatically(
+        self, monkeypatch
+    ):
+        """The allowlist is explicit, so a new end reason defaults to "no mark".
+
+        The set is built when the engine module is imported, so the module is
+        executed again (as a private copy) with an extra supervisor reason.
+        """
+        import importlib.util
+
+        from api.services.workflow import answer_handling, pipecat_engine
+
+        monkeypatch.setattr(
+            answer_handling,
+            "ANSWER_TERMINAL_REASONS",
+            (*answer_handling.ANSWER_TERMINAL_REASONS, "a_new_supervisor_drop"),
+        )
+        spec = importlib.util.spec_from_file_location(
+            "engine_with_extra_reason", pipecat_engine.__file__
+        )
+        fresh = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fresh)
+
+        assert "a_new_supervisor_drop" not in fresh._INTENTIONAL_END_REASONS
+        # ...while the reasons that are ours are still there.
+        assert "machine_timeout" in fresh._INTENTIONAL_END_REASONS
+
+    def test_a_reason_added_to_the_answer_decisions_is_marked(self, monkeypatch):
+        """`ANSWER_DECIDED_REASONS` is the list of the supervisor's own decisions."""
+        import importlib.util
+
+        from api.services.workflow import answer_handling, pipecat_engine
+
+        monkeypatch.setattr(
+            answer_handling,
+            "ANSWER_DECIDED_REASONS",
+            (*answer_handling.ANSWER_DECIDED_REASONS, "a_new_supervisor_decision"),
+        )
+        spec = importlib.util.spec_from_file_location(
+            "engine_with_extra_decision", pipecat_engine.__file__
+        )
+        fresh = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fresh)
+
+        assert "a_new_supervisor_decision" in fresh._INTENTIONAL_END_REASONS
+
+    @pytest.mark.asyncio
+    async def test_a_stuck_redis_does_not_stop_the_call_from_ending(
+        self, simple_workflow: WorkflowGraph
+    ):
+        """A blackholed Redis must cost the mark, never the terminal frame."""
+        from api.services.workflow.run_ending import RunEnding
+
+        manager = RunEnding(_SlowRedis())
+        at_terminal_frame, seconds_to_end = await self._run_ending(
+            simple_workflow, manager, EndTaskReason.END_CALL.value
+        )
+
+        assert at_terminal_frame, "the terminal frame was never queued"
+        assert at_terminal_frame[-1] is False  # no mark: the write was abandoned
+        # The write is cut off after 2 s; without that cap this takes the full 10.
+        assert seconds_to_end < 4

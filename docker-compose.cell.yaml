@@ -1,0 +1,151 @@
+# Cell overlay: hardened deployment for one client cell.
+# Apply: docker compose -f docker-compose.yaml -f docker-compose.cell.yaml ...
+# Required secrets are listed in deploy/cell/.env.reference; compose fails if one is unset.
+# The base file interpolates POSTGRES_PASSWORD, REDIS_PASSWORD and the MinIO credentials into the
+# api DATABASE_URL, REDIS_URL and MINIO_* settings, so requiring them here keeps api in step.
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "50m", max-file: "5" }
+
+# Cell environment of api; the roles that share its code (call, arq, coordinators) reuse it. Each role adds CELL_ROLE (its name) for the schema gate.
+x-cell-env: &cell-env
+  ENABLE_TELEMETRY: "false"
+  POSTHOG_API_KEY: ""
+  POSTHOG_HOST: ""
+  TELEPHONY_WS_TOKEN_ENFORCE: "true"
+  TELEPHONY_WS_TOKEN_SECRET: "${TELEPHONY_WS_TOKEN_SECRET:?TELEPHONY_WS_TOKEN_SECRET must be set}"
+  DOGRAH_DEVOPS_SECRET: "${DOGRAH_DEVOPS_SECRET:?DOGRAH_DEVOPS_SECRET must be set}"
+  TURN_SECRET: "${TURN_SECRET:?TURN_SECRET must be set}"
+  ENABLE_SIGNUP: "false"
+  LOG_LEVEL: "INFO"
+  SERIALIZE_LOG_OUTPUT: "true"
+  URL_GUARD_ENFORCE: "true"
+  # Migrations run out of band in a cell (start_services_docker.sh skips them), never on a role's start.
+  RUN_MIGRATIONS_ON_START: "false"
+  # One duty per role: by default a role runs no singleton and no arq worker; coordinators turns the singletons on.
+  ENABLE_ARI_MANAGER: "false"
+  ENABLE_CAMPAIGN_ORCHESTRATOR: "false"
+  ARQ_WORKERS: "0"
+  # Recordings go to S3 from day 1: the bundled MinIO bucket has an anonymous read/write policy.
+  # Credentials stay blank on purpose: S3 access uses host-vended short-lived credentials (credential_process), never IMDS or static keys.
+  ENABLE_AWS_S3: "true"
+  S3_BUCKET: "${S3_BUCKET:?S3_BUCKET must be set}"
+  S3_REGION: "${S3_REGION:?S3_REGION must be set}"
+  # Blank on purpose: botocore skips empty keys, and this stops static keys leaking in from .env.
+  AWS_ACCESS_KEY_ID: ""
+  AWS_SECRET_ACCESS_KEY: ""
+  AWS_SESSION_TOKEN: "" # the base passes it through from .env
+  # Short-lived credentials vended by the host via credential_process (VOZ-AC-B5-55/-91); containers never use IMDS.
+  AWS_CONFIG_FILE: /etc/xpand/aws/config # shipped by the overlay: botocore reads it once, at api start
+  AWS_SHARED_CREDENTIALS_FILE: /dev/null
+  AWS_EC2_METADATA_DISABLED: "true"
+
+configs:
+  cell-aws-config:
+    content: |
+      [default]
+      credential_process = /bin/cat /run/aws/credentials.json
+
+x-cell-aws-creds: &cell-aws-creds
+  type: bind
+  source: /run/xpand/aws/recordings # directory, not file: the host's atomic rename stays visible
+  target: /run/aws
+  read_only: true
+  bind: { create_host_path: false }
+
+# What the roles that run from the api image share (VOZ-N0-08). Every role mounts the S3 credentials because
+# the shared env sets ENABLE_AWS_S3: call uploads recordings and transcripts, arq uploads knowledge-base files
+# and reads campaign CSVs, api signs the download/upload URLs it hands out. coordinators touches no storage
+# directly but takes the same env, and the guard test pins env and mounts together.
+# image: the fork's image, pinned by digest. It alone ships the call entrypoint and the migration gates; the base
+# file's default image is upstream's, where call would crash-loop and api would race `alembic upgrade head`.
+x-cell-role: &cell-role
+  image: "${CELL_API_IMAGE:?CELL_API_IMAGE must be set (fork image, pinned by digest)}"
+  ports: !reset []
+  restart: unless-stopped
+  logging: *logging
+  volumes: [*cell-aws-creds]
+  configs: [{ source: cell-aws-config, target: /etc/xpand/aws/config }]
+
+services:
+  postgres:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}"
+  redis:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+    command: >
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+      --appendonly yes --appendfsync everysec
+  minio:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}"
+  # api serves HTTP only: the singletons and the arq worker run in their own roles below.
+  api:
+    <<: *cell-role
+    environment:
+      <<: *cell-env
+      CELL_ROLE: api
+  # call holds the live phone calls; its entrypoint drains them before uvicorn receives TERM.
+  # stop_grace_period is not set here: VOZ-N0-20 renders it from durations.py.
+  call:
+    <<: *cell-role
+    extends: { file: docker-compose.yaml, service: api } # same image as api; the base command is replaced below
+    entrypoint: ["bash", "scripts/xpand/call_entrypoint.sh"]
+    mem_limit: ${CALL_MEM_LIMIT:?CALL_MEM_LIMIT must be set}
+    oom_score_adj: 500
+    environment:
+      <<: *cell-env
+      CELL_ROLE: call
+  arq:
+    <<: *cell-role
+    extends: { file: docker-compose.yaml, service: api }
+    # The base start script (which gates api and coordinators) is not on arq's path, so the gate wraps its command.
+    command: ["bash", "-c", "scripts/xpand/require_db_head.sh arq && exec ./scripts/run_arq_worker.sh"]
+    healthcheck: { disable: true } # no HTTP server in this role
+    environment:
+      <<: *cell-env
+      CELL_ROLE: arq
+  # ari_manager and campaign_orchestrator, through the base start script with uvicorn and arq off.
+  coordinators:
+    <<: *cell-role
+    extends: { file: docker-compose.yaml, service: api }
+    healthcheck: { disable: true }
+    environment:
+      <<: *cell-env
+      CELL_ROLE: coordinators
+      ENABLE_ARI_MANAGER: "true"
+      ENABLE_CAMPAIGN_ORCHESTRATOR: "true"
+      FASTAPI_WORKERS: "0"
+      ARQ_WORKERS: "0"
+  ui:
+    ports: !reset []
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      ENABLE_TELEMETRY: "false"
+      POSTHOG_KEY: ""
+      POSTHOG_HOST: ""
+  nginx: { restart: unless-stopped, logging: *logging }
+  # Own network, not app-network: coturn cannot reach postgres, redis, minio or api (VOZ-AC-B4-05b).
+  # The api mints TURN credentials locally (HMAC), so nothing in the cell talks to coturn.
+  coturn: { restart: unless-stopped, logging: *logging, networks: !override [turn-net] }
+  # One-shot init container: runs to completion, so no restart policy and no ports.
+  # Fail closed in a cell (VOZ-AC-B0-30):
+  # - ENVIRONMENT production: outside it dograh-init does nothing without TURN_HOST, and coturn then starts on its
+  #   defaults (an open relay). The remote branch renders the config and refuses to start on a missing SERVER_IP or certs.
+  # - TURN_DENY_INTERNAL_PEERS: the deny block stays even if someone gives the cell a private SERVER_IP.
+  dograh-init:
+    logging: *logging
+    environment: { ENVIRONMENT: production, TURN_DENY_INTERNAL_PEERS: "true" }
+  cloudflared: !reset null
+networks:
+  turn-net: {}

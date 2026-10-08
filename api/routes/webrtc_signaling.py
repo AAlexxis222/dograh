@@ -11,12 +11,11 @@ Uses the SmallWebRTC API contract:
 TURN Authentication:
 - Uses time-limited credentials (TURN REST API) when TURN_SECRET is configured
 - Credentials are generated per-connection using HMAC-SHA1
-- Falls back to static credentials if TURN_SECRET is not set (legacy mode)
+- Without TURN_SECRET only STUN is offered (there are no static credentials)
 """
 
 import asyncio
 import ipaddress
-import os
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Dict, List, Optional, Set
@@ -41,7 +40,6 @@ from api.errors.failure import (
 )
 from api.routes.turn_credentials import (
     TURN_HOST,
-    TURN_PORT,
     TURN_SECRET,
     generate_turn_credentials,
 )
@@ -282,25 +280,7 @@ def get_ice_servers(user_id: Optional[str] = None) -> List[RTCIceServer]:
         except Exception as e:
             logger.error(f"Failed to generate TURN credentials: {e}")
 
-    # Fallback to static credentials (legacy mode - not recommended for production)
-    turn_username = os.getenv("TURN_USERNAME")
-    turn_password = os.getenv("TURN_PASSWORD")
-
-    if turn_username and turn_password:
-        servers.append(
-            RTCIceServer(
-                urls=[
-                    f"turn:{TURN_HOST}:{TURN_PORT}",
-                    f"turn:{TURN_HOST}:{TURN_PORT}?transport=tcp",
-                ],
-                username=turn_username,
-                credential=turn_password,
-            )
-        )
-        logger.warning(
-            f"TURN server configured with static credentials (consider using TURN_SECRET for time-limited auth)"
-        )
-
+    # No static-credential fallback: without TURN_SECRET (or if minting failed) only STUN remains.
     return servers
 
 

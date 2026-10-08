@@ -92,6 +92,8 @@ services:
       MINIO_PUBLIC_ENDPOINT: "${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}"
       TURN_HOST: "${TURN_HOST:-}"
       TURN_SECRET: "${TURN_SECRET:-}"
+      # true/false forces the internal-peer deny block of the coturn config; empty = decided from the relay address.
+      TURN_DENY_INTERNAL_PEERS: "${TURN_DENY_INTERNAL_PEERS:-}"
       FASTAPI_WORKERS: "${FASTAPI_WORKERS:-1}"
     volumes:
       - ./scripts:/workspace/scripts:ro
@@ -265,9 +267,9 @@ services:
       TELEPHONY_WS_TOKEN_ENFORCE: "${TELEPHONY_WS_TOKEN_ENFORCE:-false}"
 
       # Telemetry
-      ENABLE_TELEMETRY: "${ENABLE_TELEMETRY:-true}"
-      POSTHOG_API_KEY: "phc_ItizB1dP6yv7ZYobbcqrpxTdbomDA8hJFSEmAMdYvIr"
-      POSTHOG_HOST: "https://us.i.posthog.com"
+      ENABLE_TELEMETRY: "${ENABLE_TELEMETRY:-false}"
+      POSTHOG_API_KEY: "${POSTHOG_API_KEY:-}"
+      POSTHOG_HOST: "${POSTHOG_HOST:-https://us.i.posthog.com}"
 
     ports:
       - "8000:8000"
@@ -302,11 +304,11 @@ services:
       NODE_ENV: "oss"
 
       # Flag to enable/ disable posthog
-      ENABLE_TELEMETRY: "${ENABLE_TELEMETRY:-true}"
+      ENABLE_TELEMETRY: "${ENABLE_TELEMETRY:-false}"
 
       # Posthog
-      POSTHOG_KEY: "phc_ItizB1dP6yv7ZYobbcqrpxTdbomDA8hJFSEmAMdYvIr"
-      POSTHOG_HOST: "https://us.posthog.com"
+      POSTHOG_KEY: "${POSTHOG_KEY:-}"
+      POSTHOG_HOST: "${POSTHOG_HOST:-https://us.posthog.com}"
     ports:
       - "3010:3010"
     depends_on:
