@@ -7,7 +7,7 @@ x-logging: &logging
   driver: json-file
   options: { max-size: "50m", max-file: "5" }
 
-# Cell environment of api; the roles that share its code (call, arq, coordinators) reuse it.
+# Cell environment of api; the roles that share its code (call, arq, coordinators) reuse it. Each role adds CELL_ROLE (its name) for the schema gate.
 x-cell-env: &cell-env
   ENABLE_TELEMETRY: "false"
   POSTHOG_API_KEY: ""
@@ -19,6 +19,12 @@ x-cell-env: &cell-env
   LOG_LEVEL: "INFO"
   SERIALIZE_LOG_OUTPUT: "true"
   URL_GUARD_ENFORCE: "true"
+  # Migrations run out of band in a cell (start_services_docker.sh skips them), never on a role's start.
+  RUN_MIGRATIONS_ON_START: "false"
+  # One duty per role: by default a role runs no singleton and no arq worker; coordinators turns the singletons on.
+  ENABLE_ARI_MANAGER: "false"
+  ENABLE_CAMPAIGN_ORCHESTRATOR: "false"
+  ARQ_WORKERS: "0"
   # Recordings go to S3 from day 1: the bundled MinIO bucket has an anonymous read/write policy.
   # Credentials stay blank on purpose: S3 access uses host-vended short-lived credentials (credential_process), never IMDS or static keys.
   ENABLE_AWS_S3: "true"
@@ -46,6 +52,20 @@ x-cell-aws-creds: &cell-aws-creds
   read_only: true
   bind: { create_host_path: false }
 
+# What the roles that run from the api image share (VOZ-N0-08). Every role mounts the S3 credentials because
+# the shared env sets ENABLE_AWS_S3: call uploads recordings and transcripts, arq uploads knowledge-base files
+# and reads campaign CSVs, api signs the download/upload URLs it hands out. coordinators touches no storage
+# directly but takes the same env, and the guard test pins env and mounts together.
+# image: the fork's image, pinned by digest. It alone ships the call entrypoint and the migration gates; the base
+# file's default image is upstream's, where call would crash-loop and api would race `alembic upgrade head`.
+x-cell-role: &cell-role
+  image: "${CELL_API_IMAGE:?CELL_API_IMAGE must be set (fork image, pinned by digest)}"
+  ports: !reset []
+  restart: unless-stopped
+  logging: *logging
+  volumes: [*cell-aws-creds]
+  configs: [{ source: cell-aws-config, target: /etc/xpand/aws/config }]
+
 services:
   postgres:
     ports: !reset []
@@ -67,13 +87,44 @@ services:
     environment:
       MINIO_ROOT_USER: "${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}"
       MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}"
+  # api serves HTTP only: the singletons and the arq worker run in their own roles below.
   api:
-    ports: !reset []
-    restart: unless-stopped
-    logging: *logging
-    environment: *cell-env
-    volumes: [*cell-aws-creds]
-    configs: [{ source: cell-aws-config, target: /etc/xpand/aws/config }]
+    <<: *cell-role
+    environment:
+      <<: *cell-env
+      CELL_ROLE: api
+  # call holds the live phone calls; its entrypoint drains them before uvicorn receives TERM.
+  # stop_grace_period is not set here: VOZ-N0-20 renders it from durations.py.
+  call:
+    <<: *cell-role
+    extends: { file: docker-compose.yaml, service: api } # same image as api; the base command is replaced below
+    entrypoint: ["bash", "scripts/xpand/call_entrypoint.sh"]
+    mem_limit: ${CALL_MEM_LIMIT:?CALL_MEM_LIMIT must be set}
+    oom_score_adj: 500
+    environment:
+      <<: *cell-env
+      CELL_ROLE: call
+  arq:
+    <<: *cell-role
+    extends: { file: docker-compose.yaml, service: api }
+    # The base start script (which gates api and coordinators) is not on arq's path, so the gate wraps its command.
+    command: ["bash", "-c", "scripts/xpand/require_db_head.sh arq && exec ./scripts/run_arq_worker.sh"]
+    healthcheck: { disable: true } # no HTTP server in this role
+    environment:
+      <<: *cell-env
+      CELL_ROLE: arq
+  # ari_manager and campaign_orchestrator, through the base start script with uvicorn and arq off.
+  coordinators:
+    <<: *cell-role
+    extends: { file: docker-compose.yaml, service: api }
+    healthcheck: { disable: true }
+    environment:
+      <<: *cell-env
+      CELL_ROLE: coordinators
+      ENABLE_ARI_MANAGER: "true"
+      ENABLE_CAMPAIGN_ORCHESTRATOR: "true"
+      FASTAPI_WORKERS: "0"
+      ARQ_WORKERS: "0"
   ui:
     ports: !reset []
     restart: unless-stopped
