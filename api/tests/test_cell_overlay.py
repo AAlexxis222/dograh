@@ -157,6 +157,11 @@ def test_coturn_is_on_its_own_network(cfg):
     assert not [n for n, s in cfg.items() if n != "coturn" and "turn-net" in s.get("networks", {})]
 
 
+def test_turn_init_denies_internal_peers_even_on_a_private_address(cfg):
+    # Fail closed in a cell (VOZ-AC-B0-30): the render would otherwise skip the deny block for a private SERVER_IP.
+    assert cfg["dograh-init"]["environment"]["TURN_DENY_INTERNAL_PEERS"] == "true"
+
+
 def test_ui_has_no_telemetry(cfg):
     env = cfg["ui"]["environment"]
     assert env["ENABLE_TELEMETRY"] == "false" and not env.get("POSTHOG_KEY")

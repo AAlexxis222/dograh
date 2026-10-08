@@ -336,24 +336,72 @@ dograh_render_remote_nginx_conf() {
     rm -f "$tmp_upstream"
 }
 
+# Print "true" when the relay must refuse internal peers, "false" when it needs them.
+# $1 = external IP or host of the relay. TURN_DENY_INTERNAL_PEERS (true/false) wins; otherwise the answer is "false"
+# for a private (RFC 1918), loopback, link-local or CGNAT IPv4 literal (local-turn, LAN and Tailscale installs relay
+# between private peers) and "true" for anything else, a hostname included.
+dograh_turn_deny_internal_peers() {
+    local external_ip=$1
+    local a b c d
+
+    case "${TURN_DENY_INTERNAL_PEERS:-}" in
+        true | false) printf '%s\n' "$TURN_DENY_INTERNAL_PEERS"; return 0 ;;
+        "") ;;
+        *) dograh_fail "code=turn_deny_internal_peers_invalid where=TURN_DENY_INTERNAL_PEERS reason=expected true or false, got '${TURN_DENY_INTERNAL_PEERS}' hint=set it to true or false, or leave it unset" ;;
+    esac
+
+    if [[ "$external_ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+        a=$((10#${BASH_REMATCH[1]})) b=$((10#${BASH_REMATCH[2]})) c=$((10#${BASH_REMATCH[3]})) d=$((10#${BASH_REMATCH[4]}))
+        if ((a <= 255 && b <= 255 && c <= 255 && d <= 255)) && {
+            ((a == 10 || a == 127)) ||
+            ((a == 169 && b == 254)) ||
+            ((a == 192 && b == 168)) ||
+            ((a == 172 && b >= 16 && b <= 31)) ||
+            ((a == 100 && b >= 64 && b <= 127))
+        }; then
+            echo false
+            return 0
+        fi
+    fi
+    echo true
+}
+
 dograh_render_remote_turn_conf() {
     local project_dir=${1:-$(dograh_project_dir)}
     local destination=${2:-"$project_dir/turnserver.conf"}
     local template=""
     local external_ip="${TURN_EXTERNAL_IP:-${SERVER_IP:-}}"
+    local deny_internal_peers=""
+    local denied_peers_file=""
 
     template="$(dograh_template_path "turnserver.remote.conf.template")"
     [[ -n "$external_ip" ]] || dograh_fail "TURN external IP/host is missing"
-    # Both dograh-init branches render here, so a placeholder fails init and coturn (which waits on it) never starts.
+    # Both dograh-init branches render here, so a placeholder fails init: coturn and nginx both wait on it, so
+    # neither starts and the stack loses HTTPS too (fail closed, intended).
     # A placeholder is any value that says "change" (the .env.example ones do); a generated hex value never does.
     if [[ -z "${TURN_SECRET:-}" || "$TURN_SECRET" == *[Cc][Hh][Aa][Nn][Gg][Ee]* ]]; then
         dograh_fail "code=turn_secret_default where=dograh_render_remote_turn_conf reason=TURN_SECRET is empty or still a placeholder from an .env.example hint=generate one with: openssl rand -hex 32"
     fi
 
+    deny_internal_peers="$(dograh_turn_deny_internal_peers "$external_ip")" || exit 1
+    if [[ "$deny_internal_peers" == true ]]; then
+        denied_peers_file="$(dograh_template_path "turnserver.denied-peers.conf.template")"
+    fi
+
     awk \
+        -v denied_peers_file="$denied_peers_file" \
         -v external_ip="$external_ip" \
         -v turn_secret="$TURN_SECRET" \
         '
+        BEGIN {
+            if (denied_peers_file != "") {
+                while ((getline line < denied_peers_file) > 0) {
+                    denied_peers = denied_peers line ORS
+                }
+                close(denied_peers_file)
+            }
+        }
+        $0 == "__DOGRAH_TURN_DENIED_PEERS__" { printf "%s", denied_peers; next }
         {
             gsub(/__DOGRAH_TURN_EXTERNAL_IP__/, external_ip)
             gsub(/__DOGRAH_TURN_SECRET__/, turn_secret)

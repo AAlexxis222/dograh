@@ -11,7 +11,7 @@ Uses the SmallWebRTC API contract:
 TURN Authentication:
 - Uses time-limited credentials (TURN REST API) when TURN_SECRET is configured
 - Credentials are generated per-connection using HMAC-SHA1
-- Falls back to static credentials if TURN_SECRET is not set (legacy mode)
+- Without TURN_SECRET only STUN is offered (there are no static credentials)
 """
 
 import asyncio

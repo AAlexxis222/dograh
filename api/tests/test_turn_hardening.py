@@ -11,7 +11,23 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = ROOT / "deploy/templates/turnserver.remote.conf.template"
 SETUP_COMMON = ROOT / "scripts/lib/setup_common.sh"
+DENIED_PEERS = ROOT / "deploy/templates/turnserver.denied-peers.conf.template"
 RELAY_PORTS = range(49152, 49201)  # min-port / max-port of the template
+DENIED_PEER_LINES = (
+    "denied-peer-ip=0.0.0.0-0.255.255.255",
+    "denied-peer-ip=10.0.0.0-10.255.255.255",
+    "denied-peer-ip=100.64.0.0-100.127.255.255",
+    "denied-peer-ip=127.0.0.0-127.255.255.255",
+    "denied-peer-ip=169.254.0.0-169.254.255.255",
+    "denied-peer-ip=172.16.0.0-172.31.255.255",
+    "denied-peer-ip=192.168.0.0-192.168.255.255",
+    "denied-peer-ip=::1",
+    "denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    # coturn compares address families strictly: the IPv4 ranges above do not cover these.
+    "denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255",
+    "denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff",
+)
 
 
 def _template_text():
@@ -26,24 +42,29 @@ def _example_turn_secret():
     raise AssertionError("api/.env.example no longer sets TURN_SECRET")
 
 
-def test_template_denies_internal_peers_and_tcp_relay():
-    lines = _template_text().splitlines()
-    for needle in (
-        "denied-peer-ip=0.0.0.0-0.255.255.255",
-        "denied-peer-ip=10.0.0.0-10.255.255.255",
-        "denied-peer-ip=100.64.0.0-100.127.255.255",
-        "denied-peer-ip=127.0.0.0-127.255.255.255",
-        "denied-peer-ip=169.254.0.0-169.254.255.255",
-        "denied-peer-ip=172.16.0.0-172.31.255.255",
-        "denied-peer-ip=192.168.0.0-192.168.255.255",
-        "denied-peer-ip=::1",
-        "denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
-        "denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
-        "no-tcp-relay",
-    ):
+def _line_set(path):
+    return set(path.read_text(encoding="utf-8").splitlines())
+
+
+def test_denied_peers_template_covers_internal_ranges():
+    # The ranges are rendered only where the relay is public (see the render tests below).
+    lines = _line_set(DENIED_PEERS)
+    for needle in DENIED_PEER_LINES:
         assert needle in lines, needle
-    for prefix in ("user-quota=", "total-quota=", "max-bps="):
+
+
+def test_template_keeps_the_unconditional_hardening():
+    lines = _line_set(TEMPLATE)
+    assert "no-tcp-relay" in lines
+    assert (
+        "__DOGRAH_TURN_DENIED_PEERS__" in lines
+    )  # where the render puts the deny block
+    assert not [line for line in lines if line.startswith("denied-peer-ip")]
+    for prefix in ("total-quota=", "max-bps="):
         assert any(line.startswith(prefix) for line in lines), prefix
+    # coturn counts user-quota per bare user id (it strips the timestamp), and embed calls all use the token
+    # creator's id, so a per-user quota would cap concurrent calls per creator. Per-call quota waits for B3.
+    assert not [line for line in lines if line.startswith("user-quota")]
 
 
 def test_total_quota_matches_the_relay_port_range():
@@ -104,17 +125,22 @@ linux_only = pytest.mark.skipif(
 )
 
 
-def _render(turn_secret, tmp_path):
-    """Run dograh_render_remote_turn_conf as dograh-init does, with TURN_SECRET = `turn_secret` (None = unset)."""
+def _render(turn_secret, tmp_path, external_ip="203.0.113.7", deny=None):
+    """Run dograh_render_remote_turn_conf as dograh-init does.
+
+    turn_secret None = unset; deny None = TURN_DENY_INTERNAL_PEERS unset."""
     out = tmp_path / "turnserver.conf"
     env = {
         **os.environ,
-        "TURN_EXTERNAL_IP": "203.0.113.7",
+        "TURN_EXTERNAL_IP": external_ip,
         "DOGRAH_DEPLOY_REPO_ROOT": str(ROOT),
     }
     env.pop("TURN_SECRET", None)
+    env.pop("TURN_DENY_INTERNAL_PEERS", None)
     if turn_secret is not None:
         env["TURN_SECRET"] = turn_secret
+    if deny is not None:
+        env["TURN_DENY_INTERNAL_PEERS"] = deny
     result = subprocess.run(
         [
             "bash",
@@ -152,3 +178,63 @@ def test_render_accepts_a_real_turn_secret(tmp_path):
     text = out.read_text()
     assert f"static-auth-secret={key}" in text
     assert "no-tcp-relay" in text
+
+
+def _rendered_lines(tmp_path, **kwargs):
+    result, out = _render(secrets.token_hex(32), tmp_path, **kwargs)
+    assert result.returncode == 0, result.stderr
+    return out.read_text().splitlines()
+
+
+@linux_only
+@pytest.mark.parametrize(
+    "external_ip",
+    ["203.0.113.7", "8.8.8.8", "172.32.0.1", "100.128.0.1", "turn.example.test"],
+)
+def test_render_denies_internal_peers_when_the_relay_is_public(external_ip, tmp_path):
+    lines = _rendered_lines(tmp_path, external_ip=external_ip)
+    assert set(DENIED_PEER_LINES) <= set(lines)
+    assert "__DOGRAH_TURN_DENIED_PEERS__" not in lines
+
+
+@linux_only
+@pytest.mark.parametrize(
+    "external_ip",
+    [
+        "192.168.1.10",
+        "127.0.0.1",
+        "10.1.2.3",
+        "172.16.0.9",
+        "172.31.255.1",
+        "169.254.1.1",
+        "100.64.0.1",
+        "100.127.255.1",
+    ],
+)
+def test_render_keeps_internal_peers_for_a_private_relay(external_ip, tmp_path):
+    # A relay on a private address (local-turn, LAN, Tailscale) needs private peers or every TURN path fails.
+    lines = _rendered_lines(tmp_path, external_ip=external_ip)
+    assert not [line for line in lines if line.startswith("denied-peer-ip")]
+    assert "__DOGRAH_TURN_DENIED_PEERS__" not in lines
+    assert "no-tcp-relay" in lines  # the rest of the hardening is unconditional
+
+
+@linux_only
+def test_deny_variable_forces_the_block_on_a_private_relay(tmp_path):
+    lines = _rendered_lines(tmp_path, external_ip="192.168.1.10", deny="true")
+    assert set(DENIED_PEER_LINES) <= set(lines)
+
+
+@linux_only
+def test_deny_variable_can_switch_the_block_off_on_a_public_relay(tmp_path):
+    lines = _rendered_lines(tmp_path, external_ip="203.0.113.7", deny="false")
+    assert not [line for line in lines if line.startswith("denied-peer-ip")]
+
+
+@linux_only
+def test_render_refuses_an_unknown_deny_value(tmp_path):
+    result, out = _render(secrets.token_hex(32), tmp_path, deny="maybe")
+    assert result.returncode != 0
+    for key in ("code=turn_deny_internal_peers_invalid", "where=", "reason=", "hint="):
+        assert key in result.stderr, result.stderr
+    assert not out.exists()
