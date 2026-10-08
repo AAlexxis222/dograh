@@ -1437,3 +1437,94 @@ class TestOrganizationDispositionMapping:
 
         final = await engine.get_gathered_context()
         assert final["mapped_call_disposition"] == EndTaskReason.USER_HANGUP.value
+
+
+class TestEndByIntentMark:
+    """`_end_call` marks the run as ending by intent, before anything hangs up.
+
+    Twilio asks the `<Connect action>` callback within a few hundred ms of the
+    media socket closing, while the run row still says `running` (it turns
+    `completed` at the very end of teardown). The callback reads this mark so a
+    caller who heard the goodbye does not also hear the "cannot take your call"
+    message. A mid-call failure is not an intentional end and gets no mark.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reason,expect_mark",
+        [
+            (EndTaskReason.USER_HANGUP.value, True),
+            (EndTaskReason.END_CALL.value, True),
+            (EndTaskReason.PIPELINE_ERROR.value, False),
+            (EndTaskReason.UNEXPECTED_ERROR.value, False),
+        ],
+    )
+    async def test_mark_is_written_for_intentional_ends_only(
+        self, simple_workflow: WorkflowGraph, reason: str, expect_mark: bool
+    ):
+        from api.services.telephony.call_transfer_manager import CallTransferManager
+
+        class FakeRedis:
+            def __init__(self):
+                self.store = {}
+
+            async def setex(self, key, ttl, value):
+                self.store[key] = value
+
+            async def get(self, key):
+                return self.store.get(key)
+
+        manager = CallTransferManager(redis_client=FakeRedis())
+        test_helper = EndCallTestHelper()
+        llm = MockLLMService(
+            mock_steps=[MockLLMService.create_text_chunks("Hello!")], chunk_delay=0.001
+        )
+        engine, _tts, transport, task = await create_engine_with_tracking(
+            simple_workflow, llm, test_helper
+        )
+        # What the callback would see the instant the media socket closes.
+        seen_at_terminal_frame: list[bool] = []
+        original_queue = task.queue_frame
+
+        async def watching_queue(frame):
+            seen_at_terminal_frame.append(await manager.is_run_ending(1))
+            return await original_queue(frame)
+
+        task.queue_frame = watching_queue
+
+        with (
+            patch(
+                "api.services.telephony.call_transfer_manager.get_call_transfer_manager",
+                new_callable=AsyncMock,
+                return_value=manager,
+            ),
+            patch(
+                "api.db:db_client.get_organization_id_by_workflow_run_id",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch("api.db:db_client.update_workflow_run", new_callable=AsyncMock),
+            patch.object(
+                VariableExtractionManager,
+                "_perform_extraction",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+        ):
+
+            async def end_after_response():
+                await engine.set_node(engine.active_agent.workflow.start_node_id)
+                await engine.active_agent.llm.queue_frame(
+                    LLMContextFrame(engine.context)
+                )
+                await asyncio.sleep(0.1)
+                await engine.end_call_with_reason(reason, abort_immediately=True)
+
+            await run_engine_test_pipeline(
+                task, engine, transport, on_ready=end_after_response
+            )
+
+        assert await manager.is_run_ending(1) is expect_mark
+        if expect_mark:
+            # Written before the terminal frame is queued, not after.
+            assert seen_at_terminal_frame and seen_at_terminal_frame[-1] is True

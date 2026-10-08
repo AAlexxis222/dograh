@@ -1264,6 +1264,25 @@ class PipecatEngine:
             )
         await asyncio.shield(self._shutdown_task)
 
+    async def _mark_run_ending_by_intent(self, call_status: str) -> None:
+        """Tell the carrier callback this end is intentional, before hanging up.
+
+        The run row turns ``completed`` only at the end of teardown, after the
+        hangup and the socket close; this mark closes that window. A pipeline
+        failure is not an intentional end: that caller should hear the message.
+        """
+        if call_status in (
+            EndTaskReason.PIPELINE_ERROR.value,
+            EndTaskReason.UNEXPECTED_ERROR.value,
+        ):
+            return
+        from api.services.telephony.call_transfer_manager import (
+            get_call_transfer_manager,
+        )
+
+        manager = await get_call_transfer_manager()
+        await manager.mark_run_ending(self._workflow_run_id)
+
     async def _end_call(
         self,
         call_status: str,
@@ -1284,6 +1303,9 @@ class PipecatEngine:
 
         # Mute the pipeline
         self._mute_pipeline = True
+
+        # Before anything below can hang up or close the socket.
+        await self._mark_run_ending_by_intent(call_status)
 
         # A handoff in flight is invalidated before anything else, so no later
         # phase can activate an agent into a call that is ending.

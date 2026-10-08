@@ -18,6 +18,7 @@ from twilio.request_validator import RequestValidator
 
 from api import constants
 from api.services.telephony import ws_auth
+from api.services.telephony.call_transfer_manager import CallTransferManager
 from api.services.telephony.providers.twilio import provider as provider_module
 from api.services.telephony.providers.twilio.provider import (
     TwilioProvider,
@@ -55,8 +56,36 @@ def twilio():
     )
 
 
+class FakeRedis:
+    """In-memory stand-in for the two Redis calls the end-by-intent mark uses."""
+
+    def __init__(self):
+        self.store = {}
+        self.ttls = {}
+
+    async def setex(self, key, ttl, value):
+        self.store[key] = value
+        self.ttls[key] = ttl
+
+    async def get(self, key):
+        return self.store.get(key)
+
+
+class BrokenRedis:
+    async def setex(self, *_args):
+        raise ConnectionError("redis down")
+
+    async def get(self, *_args):
+        raise ConnectionError("redis down")
+
+
 @pytest.fixture
-def db(twilio):
+def fake_redis():
+    return FakeRedis()
+
+
+@pytest.fixture
+def db(twilio, fake_redis):
     """Patched ``db_client`` plus the provider lookup, wired like the other Twilio route tests."""
     with (
         patch(f"{ROUTES}.db_client") as db_client,
@@ -64,6 +93,11 @@ def db(twilio):
             f"{ROUTES}.get_telephony_provider_for_run",
             new_callable=AsyncMock,
             return_value=twilio,
+        ),
+        patch(
+            f"{ROUTES}.get_call_transfer_manager",
+            new_callable=AsyncMock,
+            return_value=CallTransferManager(redis_client=fake_redis),
         ),
     ):
         db_client.get_workflow_run_by_id = AsyncMock(
@@ -269,6 +303,105 @@ def test_no_secret_means_no_token_in_the_url_and_no_token_check(
     assert ws_auth.mint_connect_action_token(RUN_ID) is None
     resp = _post(client, twilio, query={"t": "ignored"})
     assert resp.status_code == 200
+
+
+# --------------------------------------------------------------------------
+# Intentional end: the mark closes the window before the run row says completed
+# --------------------------------------------------------------------------
+
+
+async def _mark_ending(fake_redis):
+    await CallTransferManager(redis_client=fake_redis).mark_run_ending(RUN_ID)
+
+
+@pytest.mark.parametrize("run_state", ["running", "initialized"])
+async def test_run_ending_by_intent_gets_only_a_hangup_before_the_row_is_completed(
+    client, twilio, db, no_secret, fake_redis, run_state
+):
+    """The bot said goodbye and the REST hangup failed: the row still says running."""
+    _set_state(db, run_state)
+    await _mark_ending(fake_redis)
+    resp = _post(client, twilio)
+    assert resp.status_code == 200
+    assert resp.text == "<Response><Hangup/></Response>"
+
+
+def test_run_without_the_mark_still_gets_the_message(client, twilio, db, no_secret):
+    _set_state(db, "running")
+    assert "<Say" in _post(client, twilio).text
+
+
+async def test_mark_of_another_run_does_not_hang_this_one_up(
+    client, twilio, db, no_secret, fake_redis
+):
+    await CallTransferManager(redis_client=fake_redis).mark_run_ending(RUN_ID + 1)
+    _set_state(db, "running")
+    assert "<Say" in _post(client, twilio).text
+
+
+async def test_mark_expires(fake_redis):
+    await _mark_ending(fake_redis)
+    assert list(fake_redis.ttls.values()) == [3600]
+
+
+async def test_unreadable_mark_falls_toward_the_message(client, twilio, db, no_secret):
+    broken = CallTransferManager(redis_client=BrokenRedis())
+    with patch(
+        f"{ROUTES}.get_call_transfer_manager",
+        new_callable=AsyncMock,
+        return_value=broken,
+    ):
+        _set_state(db, "running")
+        resp = _post(client, twilio)
+    assert resp.status_code == 200 and "<Say" in resp.text
+
+
+async def test_unwritable_mark_does_not_stop_the_call_from_ending():
+    manager = CallTransferManager(redis_client=BrokenRedis())
+    await manager.mark_run_ending(RUN_ID)  # must not raise
+    assert await manager.is_run_ending(RUN_ID) is False
+
+
+# --------------------------------------------------------------------------
+# Provider guard and infrastructure failures (fail closed)
+# --------------------------------------------------------------------------
+
+
+def test_run_whose_provider_is_not_twilio_is_rejected(client, twilio, db, no_secret):
+    other = SimpleNamespace(
+        PROVIDER_NAME="plivo", verify_inbound_signature=AsyncMock(return_value=True)
+    )
+    with patch(
+        f"{ROUTES}.get_telephony_provider_for_run",
+        new_callable=AsyncMock,
+        return_value=other,
+    ):
+        resp = _post(client, twilio)
+    assert resp.status_code == 403
+    _assert_no_writes(db)
+
+
+def test_unresolvable_provider_is_a_403_that_logs_only_run_and_error_class(
+    client, twilio, db, no_secret
+):
+    from loguru import logger
+
+    logged = []
+    sink = logger.add(lambda message: logged.append(str(message)), level="WARNING")
+    try:
+        with patch(
+            f"{ROUTES}.get_telephony_provider_for_run",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("config for AC-secret-sid is gone"),
+        ):
+            resp = _post(client, twilio)
+    finally:
+        logger.remove(sink)
+    assert resp.status_code == 403
+    _assert_no_writes(db)
+    text = "".join(logged)
+    assert "RuntimeError" in text and f"[run {RUN_ID}]" in text
+    assert "AC-secret-sid" not in text and "CA1" not in text
 
 
 # --------------------------------------------------------------------------

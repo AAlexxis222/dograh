@@ -38,15 +38,15 @@ _CALL_NOT_ATTENDED_ES = (
 )
 
 
-def _connect_action_twiml(run_state: str) -> str:
-    """What the caller gets once the media socket is gone, by the run's state.
+def _connect_action_twiml(call_ended: bool) -> str:
+    """What the caller gets once the media socket is gone.
 
-    A finished run hangs up silently (the goodbye already played; the rejection
-    message here would be wrong). Any other state means the call dropped or never
-    got going: say so and hang up. Never a new ``<Connect>``: a run past
-    ``initialized`` cannot be re-attached to a fresh bot.
+    A call that ended on purpose hangs up silently (the goodbye already played;
+    the rejection message here would be wrong). Any other case means the call
+    dropped or never got going: say so and hang up. Never a new ``<Connect>``: a
+    run past ``initialized`` cannot be re-attached to a fresh bot.
     """
-    if run_state == WorkflowRunState.COMPLETED.value:
+    if call_ended:
         return "<Response><Hangup/></Response>"
     return (
         '<Response><Say language="es-ES">'
@@ -184,7 +184,14 @@ async def handle_twilio_connect_action(
         logger.warning(f"[run {workflow_run_id}] connect-action for unknown run")
         raise HTTPException(status_code=403, detail="Invalid callback")
 
-    provider = await get_telephony_provider_for_run(run, workflow.organization_id)
+    try:
+        provider = await get_telephony_provider_for_run(run, workflow.organization_id)
+    except Exception as exc:  # any failure to resolve the provider fails closed
+        logger.warning(
+            f"[run {workflow_run_id}] connect-action provider unavailable: "
+            f"{type(exc).__name__}"
+        )
+        raise HTTPException(status_code=403, detail="Invalid callback") from exc
     is_valid = provider.PROVIDER_NAME == "twilio" and (
         await provider.verify_inbound_signature(
             str(request.url), dict(await request.form()), dict(request.headers)
@@ -194,8 +201,17 @@ async def handle_twilio_connect_action(
         logger.warning(f"[run {workflow_run_id}] Invalid connect-action signature")
         raise HTTPException(status_code=403, detail="Invalid webhook signature")
 
-    logger.info(f"[run {workflow_run_id}] connect-action, run state {run.state}")
-    return Response(_connect_action_twiml(run.state), media_type="application/xml")
+    # The row turns `completed` only at the end of teardown, after the hangup
+    # that triggers this request; the mark covers the gap.
+    manager = await get_call_transfer_manager()
+    call_ended = run.state == WorkflowRunState.COMPLETED.value or (
+        await manager.is_run_ending(workflow_run_id)
+    )
+    logger.info(
+        f"[run {workflow_run_id}] connect-action, run state {run.state}, "
+        f"ended on purpose: {call_ended}"
+    )
+    return Response(_connect_action_twiml(call_ended), media_type="application/xml")
 
 
 @router.get("/twilio/transfer-audio/{token}", include_in_schema=False)

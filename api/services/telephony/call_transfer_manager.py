@@ -20,6 +20,16 @@ from api.services.telephony.transfer_event_protocol import (
 )
 
 
+# A run ending by intent is remembered for an hour: far longer than the gap
+# between the media socket closing and the carrier's callback asking about it.
+RUN_ENDING_TTL_SECONDS = 3600
+_RUN_ENDING_TIMEOUT_SECONDS = 2.0
+
+
+def _run_ending_key(workflow_run_id: int) -> str:
+    return f"run:ending:{workflow_run_id}"
+
+
 class CallTransferManager:
     """Manages call transfer events and context storage using Redis."""
 
@@ -268,6 +278,37 @@ class CallTransferManager:
         except Exception as e:
             logger.error(f"[ARI Transfer] Error finding transfer context: {e}")
             return None
+
+    async def mark_run_ending(self, workflow_run_id: int) -> None:
+        """Record that the run is ending on purpose, before anything hangs up.
+
+        The run row only turns ``completed`` at the very end of teardown, after
+        the call is already hung up and the media socket closed. The carrier's
+        ``<Connect action>`` callback asks within milliseconds of that, so it
+        reads this mark to tell an intentional end from a dropped call.
+
+        Never raises and never waits long: the call must still end when Redis is
+        slow or down, and without the mark the caller hears the message, not
+        silence.
+        """
+        try:
+            async with asyncio.timeout(_RUN_ENDING_TIMEOUT_SECONDS):
+                redis = await self._get_redis()
+                await redis.setex(
+                    _run_ending_key(workflow_run_id), RUN_ENDING_TTL_SECONDS, "1"
+                )
+        except Exception as e:
+            logger.error(f"[run {workflow_run_id}] Failed to mark run ending: {e}")
+
+    async def is_run_ending(self, workflow_run_id: int) -> bool:
+        """True when :meth:`mark_run_ending` was called for the run; False on any error."""
+        try:
+            async with asyncio.timeout(_RUN_ENDING_TIMEOUT_SECONDS):
+                redis = await self._get_redis()
+                return bool(await redis.get(_run_ending_key(workflow_run_id)))
+        except Exception as e:
+            logger.error(f"[run {workflow_run_id}] Failed to read run-ending mark: {e}")
+            return False
 
     async def cleanup(self):
         """Clean up Redis connections."""
