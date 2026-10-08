@@ -126,6 +126,23 @@ class NodeOpeningResult:
     playback: SpeechPlayback | None = None
 
 
+# Reasons where our side decides to end the call (see `_mark_run_ending_by_intent`).
+_INTENTIONAL_END_REASONS = frozenset(
+    {
+        EndTaskReason.END_CALL.value,  # the bot's end-call tool or end node
+        EndTaskReason.TRANSFER_CALL.value,  # the bot hands the call to a human
+        EndTaskReason.CALL_TRANSFERRED.value,  # an external PBX took the call over
+        EndTaskReason.CALL_DURATION_EXCEEDED.value,  # our max-duration limit
+        EndTaskReason.USER_IDLE_MAX_DURATION_EXCEEDED.value,  # our idle limit
+        EndTaskReason.VOICEMAIL_DETECTED.value,  # our answer supervisor's verdict
+        # The answer supervisor's own drops (machine timeout, no message, IVR,
+        # screening limits). `answer_message_failed` is a failed playback, not a
+        # decision, and a person may be on the line: it stays unmarked.
+        *(r for r in ANSWER_TERMINAL_REASONS if r != "answer_message_failed"),
+    }
+)
+
+
 class PipecatEngine:
     def __init__(
         self,
@@ -1265,16 +1282,19 @@ class PipecatEngine:
         await asyncio.shield(self._shutdown_task)
 
     async def _mark_run_ending_by_intent(self, call_status: str) -> None:
-        """Tell the carrier callback this end is intentional, before hanging up.
+        """Tell the carrier callback this end is our own decision, before hanging up.
 
         The run row turns ``completed`` only at the end of teardown, after the
-        hangup and the socket close; this mark closes that window. A pipeline
-        failure is not an intentional end: that caller should hear the message.
+        hangup and the socket close; this mark closes that window for a caller
+        who already got a proper goodbye. It is an allowlist: only a reason where
+        our side decides to end the call is marked. Everything else, including
+        reasons added later, leaves the caller to hear the "cannot take your
+        call" message, because it may mean the caller is still on the line:
+        ``user_hangup`` is any close of the media socket we did not start, not
+        necessarily the caller hanging up, and ``system_cancelled`` is a dead
+        socket found by the write watchdog.
         """
-        if call_status in (
-            EndTaskReason.PIPELINE_ERROR.value,
-            EndTaskReason.UNEXPECTED_ERROR.value,
-        ):
+        if call_status not in _INTENTIONAL_END_REASONS:
             return
         from api.services.telephony.call_transfer_manager import (
             get_call_transfer_manager,

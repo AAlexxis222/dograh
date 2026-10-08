@@ -19,6 +19,7 @@ and CallbackUserMuteStrategy) matching the production run_pipeline.py configurat
 """
 
 import asyncio
+import time
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, patch
 
@@ -1439,6 +1440,24 @@ class TestOrganizationDispositionMapping:
         assert final["mapped_call_disposition"] == EndTaskReason.USER_HANGUP.value
 
 
+class _FakeRedis:
+    def __init__(self):
+        self.store = {}
+
+    async def setex(self, key, ttl, value):
+        self.store[key] = value
+
+    async def get(self, key):
+        return self.store.get(key)
+
+
+class _SlowRedis(_FakeRedis):
+    """A Redis that accepts the connection and then never answers the write."""
+
+    async def setex(self, key, ttl, value):
+        await asyncio.sleep(10)
+
+
 class TestEndByIntentMark:
     """`_end_call` marks the run as ending by intent, before anything hangs up.
 
@@ -1446,48 +1465,32 @@ class TestEndByIntentMark:
     media socket closing, while the run row still says `running` (it turns
     `completed` at the very end of teardown). The callback reads this mark so a
     caller who heard the goodbye does not also hear the "cannot take your call"
-    message. A mid-call failure is not an intentional end and gets no mark.
+    message. Only a decision of our own to end the call is marked. A close of
+    the media socket that we did not start (`user_hangup`, `system_cancelled`)
+    may leave the caller on the line, and a pipeline failure is a dropped call:
+    those callers must hear the message, so they get no mark.
     """
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "reason,expect_mark",
-        [
-            (EndTaskReason.USER_HANGUP.value, True),
-            (EndTaskReason.END_CALL.value, True),
-            (EndTaskReason.PIPELINE_ERROR.value, False),
-            (EndTaskReason.UNEXPECTED_ERROR.value, False),
-        ],
-    )
-    async def test_mark_is_written_for_intentional_ends_only(
-        self, simple_workflow: WorkflowGraph, reason: str, expect_mark: bool
-    ):
-        from api.services.telephony.call_transfer_manager import CallTransferManager
+    @staticmethod
+    async def _run_ending(simple_workflow, manager, reason):
+        """End a running mock call with *reason*.
 
-        class FakeRedis:
-            def __init__(self):
-                self.store = {}
-
-            async def setex(self, key, ttl, value):
-                self.store[key] = value
-
-            async def get(self, key):
-                return self.store.get(key)
-
-        manager = CallTransferManager(redis_client=FakeRedis())
-        test_helper = EndCallTestHelper()
+        Returns what the mark read as at each terminal frame, and how long
+        ``end_call_with_reason`` took.
+        """
         llm = MockLLMService(
             mock_steps=[MockLLMService.create_text_chunks("Hello!")], chunk_delay=0.001
         )
         engine, _tts, transport, task = await create_engine_with_tracking(
-            simple_workflow, llm, test_helper
+            simple_workflow, llm, EndCallTestHelper()
         )
         # What the callback would see the instant the media socket closes.
-        seen_at_terminal_frame: list[bool] = []
+        at_terminal_frame: list[bool] = []
+        seconds_to_end: list[float] = []
         original_queue = task.queue_frame
 
         async def watching_queue(frame):
-            seen_at_terminal_frame.append(await manager.is_run_ending(1))
+            at_terminal_frame.append(await manager.is_run_ending(1))
             return await original_queue(frame)
 
         task.queue_frame = watching_queue
@@ -1518,13 +1521,102 @@ class TestEndByIntentMark:
                     LLMContextFrame(engine.context)
                 )
                 await asyncio.sleep(0.1)
-                await engine.end_call_with_reason(reason, abort_immediately=True)
+                started = time.monotonic()
+                try:
+                    await asyncio.wait_for(
+                        engine.end_call_with_reason(reason, abort_immediately=True), 8
+                    )
+                finally:
+                    seconds_to_end.append(time.monotonic() - started)
 
             await run_engine_test_pipeline(
                 task, engine, transport, on_ready=end_after_response
             )
+        return at_terminal_frame, seconds_to_end[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reason,expect_mark",
+        [
+            (EndTaskReason.END_CALL.value, True),
+            (EndTaskReason.USER_HANGUP.value, False),
+            (EndTaskReason.SYSTEM_CANCELLED.value, False),
+            (EndTaskReason.PIPELINE_ERROR.value, False),
+            (EndTaskReason.UNEXPECTED_ERROR.value, False),
+        ],
+    )
+    async def test_mark_is_written_for_our_own_decision_to_end_only(
+        self, simple_workflow: WorkflowGraph, reason: str, expect_mark: bool
+    ):
+        from api.services.telephony.call_transfer_manager import CallTransferManager
+
+        manager = CallTransferManager(redis_client=_FakeRedis())
+        at_terminal_frame, _ = await self._run_ending(simple_workflow, manager, reason)
 
         assert await manager.is_run_ending(1) is expect_mark
         if expect_mark:
             # Written before the terminal frame is queued, not after.
-            assert seen_at_terminal_frame and seen_at_terminal_frame[-1] is True
+            assert at_terminal_frame and at_terminal_frame[-1] is True
+
+    @pytest.mark.asyncio
+    async def test_only_listed_reasons_are_marked_and_unknown_ones_are_not(
+        self, simple_workflow: WorkflowGraph
+    ):
+        from api.services.telephony.call_transfer_manager import CallTransferManager
+
+        ours = [
+            "end_call",
+            "transfer_call",
+            "call_transferred",
+            "call_duration_exceeded",
+            "user_idle_max_duration_exceeded",
+            "voicemail_detected",
+            "machine_timeout",
+            "voicemail_no_message",
+            "ivr_detected",
+            "screening_timeout",
+            "screening_limit",
+            "screening_message_missing",
+        ]
+        not_ours = [
+            "user_hangup",
+            "system_cancelled",
+            "pipeline_error",
+            "unexpected_error",
+            "answer_message_failed",
+            "a_reason_added_later",
+        ]
+        engine, _tts, _transport, _task = await create_engine_with_tracking(
+            simple_workflow,
+            MockLLMService(mock_steps=[], chunk_delay=0.001),
+            EndCallTestHelper(),
+        )
+        marked = {}
+        for reason in [*ours, *not_ours]:
+            manager = CallTransferManager(redis_client=_FakeRedis())
+            with patch(
+                "api.services.telephony.call_transfer_manager.get_call_transfer_manager",
+                new_callable=AsyncMock,
+                return_value=manager,
+            ):
+                await engine._mark_run_ending_by_intent(reason)
+            marked[reason] = await manager.is_run_ending(1)
+
+        assert marked == {**dict.fromkeys(ours, True), **dict.fromkeys(not_ours, False)}
+
+    @pytest.mark.asyncio
+    async def test_a_stuck_redis_does_not_stop_the_call_from_ending(
+        self, simple_workflow: WorkflowGraph
+    ):
+        """A blackholed Redis must cost the mark, never the terminal frame."""
+        from api.services.telephony.call_transfer_manager import CallTransferManager
+
+        manager = CallTransferManager(redis_client=_SlowRedis())
+        at_terminal_frame, seconds_to_end = await self._run_ending(
+            simple_workflow, manager, EndTaskReason.END_CALL.value
+        )
+
+        assert at_terminal_frame, "the terminal frame was never queued"
+        assert at_terminal_frame[-1] is False  # no mark: the write was abandoned
+        # The write is cut off after 2 s; without that cap this takes the full 10.
+        assert seconds_to_end < 4

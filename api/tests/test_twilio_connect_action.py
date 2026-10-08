@@ -356,6 +356,21 @@ async def test_unreadable_mark_falls_toward_the_message(client, twilio, db, no_s
     assert resp.status_code == 200 and "<Say" in resp.text
 
 
+async def test_a_stuck_redis_write_is_abandoned_after_the_cap():
+    """`from_url` sets no socket timeout, so a blackholed Redis would hang forever."""
+    import asyncio
+    import time
+
+    class SlowRedis:
+        async def setex(self, *_args):
+            await asyncio.sleep(10)
+
+    manager = CallTransferManager(redis_client=SlowRedis())
+    started = time.monotonic()
+    await manager.mark_run_ending(RUN_ID)
+    assert time.monotonic() - started < 3
+
+
 async def test_unwritable_mark_does_not_stop_the_call_from_ending():
     manager = CallTransferManager(redis_client=BrokenRedis())
     await manager.mark_run_ending(RUN_ID)  # must not raise
