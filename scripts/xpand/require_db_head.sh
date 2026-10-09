@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# scripts/xpand/require_db_head.sh <where>, gate of every cell role (VOZ-AC-B5-44).
+# scripts/xpand/require_db_head.sh <where>, gate of every cell role (VOZ-AC-B5-44). It is also the startup gate for
+# the cell durations (VOZ-AC-B3-55, see below): the name predates that check and is kept so the entrypoints do not change.
 # Migrating is an explicit step run only by cellctl; a role never migrates. It refuses to start on a database
 # BEHIND this image, so a stale schema stops here, named, and not in a query at runtime. A database AHEAD of the
 # image (alembic cannot locate its revision) starts with a warning: during a rolling update the old call keeps

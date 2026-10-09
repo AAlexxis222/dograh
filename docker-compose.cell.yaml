@@ -67,7 +67,8 @@ x-cell-aws-creds: &cell-aws-creds
 # No `ports: !reset []` here: Compose before 5.1.4 (every 2.x, 5.0.x, 5.1.0) drops a !reset tag that arrives
 # through a `<<:` merge, so the four roles would publish the base file's 8000. Each role below carries its own
 # `ports: !reset []`; do not hoist it back.
-# stop_grace_period: api, arq and coordinators hold no live call, so 60 s (VOZ-AC-B5-72); call overrides it below.
+# stop_grace_period: api, arq and coordinators hold no live call, so 60 s (VOZ-AC-B5-72). That number is fixed by the
+# spec on purpose, not derived from the call-duration ceiling; call overrides it below with the rendered grace.
 x-cell-role: &cell-role
   stop_grace_period: 60s
   image: "${CELL_API_IMAGE:?CELL_API_IMAGE must be set (fork image, pinned by digest)}"

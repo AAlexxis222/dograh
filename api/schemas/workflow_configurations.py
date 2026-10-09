@@ -21,8 +21,8 @@ from api.schemas.service_tuning import ServiceTuning
 from api.schemas.turn_configuration import TurnConfiguration
 from api.services.runtime.durations import (
     DEFAULT_MAX_CALL_DURATION_S,
-    Durations,
     DurationsError,
+    cell_durations,
 )
 from api.services.workflow.voz_bug_18 import LEGACY_TO_CURRENT
 
@@ -31,7 +31,7 @@ DEFAULT_MAX_CALL_DURATION_SECONDS = DEFAULT_MAX_CALL_DURATION_S
 # The concurrency slot TTL (rate limiter stale_call_timeout) derives from the
 # same ceiling and sits above it, so a call within the ceiling never has its
 # slot purged as stale.
-MAX_CALL_DURATION_SECONDS = Durations.from_env().ceiling
+MAX_CALL_DURATION_SECONDS = cell_durations().ceiling
 _AS_INT = TypeAdapter(int)
 DEFAULT_MAX_USER_IDLE_TIMEOUT_SECONDS = 10.0
 DEFAULT_SMART_TURN_STOP_SECS = 2.0
@@ -261,7 +261,7 @@ class WorkflowConfigurationDefaults(BaseModel):
         except ValidationError:
             return value
         try:
-            Durations.from_env().check_workflow_max(seconds)
+            cell_durations().check_workflow_max(seconds)
         except DurationsError as e:
             raise PydanticCustomError(
                 e.code,

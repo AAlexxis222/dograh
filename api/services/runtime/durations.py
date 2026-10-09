@@ -5,9 +5,13 @@ import os
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cache
 
 CEILING_ENV = "CELL_CALL_DURATION_CEILING_S"
 STOP_GRACE_ENV = "CELL_STOP_GRACE_S"
+DRAIN_TIMEOUT_ENV = "DRAIN_TIMEOUT"
+DRAIN_MAX_WAIT_ENV = "DRAIN_MAX_WAIT"
+DRAIN_INITIAL_DELAY_ENV = "DRAIN_INITIAL_DELAY"
 DEFAULT_CEILING_S = 1200
 # Default max_call_duration of a workflow; the cell ceiling cannot be lower (max_call_duration <= ceiling).
 DEFAULT_MAX_CALL_DURATION_S = 300
@@ -15,6 +19,11 @@ _CEILING_HINT = (
     f"set {CEILING_ENV} (cell.call_duration_ceiling_s) to a whole number of seconds "
     f">= {DEFAULT_MAX_CALL_DURATION_S} (the default max_call_duration)"
 )
+_RERENDER_HINT = (
+    "re-render the cell env from the ceiling: python -m scripts.xpand.render_durations"
+)
+# Deployed values that must not be below the ones derived from the ceiling.
+_FLOOR_ENVS = (STOP_GRACE_ENV, DRAIN_MAX_WAIT_ENV, DRAIN_TIMEOUT_ENV)
 
 
 class DurationsError(ValueError):
@@ -35,23 +44,27 @@ class Durations:
     pre_stop_delay_s: int = 15
     sigterm_headroom_s: int = 30
 
-    @classmethod
-    def from_cell(cls, ceiling_s: int, **margins: int) -> "Durations":
-        if ceiling_s < DEFAULT_MAX_CALL_DURATION_S:
+    def __post_init__(self) -> None:
+        # The invariants live in the type: no Durations exists that breaks them, however it was built.
+        if self.ceiling < DEFAULT_MAX_CALL_DURATION_S:
             raise DurationsError(
                 "knob_out_of_range",
-                f"call duration ceiling {ceiling_s}s is below the default max_call_duration {DEFAULT_MAX_CALL_DURATION_S}s",
+                f"call duration ceiling {self.ceiling}s is below the default max_call_duration {DEFAULT_MAX_CALL_DURATION_S}s",
                 _CEILING_HINT,
             )
-        d = cls(ceiling=ceiling_s, **margins)
-        if not (d.ceiling < d.slot_ttl <= d.drain_max < d.grace):
+        if not (self.ceiling < self.slot_ttl <= self.drain_max < self.grace):
             raise DurationsError(
                 "durations_incoherent",
-                f"ceiling < slot_ttl <= drain_max < grace is broken for ceiling={ceiling_s}s with margins {margins or 'at their defaults'}",
+                f"ceiling < slot_ttl <= drain_max < grace is broken for ceiling={self.ceiling}s with margins "
+                f"slot={self.slot_margin_s}s, drain={self.drain_margin_s}s, pre-stop={self.pre_stop_delay_s}s, "
+                f"SIGTERM headroom={self.sigterm_headroom_s}s",
                 "the margins are constants of this module (api/services/runtime/durations.py); "
                 f"keep them positive, or change the ceiling with {CEILING_ENV}",
             )
-        return d
+
+    @classmethod
+    def from_cell(cls, ceiling_s: int, **margins: int) -> "Durations":
+        return cls(ceiling=ceiling_s, **margins)
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Durations":
@@ -96,34 +109,67 @@ class Durations:
                 "raise cell.call_duration_ceiling_s via the cell runbook (drained restart)",
             )
 
+    def deployed_env(self) -> dict[str, int]:
+        """Every env variable of a cell that derives from the ceiling, with its derived value: what the render
+        writes and what check_deployed compares against."""
+        return {
+            CEILING_ENV: self.ceiling,
+            STOP_GRACE_ENV: self.grace,
+            DRAIN_TIMEOUT_ENV: self.drain_max,
+            DRAIN_MAX_WAIT_ENV: self.drain_max,
+            DRAIN_INITIAL_DELAY_ENV: self.pre_stop_delay_s,
+        }
+
     def check_deployed(self, environ: Mapping[str, str]) -> None:
         """The rendered numbers a role was started with must not undercut the ones derived from its ceiling.
 
-        Unset = not checked. Smaller is the dangerous side: a grace or a drain shorter than the longest call cuts it.
+        Unset = not checked. Smaller is the dangerous side: a grace or a drain shorter than the longest call cuts it,
+        and so does an initial delay that eats the drain window out of the grace.
         """
-        for name, derived in (
-            (STOP_GRACE_ENV, self.grace),
-            ("DRAIN_MAX_WAIT", self.drain_max),
-            ("DRAIN_TIMEOUT", self.drain_max),
-        ):
+        derived = self.deployed_env()
+        del derived[CEILING_ENV]  # the source itself: from_env reads it
+        found: dict[str, int] = {}
+        for name, expected in derived.items():
             raw = environ.get(name, "").strip()
             if not raw:
                 continue
             try:
-                value = int(raw)
+                found[name] = int(raw)
             except ValueError:
                 raise DurationsError(
                     "knob_invalid",
                     f"{name}={raw!r} is not a whole number of seconds",
-                    "re-render the cell env from the ceiling: python -m scripts.xpand.render_durations",
+                    _RERENDER_HINT,
                 ) from None
-            if value < derived:
+            if name in _FLOOR_ENVS and found[name] < expected:
                 raise DurationsError(
                     "durations_incoherent",
-                    f"{name}={value}s is below the {derived}s derived from {CEILING_ENV}={self.ceiling}",
+                    f"{name}={found[name]}s is below the {expected}s derived from {CEILING_ENV}={self.ceiling}",
                     "the ceiling was changed without re-rendering the cell env: "
                     "python -m scripts.xpand.render_durations, then a drained restart",
                 )
+        budget = (DRAIN_INITIAL_DELAY_ENV, DRAIN_MAX_WAIT_ENV, STOP_GRACE_ENV)
+        if all(name in found for name in budget):
+            needed = (
+                found[DRAIN_INITIAL_DELAY_ENV]
+                + found[DRAIN_MAX_WAIT_ENV]
+                + self.sigterm_headroom_s
+            )
+            if needed > found[STOP_GRACE_ENV]:
+                raise DurationsError(
+                    "durations_incoherent",
+                    f"{DRAIN_INITIAL_DELAY_ENV}={found[DRAIN_INITIAL_DELAY_ENV]}s + {DRAIN_MAX_WAIT_ENV}="
+                    f"{found[DRAIN_MAX_WAIT_ENV]}s + {self.sigterm_headroom_s}s SIGTERM headroom = {needed}s "
+                    f"exceeds {STOP_GRACE_ENV}={found[STOP_GRACE_ENV]}s: the orchestrator's KILL lands mid-drain",
+                    _RERENDER_HINT,
+                )
+
+
+@cache
+def cell_durations() -> Durations:
+    """The durations of this process, resolved once from the environment: every consumer (the workflow schema
+    bound, the validator, the rate limiter) reads this one instance, so they cannot see different ceilings."""
+    return Durations.from_env()
 
 
 def main(where: str) -> int:

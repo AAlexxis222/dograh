@@ -18,9 +18,10 @@ from api.services.runtime.durations import (
     STOP_GRACE_ENV,
     Durations,
     DurationsError,
+    cell_durations,
     main,
 )
-from api.tests.test_cell_overlay import _overlay_source
+from api.tests.support.cell_overlay import overlay_source
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -154,7 +155,7 @@ def test_committed_files_carry_the_rendered_default_values():
     out = render(d)
 
     # The overlay carries no number for the call role: Compose reads the rendered cell env, and so does every role.
-    overlay = _overlay_source()
+    overlay = overlay_source()
     assert (
         overlay["services"]["call"]["stop_grace_period"] == "${" + STOP_GRACE_ENV + "}s"
     )
@@ -261,9 +262,8 @@ def test_slot_ttl_consumers_follow_a_raised_ceiling():
     }
 
 
-async def test_acquire_gives_the_lua_script_the_slot_ttl(monkeypatch):
-    monkeypatch.setenv(CEILING_ENV, "7200")
-    limiter = RateLimiter()
+async def test_acquire_gives_the_lua_script_the_slot_ttl():
+    limiter = RateLimiter(Durations.from_cell(ceiling_s=7200))
     client = AsyncMock()
     client.eval.return_value = None
     limiter._get_redis = AsyncMock(return_value=client)
@@ -273,11 +273,10 @@ async def test_acquire_gives_the_lua_script_the_slot_ttl(monkeypatch):
     )
 
 
-async def test_workflow_slot_mapping_ttl_is_the_slot_ttl(monkeypatch):
+async def test_workflow_slot_mapping_ttl_is_the_slot_ttl():
     """Both mapping writers, at ceiling 7200: a TTL held in a constant (not a literal on the EXPIRE line) still fails here."""
-    monkeypatch.setenv(CEILING_ENV, "7200")
     slot_ttl = Durations.from_cell(ceiling_s=7200).slot_ttl
-    limiter = RateLimiter()
+    limiter = RateLimiter(Durations.from_cell(ceiling_s=7200))
     client = AsyncMock()
     limiter._get_redis = AsyncMock(return_value=client)
     await limiter.store_workflow_slot_mapping(7, 1, "slot")
@@ -286,3 +285,78 @@ async def test_workflow_slot_mapping_ttl_is_the_slot_ttl(monkeypatch):
     assert (
         client.eval.await_args.args[5] == slot_ttl
     )  # (script, numkeys, key, org_id, slot_id, ttl, scope_key)
+
+
+def test_direct_construction_is_validated_too():
+    with pytest.raises(DurationsError) as e:
+        Durations(ceiling=5)
+    assert e.value.code == "knob_out_of_range"
+    with pytest.raises(DurationsError) as e:
+        Durations(ceiling=1200, slot_margin_s=0)
+    assert e.value.code == "durations_incoherent"
+
+
+def _rendered_env(d):
+    return {name: str(value) for name, value in d.deployed_env().items()}
+
+
+def test_render_and_the_gate_share_one_name_to_value_mapping():
+    from scripts.xpand.render_durations import render
+
+    for ceiling in (1200, 7200):
+        d = Durations.from_cell(ceiling_s=ceiling)
+        assert render(d)["env"] == _rendered_env(d)
+        d.check_deployed(_rendered_env(d))  # an env as rendered is coherent
+
+
+def test_deployed_initial_delay_that_overruns_the_grace_is_a_named_error():
+    d = Durations.from_cell(ceiling_s=1200)
+    env = {
+        **_rendered_env(d),
+        "DRAIN_INITIAL_DELAY": "600",
+    }  # 600 + 1260 + 30 > 1305: SIGKILL mid-drain
+    with pytest.raises(DurationsError) as e:
+        d.check_deployed(env)
+    assert (
+        e.value.code == "durations_incoherent"
+        and "DRAIN_INITIAL_DELAY" in e.value.reason
+        and e.value.hint
+    )
+    # The SIGTERM headroom counts: 40 + 1260 fits the grace of 1305, 40 + 1260 + 30 does not.
+    with pytest.raises(DurationsError):
+        d.check_deployed({**_rendered_env(d), "DRAIN_INITIAL_DELAY": "40"})
+    d.check_deployed({"DRAIN_INITIAL_DELAY": "600"})  # not all three set: not checked
+    with pytest.raises(DurationsError) as e:
+        d.check_deployed({"DRAIN_INITIAL_DELAY": "soon"})
+    assert e.value.code == "knob_invalid"
+
+
+def test_the_ceiling_is_resolved_once_for_every_consumer():
+    from api.schemas import workflow_configurations as schema
+
+    assert cell_durations() is cell_durations()
+    assert schema.MAX_CALL_DURATION_SECONDS == cell_durations().ceiling
+    assert RateLimiter().stale_call_timeout == cell_durations().slot_ttl
+
+
+def test_the_schema_validator_asks_the_resolved_durations(monkeypatch):
+    from api.schemas import workflow_configurations as schema
+
+    monkeypatch.setattr(
+        schema, "cell_durations", lambda: Durations.from_cell(ceiling_s=400)
+    )
+    with pytest.raises(Exception) as e:
+        schema.WorkflowConfigurationDefaults(max_call_duration=500)
+    assert "knob_out_of_range" in str(e.value)
+
+
+def test_the_rate_limiter_asks_the_resolved_durations(monkeypatch):
+    from api.services.call_concurrency import rate_limiter as module
+
+    monkeypatch.setattr(
+        module, "cell_durations", lambda: Durations.from_cell(ceiling_s=400)
+    )
+    assert (
+        module.RateLimiter().stale_call_timeout
+        == Durations.from_cell(ceiling_s=400).slot_ttl
+    )

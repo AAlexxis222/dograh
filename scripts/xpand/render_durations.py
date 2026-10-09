@@ -9,7 +9,7 @@ at startup that the grace and drain values it runs with are not below the ones d
 
 import json
 
-from api.services.runtime.durations import CEILING_ENV, STOP_GRACE_ENV, Durations
+from api.services.runtime.durations import Durations
 
 
 def render(d: Durations) -> dict:
@@ -22,13 +22,7 @@ def render(d: Durations) -> dict:
                 "drainMaxWaitSeconds": d.drain_max,
             }
         },
-        "env": {
-            CEILING_ENV: str(d.ceiling),
-            STOP_GRACE_ENV: str(d.grace),
-            "DRAIN_TIMEOUT": str(d.drain_max),
-            "DRAIN_MAX_WAIT": str(d.drain_max),
-            "DRAIN_INITIAL_DELAY": str(d.pre_stop_delay_s),
-        },
+        "env": {name: str(value) for name, value in d.deployed_env().items()},
     }
 
 

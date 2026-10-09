@@ -7,7 +7,7 @@ import redis.asyncio as aioredis
 from loguru import logger
 
 from api.constants import REDIS_URL
-from api.services.runtime.durations import Durations
+from api.services.runtime.durations import Durations, cell_durations
 
 # Fleet-wide mirror of every live slot ("<org_id>:<slot_id>", scored by acquire
 # time), maintained by the acquire/release paths alongside the per-org sets so
@@ -26,10 +26,10 @@ class ConcurrentSlotAcquisition:
 class RateLimiter:
     """Sliding window rate limiter to enforce strict per-second limits and concurrent call limits"""
 
-    def __init__(self):
+    def __init__(self, durations: Durations | None = None):
         self.redis_client: Optional[aioredis.Redis] = None
         # The slot outlives the longest call by the slot margin (durations.py): never purged mid-call.
-        self.stale_call_timeout = Durations.from_env().slot_ttl
+        self.stale_call_timeout = (durations or cell_durations()).slot_ttl
 
     async def _get_redis(self) -> aioredis.Redis:
         """Get or create Redis connection"""
