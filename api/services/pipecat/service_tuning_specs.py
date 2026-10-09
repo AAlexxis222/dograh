@@ -28,6 +28,7 @@ from functools import cache
 from typing import Any, Literal
 
 from google.genai.types import ProactivityConfig, SafetySetting, ThinkingConfig
+from loguru import logger
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from pipecat.services.assemblyai.stt import (
@@ -1249,8 +1250,9 @@ def _model_error(path: str, model: Any, value: Any) -> str | None:
     errors = _model_shape_errors(model, value, path)
     if errors:
         return "; ".join(errors)
+    adapter = _adapter(model)  # outside the try: a schema-build failure is our bug, not the user's input
     try:
-        _adapter(model).validate_python(value)
+        adapter.validate_python(value)
     except ValidationError as exc:
         first = exc.errors()[0]
         # Same spelling as the shape walk: ``[i]`` for a list index.
@@ -1263,8 +1265,11 @@ def _model_error(path: str, model: Any, value: Any) -> str | None:
         # google-genai's case-insensitive enums call ``value.upper()`` in
         # ``_missing_``, so a non-string raises AttributeError. pydantic
         # 2.13 reported that as a ValidationError; 2.14 lets it escape, which
-        # would be a 500 at the PUT. The error carries no ``loc``.
-        return f"{path}: {exc}"
+        # would be a 500 at the PUT. The error carries no ``loc``, and its text
+        # is the library's internals, so it is logged and the user gets a
+        # neutral message.
+        logger.opt(exception=exc).warning(f"provider validator raised AttributeError at {path}")
+        return f"{path}: invalid value"
     return None
 
 

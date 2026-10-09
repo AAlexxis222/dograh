@@ -238,5 +238,5 @@ def test_provider_validator_raising_attribute_error_is_a_named_error():
 
     assert (
         specs._model_error("llm.p.settings.m", Provider, {"x": 1})
-        == "llm.p.settings.m: no attribute 'upper'"
+        == "llm.p.settings.m: invalid value"
     )
