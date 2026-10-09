@@ -1250,7 +1250,8 @@ def _model_error(path: str, model: Any, value: Any) -> str | None:
     errors = _model_shape_errors(model, value, path)
     if errors:
         return "; ".join(errors)
-    adapter = _adapter(model)  # outside the try: a schema-build failure is our bug, not the user's input
+    # Outside the try: a schema-build failure is our bug, not the user's input.
+    adapter = _adapter(model)
     try:
         adapter.validate_python(value)
     except ValidationError as exc:
@@ -1265,10 +1266,14 @@ def _model_error(path: str, model: Any, value: Any) -> str | None:
         # google-genai's case-insensitive enums call ``value.upper()`` in
         # ``_missing_``, so a non-string raises AttributeError. pydantic
         # 2.13 reported that as a ValidationError; 2.14 lets it escape, which
-        # would be a 500 at the PUT. The error carries no ``loc``, and its text
-        # is the library's internals, so it is logged and the user gets a
-        # neutral message.
-        logger.opt(exception=exc).warning(f"provider validator raised AttributeError at {path}")
+        # would be a 500 at the PUT. Deliberately, ANY AttributeError from a
+        # provider validator is treated as an invalid value: the traceback is
+        # logged, so a real validator bug stays visible there. The error
+        # carries no ``loc`` and its text is library internals, so the user
+        # gets a neutral message.
+        logger.opt(exception=exc).warning(
+            f"provider validator raised AttributeError at {path}"
+        )
         return f"{path}: invalid value"
     return None
 

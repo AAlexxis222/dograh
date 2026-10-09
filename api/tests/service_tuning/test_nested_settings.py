@@ -225,9 +225,10 @@ def test_shape_walk_resolves_string_annotations_on_a_dataclass():
     assert specs._model_shape_errors(Synthetic, {"speed": 1.5}, "p") == []
 
 
-def test_provider_validator_raising_attribute_error_is_a_named_error():
+def test_provider_attribute_error_is_a_neutral_invalid_value_at_its_path():
     # google-genai's case-insensitive enums raise AttributeError (not a
     # ValueError) on a non-string; pydantic 2.14 lets that escape validation.
+    # The user sees the setting path and a neutral message; the cause is logged.
     class Provider(BaseModel):
         x: int
 
