@@ -7,12 +7,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from api.services.runtime.durations import cell_durations
+from api.services.runtime.durations import CARRIER_RING_TIMEOUT_S, cell_durations
+from api.services.telephony import (  # noqa: F401  -- providers registers every carrier
+    providers,
+    registry,
+)
 from api.services.telephony.providers.plivo.provider import PlivoProvider
 from api.services.telephony.providers.twilio.provider import TwilioProvider
 from api.services.telephony.providers.vonage.provider import VonageProvider
 
 FROM = ["+15551230002"]
+# Carriers whose outbound builder has no ring field: they size the lease on the default ring.
+NO_RING_FIELD = {"exotel", "vobiz", "cloudonix"}
 RESPONSE = {"sid": "CA1", "request_uuid": "req-1", "uuid": "uuid-1"}
 
 
@@ -78,3 +84,14 @@ async def test_outbound_call_rings_the_carrier_default(
         cell_durations().outbound_pending_ttl_s(carrier)
         == cell_durations().ring_timeout_for(carrier) + cell_durations().pending_ttl_s
     )
+
+
+def test_every_registered_provider_names_its_ring_for_the_outbound_lease():
+    """An outbound admission looks its lease up by PROVIDER_NAME; a provider that leaves it empty would silently
+    get the inbound lease on outbound calls."""
+    for spec in registry.all_specs():
+        name = spec.provider_cls.PROVIDER_NAME
+        assert name, f"{spec.name}: PROVIDER_NAME is empty"
+        assert name in CARRIER_RING_TIMEOUT_S or name in NO_RING_FIELD, (
+            f"{spec.name}: {name!r} is neither in CARRIER_RING_TIMEOUT_S nor a no-ring-field carrier"
+        )

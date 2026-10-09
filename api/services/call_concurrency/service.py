@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
+from fastapi.responses import JSONResponse
 from loguru import logger
 
 from api.constants import DEFAULT_ORG_CONCURRENCY_LIMIT
@@ -72,16 +73,23 @@ class CallConcurrencyLimitError(Exception):
             "hint": self.hint,
         }
 
-    def http_answer(self) -> dict:
-        """HTTPException kwargs: 429 for a full org, 503 with Retry-After (RFC 9110 §10.2.3) when Redis is down."""
+    def http_response(self) -> JSONResponse:
+        """429 for a full org; 503 with Retry-After (RFC 9110 §10.2.3) when Redis is down. ``detail`` stays a
+        string, because clients render it as text; the B0-28 record rides as top-level fields of the same body."""
         if self.backend_unavailable:
-            retry_after = rate_limiter.durations.admission_retry_after_s
-            return {
-                "status_code": 503,
-                "detail": self.failure(),
-                "headers": {"Retry-After": str(retry_after)},
-            }
-        return {"status_code": 429, "detail": "Concurrent call limit reached"}
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": f"{self.reason}: {self.what} (where: {self.where}; hint: {self.hint})",
+                    **self.failure(),
+                },
+                headers={
+                    "Retry-After": str(rate_limiter.durations.admission_retry_after_s)
+                },
+            )
+        return JSONResponse(
+            status_code=429, content={"detail": "Concurrent call limit reached"}
+        )
 
     def ws_close(self) -> dict:
         """WebSocket close kwargs: 1008 for a full org, 1013 (try again later) when Redis is down. A close reason

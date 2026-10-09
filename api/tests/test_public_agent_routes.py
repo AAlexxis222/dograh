@@ -693,7 +693,7 @@ def test_trigger_route_still_returns_success_when_metadata_persistence_fails():
     ("reason", "status", "detail"),
     [
         ("concurrent_call_limit", 429, "Concurrent call limit reached"),
-        (DOWN.reason, 503, DOWN_RECORD),
+        (DOWN.reason, 503, None),
     ],
 )
 def test_trigger_route_rejects_when_concurrency_limit_reached(reason, status, detail):
@@ -744,7 +744,14 @@ def test_trigger_route_rejects_when_concurrency_limit_reached(reason, status, de
         )
 
     assert response.status_code == status
-    assert response.json()["detail"] == detail
+    body = response.json()
+    if status == 429:
+        assert body == {"detail": detail}
+    else:
+        # The UI renders `detail` as text, so it stays a string; the B0-28 record rides as top-level fields.
+        assert isinstance(body["detail"], str)
+        assert DOWN.reason in body["detail"] and DOWN.hint in body["detail"]
+        assert {k: body[k] for k in DOWN_RECORD} == DOWN_RECORD
     if status == 503:  # RFC 9110 §10.2.3: when to come back
         assert response.headers["Retry-After"] == str(
             cell_durations().admission_retry_after_s

@@ -278,7 +278,7 @@ async def _execute_resolved_target(
             outbound_carrier=provider.PROVIDER_NAME,
         )
     except CallConcurrencyLimitError as e:
-        raise HTTPException(**e.http_answer())
+        return e.http_response()
 
     try:
         run_inputs = await prepare_workflow_run_inputs(

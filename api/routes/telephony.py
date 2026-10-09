@@ -192,7 +192,7 @@ async def initiate_call(
             outbound_carrier=provider.PROVIDER_NAME,
         )
     except CallConcurrencyLimitError as e:
-        raise HTTPException(**e.http_answer())
+        return e.http_response()
 
     try:
         if not workflow_run_id:
