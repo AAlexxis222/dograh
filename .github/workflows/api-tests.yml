@@ -11,6 +11,8 @@ on:
       - "pipecat"
       - ".gitmodules"
       - "scripts/**"
+      # api/tests/test_sdk_sync.py reads sdk/python and sdk/typescript.
+      - "sdk/**"
       - "docker-compose*.yaml"
       - "deploy/**"
       - ".github/workflows/api-tests.yml"
