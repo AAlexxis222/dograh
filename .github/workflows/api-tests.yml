@@ -2,11 +2,19 @@ name: API tests
 
 on:
   pull_request:
-    branches: [main]
+    # feat/foundations-base: XPAND fork integration branch; its PRs need the same suite.
+    branches: [main, feat/foundations-base]
     paths:
       - "api/**"
       - "pipecat/**"
+      # A submodule bump changes only the gitlink `pipecat` (and maybe .gitmodules), which "pipecat/**" does not match.
+      - "pipecat"
+      - ".gitmodules"
       - "scripts/**"
+      # api/tests/test_sdk_sync.py reads sdk/python and sdk/typescript.
+      - "sdk/**"
+      - "docker-compose*.yaml"
+      - "deploy/**"
       - ".github/workflows/api-tests.yml"
 
 concurrency:
