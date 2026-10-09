@@ -47,13 +47,16 @@ TURN traffic: dedicated L4 Service of type `LoadBalancer`.
 These are choices the chart made where `HELM_DEPLOYMENT_PLAN.md` was
 silent. Each is exposed in `values.yaml` for operator override.
 
-- **terminationGracePeriodSeconds for web: 1260s.** Covers a full-length
-  (20-minute) call so scale-down / rolling updates drain instead of cutting
-  it; tune to your call-length distribution.
+- **terminationGracePeriodSeconds for web: 1305s.** Covers a full-length
+  (20-minute) call plus the drain window so scale-down / rolling updates drain
+  instead of cutting it. Rendered from the cell call-duration ceiling
+  (`api/services/runtime/durations.py`, `scripts/xpand/render_durations.py`):
+  raise the ceiling, do not edit the number.
 - **preStop active-call drain (scripts/drain_web.sh).** Waits
   `preStopSleepSeconds` (15s) for the gateway to stop dispatching new
   connections, then polls /api/v1/health/active-calls and holds SIGTERM until
-  the count hits 0 or `drainMaxWaitSeconds` (1200s). Falls back to a fixed
+  the count hits 0 or `drainMaxWaitSeconds` (1260s, rendered like the grace
+  above). Falls back to a fixed
   sleep when the devops secret is unset.
 - **Liveness probes on singletons: `exec` (`pgrep`).** No HTTP endpoint
   exists on ari-manager / campaign-orchestrator; process-alive check is
@@ -126,7 +129,7 @@ Spot-check expectations:
   `strategy.type: Recreate`.
 - `Deployment/<release>-campaign-orchestrator` has `replicas: 1` and
   `strategy.type: Recreate`.
-- `Deployment/<release>-web` has `terminationGracePeriodSeconds: 1260`
+- `Deployment/<release>-web` has `terminationGracePeriodSeconds: 1305`
   and a `lifecycle.preStop` exec hook running `./scripts/drain_web.sh`.
 - Liveness probe on ari-manager / campaign-orchestrator uses `exec`,
   not `httpGet`.

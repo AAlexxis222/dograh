@@ -47,6 +47,15 @@ def test_max_call_duration_over_cap_is_the_named_422():
     assert "cell.call_duration_ceiling_s" in error["msg"]
 
 
+@pytest.mark.parametrize("value", [MAX_CALL_DURATION_SECONDS + 100, MAX_CALL_DURATION_SECONDS + 100.0, str(MAX_CALL_DURATION_SECONDS + 100)])
+def test_every_value_pydantic_reads_as_an_int_gets_the_named_422(value):
+    # JSON 1300.0 and the string "1300" are accepted by pydantic as the int 1300: they must not slip past the named error.
+    with pytest.raises(ValidationError) as e:
+        WorkflowConfigurationDefaults(max_call_duration=value)
+    (error,) = e.value.errors()
+    assert error["type"] == "knob_out_of_range"
+
+
 def test_max_call_duration_rejects_non_positive():
     with pytest.raises(ValidationError):
         WorkflowConfigurationDefaults(max_call_duration=0)

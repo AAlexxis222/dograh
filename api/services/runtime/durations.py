@@ -7,7 +7,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 CEILING_ENV = "CELL_CALL_DURATION_CEILING_S"
+STOP_GRACE_ENV = "CELL_STOP_GRACE_S"
 DEFAULT_CEILING_S = 1200
+# Default max_call_duration of a workflow; the cell ceiling cannot be lower (max_call_duration <= ceiling).
+DEFAULT_MAX_CALL_DURATION_S = 300
 _CEILING_HINT = f"set {CEILING_ENV} (cell.call_duration_ceiling_s) to a positive whole number of seconds"
 
 
@@ -31,18 +34,19 @@ class Durations:
 
     @classmethod
     def from_cell(cls, ceiling_s: int, **margins: int) -> "Durations":
-        if ceiling_s < 1:
+        if ceiling_s < DEFAULT_MAX_CALL_DURATION_S:
             raise DurationsError(
                 "knob_out_of_range",
-                f"call duration ceiling {ceiling_s}s is not positive",
+                f"call duration ceiling {ceiling_s}s is below the default max_call_duration {DEFAULT_MAX_CALL_DURATION_S}s",
                 _CEILING_HINT,
             )
         d = cls(ceiling=ceiling_s, **margins)
         if not (d.ceiling < d.slot_ttl <= d.drain_max < d.grace):
             raise DurationsError(
                 "durations_incoherent",
-                f"invariant broken for ceiling={ceiling_s}",
-                "check cell margins in the cell yaml",
+                f"ceiling < slot_ttl <= drain_max < grace is broken for ceiling={ceiling_s}s with margins {margins or 'at their defaults'}",
+                "the margins are constants of this module (api/services/runtime/durations.py); "
+                f"keep them positive, or change the ceiling with {CEILING_ENV}",
             )
         return d
 
@@ -89,11 +93,40 @@ class Durations:
                 "raise cell.call_duration_ceiling_s via the cell runbook (drained restart)",
             )
 
+    def check_deployed(self, environ: Mapping[str, str]) -> None:
+        """The rendered numbers a role was started with must not undercut the ones derived from its ceiling.
+
+        Unset = not checked. Smaller is the dangerous side: a grace or a drain shorter than the longest call cuts it.
+        """
+        for name, derived in (
+            (STOP_GRACE_ENV, self.grace),
+            ("DRAIN_MAX_WAIT", self.drain_max),
+            ("DRAIN_TIMEOUT", self.drain_max),
+        ):
+            raw = environ.get(name, "").strip()
+            if not raw:
+                continue
+            try:
+                value = int(raw)
+            except ValueError:
+                raise DurationsError(
+                    "knob_invalid",
+                    f"{name}={raw!r} is not a whole number of seconds",
+                    "re-render the cell env from the ceiling: python -m scripts.xpand.render_durations",
+                ) from None
+            if value < derived:
+                raise DurationsError(
+                    "durations_incoherent",
+                    f"{name}={value}s is below the {derived}s derived from {CEILING_ENV}={self.ceiling}",
+                    "the ceiling was changed without re-rendering the cell env: "
+                    "python -m scripts.xpand.render_durations, then a drained restart",
+                )
+
 
 def main(where: str) -> int:
     """Startup assertion of a role (scripts/xpand/require_db_head.sh): one line on stderr when the config is incoherent."""
     try:
-        Durations.from_env()
+        Durations.from_env().check_deployed(os.environ)
     except DurationsError as e:
         print(
             f"code={e.code} where={where} reason={e.reason} hint={e.hint}",
