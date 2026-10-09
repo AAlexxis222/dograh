@@ -19,12 +19,12 @@ name: xpand-pr-body
 # The required checks are pinned to the GitHub Actions app (app_id 15368), so a commit status posted
 # with a personal token can't satisfy them.
 #
-# Break-glass (Alexis only, e.g. this gate is broken on the default branch). Current required checks: guards, pr-body.
+# Break-glass (Alexis only, e.g. this gate is broken on the default branch). Current required checks: guards, pr-body, principles-mechanical.
 #   gh api -X DELETE repos/AAlexxis222/dograh/branches/feat/foundations-base/protection/required_status_checks/contexts -f "contexts[]=pr-body"
 #   ...merge the fix..., then re-add it WITH the app pin (the contexts endpoint drops it):
 #   gh api -X PATCH repos/AAlexxis222/dograh/branches/feat/foundations-base/protection/required_status_checks --input checks.json
-#   where checks.json = {"strict": true, "checks": [{"context": "guards", "app_id": 15368}, {"context": "pr-body", "app_id": 15368}]}
-#   (keep every required check in the list; add {"context": "principles-mechanical", "app_id": 15368} once it is required)
+#   where checks.json = {"strict": true, "checks": [{"context": "guards", "app_id": 15368}, {"context": "pr-body", "app_id": 15368}, {"context": "principles-mechanical", "app_id": 15368}]}
+#   (keep every required check in the list: the PATCH replaces the whole set)
 on:
   pull_request_target:
     types: [opened, edited, synchronize, reopened]
