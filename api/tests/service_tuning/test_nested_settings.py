@@ -14,7 +14,7 @@ import typing
 from unittest.mock import patch
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
 from api.services.pipecat import service_factory
@@ -223,3 +223,21 @@ def test_shape_walk_resolves_string_annotations_on_a_dataclass():
         "p.speed: wrong type"
     ]
     assert specs._model_shape_errors(Synthetic, {"speed": 1.5}, "p") == []
+
+
+def test_provider_attribute_error_is_a_neutral_invalid_value_at_its_path():
+    # google-genai's case-insensitive enums raise AttributeError (not a
+    # ValueError) on a non-string; pydantic 2.14 lets that escape validation.
+    # The user sees the setting path and a neutral message; the cause is logged.
+    class Provider(BaseModel):
+        x: int
+
+        @field_validator("x")
+        @classmethod
+        def _reject(cls, value):
+            raise AttributeError("no attribute 'upper'")
+
+    assert (
+        specs._model_error("llm.p.settings.m", Provider, {"x": 1})
+        == "llm.p.settings.m: invalid value"
+    )
