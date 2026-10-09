@@ -7,6 +7,9 @@ on:
     paths:
       - "api/**"
       - "pipecat/**"
+      # A submodule bump changes only the gitlink `pipecat` (and maybe .gitmodules), which "pipecat/**" does not match.
+      - "pipecat"
+      - ".gitmodules"
       - "scripts/**"
       - "docker-compose*.yaml"
       - "deploy/**"
