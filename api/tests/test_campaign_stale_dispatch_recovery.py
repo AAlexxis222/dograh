@@ -187,9 +187,7 @@ async def test_monitor_recovers_without_callback_and_retries_redis_cleanup(
         ):
             monitor = CampaignOrchestrator(AsyncMock())
             monitor.publisher.publish_campaign_completed = AsyncMock()
-            with patch.object(
-                limiter, "release_concurrent_slot", AsyncMock(return_value=None)
-            ):
+            with patch.object(limiter, "release_slot", AsyncMock(return_value=None)):
                 await monitor._check_stale_campaigns()
             monitor.publisher.publish_campaign_completed.assert_awaited_once()
             assert (
@@ -206,10 +204,7 @@ async def test_monitor_recovers_without_callback_and_retries_redis_cleanup(
         assert not await redis.exists(mapping_key)
         assert await redis.zscore(f"concurrent_calls:{s.org.id}", slot.slot_id) is None
         assert await redis.zscore(f"concurrent_calls:{scope}", slot.slot_id) is None
-        assert (
-            await redis.zscore(FLEET_CONCURRENT_KEY, f"{s.org.id}:{slot.slot_id}")
-            is None
-        )
+        assert await redis.zscore(FLEET_CONCURRENT_KEY, slot.slot_id) is None
         assert (
             await redis.zscore(f"concurrent_calls:{s.org.id}", other_slot.slot_id)
             is not None

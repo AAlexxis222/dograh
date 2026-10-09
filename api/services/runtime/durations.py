@@ -43,6 +43,8 @@ class Durations:
     drain_margin_s: int = 60
     pre_stop_delay_s: int = 15
     sigterm_headroom_s: int = 30
+    # admission.pending_ttl_s: an admitted slot no worker has claimed yet expires after this (VOZ-AC-B3-22 lease).
+    pending_ttl_s: int = 30
 
     def __post_init__(self) -> None:
         # The invariants live in the type: no Durations exists that breaks them, however it was built.

@@ -1,5 +1,7 @@
 import asyncio
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from loguru import logger
@@ -7,7 +9,12 @@ from loguru import logger
 from api.constants import DEFAULT_ORG_CONCURRENCY_LIMIT
 from api.db import db_client
 from api.enums import OrganizationConfigurationKey, PostHogEvent
-from api.services.call_concurrency.rate_limiter import rate_limiter
+from api.services.call_concurrency import keys
+from api.services.call_concurrency.rate_limiter import (
+    AdmissionBackendUnavailable,
+    SlotLease,
+    rate_limiter,
+)
 from api.services.posthog_client import capture_event
 
 
@@ -21,7 +28,8 @@ class CallConcurrencySlot:
 
 
 class CallConcurrencyLimitError(Exception):
-    """Raised when an org has no available concurrent call slots."""
+    """Raised when admission refuses a call: no free slot (``reason`` "concurrent_call_limit") or, failing
+    closed, no answer from the slot backend (``reason`` "admission_backend_unavailable", VOZ-AC-B3-65-bis)."""
 
     def __init__(
         self,
@@ -30,14 +38,19 @@ class CallConcurrencyLimitError(Exception):
         source: str,
         wait_time: float,
         max_concurrent: int,
+        reason: str = "concurrent_call_limit",
+        hint: str | None = None,
     ):
         self.organization_id = organization_id
         self.source = source
         self.wait_time = wait_time
         self.max_concurrent = max_concurrent
+        self.reason = reason
+        self.hint = hint
         super().__init__(
-            f"Concurrent call limit reached for org {organization_id} "
+            f"Call admission refused for org {organization_id}: {reason} "
             f"(source={source}, limit={max_concurrent}, waited={wait_time:.1f}s)"
+            + (f" (hint: {hint})" if hint else "")
         )
 
 
@@ -111,14 +124,30 @@ class CallConcurrencyService:
         if scope_max_concurrent is not None:
             scope_max_concurrent = int(scope_max_concurrent)
 
+        attempt_id = keys.new_attempt_id()
         wait_start = time.time()
         while True:
-            acquisition = await rate_limiter.try_acquire_concurrent_slot_details(
-                organization_id,
-                max_concurrent,
-                scope_key=scope_key,
-                scope_max_concurrent=scope_max_concurrent,
-            )
+            try:
+                acquisition = await rate_limiter.acquire_slot(
+                    org_id=organization_id,
+                    attempt_id=attempt_id,
+                    max_concurrent=max_concurrent,
+                    scope_key=scope_key,
+                    scope_max_concurrent=scope_max_concurrent,
+                )
+            except AdmissionBackendUnavailable as e:
+                logger.error(
+                    f"Call admission failing closed for org {organization_id}: "
+                    f"source={source}, {e}"
+                )
+                raise CallConcurrencyLimitError(
+                    organization_id=organization_id,
+                    source=source,
+                    wait_time=time.time() - wait_start,
+                    max_concurrent=max_concurrent,
+                    reason=e.reason,
+                    hint=e.hint,
+                ) from e
             if acquisition:
                 logger.info(
                     f"Acquired concurrent call slot for org {organization_id}: "
@@ -263,31 +292,38 @@ class CallConcurrencyService:
     async def release_slot(self, slot: CallConcurrencySlot | None) -> bool:
         if slot is None:
             return False
-        released = await rate_limiter.release_concurrent_slot(
-            slot.organization_id, slot.slot_id, scope_key=slot.scope_key
+        released = await rate_limiter.release_slot(
+            org_id=slot.organization_id,
+            attempt_id=slot.slot_id,
+            scope_key=slot.scope_key,
         )
         return bool(released)
 
     async def release_workflow_run_slot(self, workflow_run_id: int) -> bool:
-        """Release the org/campaign slot held by a workflow run."""
+        """Release the org/campaign slot held by a workflow run, and its
+        mapping, in one call to the release funnel. Every exit point of a run
+        (worker end, carrier terminal callback, pre-pipeline failures, ARI
+        teardown) lands here."""
         mapping = await rate_limiter.get_workflow_slot_mapping(workflow_run_id)
         if not mapping:
             return False
 
         org_id, slot_id, scope_key = mapping
-        released = await rate_limiter.release_concurrent_slot(
-            org_id, slot_id, scope_key=scope_key
+        released = await rate_limiter.release_slot(
+            org_id=org_id,
+            attempt_id=slot_id,
+            scope_key=scope_key,
+            workflow_run_id=workflow_run_id,
         )
         if released is None:
-            # Redis error while releasing — keep the mapping so a later
-            # cleanup path can retry instead of orphaning a live slot until
-            # the stale timeout.
+            # Redis error while releasing: the script did nothing, so the
+            # mapping is still there for a later cleanup path to retry
+            # instead of orphaning a live slot until it expires.
             logger.warning(
                 f"Failed to release concurrent slot for workflow run "
                 f"{workflow_run_id}; keeping mapping for retry"
             )
             return False
-        await rate_limiter.delete_workflow_slot_mapping(workflow_run_id)
         if released:
             logger.info(f"Released concurrent slot for workflow run {workflow_run_id}")
         else:
@@ -296,6 +332,61 @@ class CallConcurrencyService:
                 "had no live slot; deleted stale mapping"
             )
         return released
+
+    @asynccontextmanager
+    async def hold_run_slot(self, workflow_run_id: int) -> AsyncIterator[None]:
+        """Hold the run's slot for the life of the call on this worker.
+
+        Entering claims the pending slot (phase 2 of the lease); a task of
+        this call renews it every ``heartbeat_renew_s``, independent of any
+        worker heartbeat (VOZ-AC-B3-66); leaving cancels the renewal and
+        releases through the funnel. Never raises on Redis errors: a failed
+        claim is retried at each renewal.
+        """
+        try:
+            lease = await rate_limiter.claim_slot(workflow_run_id)
+            holds_slot = lease is not None
+        except Exception as e:
+            logger.warning(
+                f"Slot claim failed for workflow run {workflow_run_id}: {e}; "
+                "retrying at each renewal"
+            )
+            lease, holds_slot = None, True
+        renewal = (
+            asyncio.create_task(self._renew_run_slot(workflow_run_id, lease))
+            if holds_slot
+            else None
+        )
+        try:
+            yield
+        finally:
+            if renewal is not None:
+                renewal.cancel()
+                await asyncio.wait([renewal])
+            await self.unregister_active_call(workflow_run_id)
+
+    async def _renew_run_slot(
+        self, workflow_run_id: int, lease: SlotLease | None
+    ) -> None:
+        interval = rate_limiter.durations.heartbeat_renew_s
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                if lease is None:
+                    lease = await rate_limiter.claim_slot(workflow_run_id)
+                    if lease is None:
+                        return  # released meanwhile: nothing left to hold
+                else:
+                    await rate_limiter.renew_slot(
+                        org_id=lease.org_id,
+                        attempt_id=lease.attempt_id,
+                        scope_key=lease.scope_key,
+                        workflow_run_id=workflow_run_id,
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Slot renewal failed for workflow run {workflow_run_id}: {e}"
+                )
 
 
 call_concurrency = CallConcurrencyService()

@@ -268,9 +268,11 @@ async def test_acquire_gives_the_lua_script_the_slot_ttl():
     client.eval.return_value = None
     limiter._get_redis = AsyncMock(return_value=client)
     await limiter.try_acquire_concurrent_slot_details(1, 5)
-    assert (
-        client.eval.await_args.args[-1] == Durations.from_cell(ceiling_s=7200).slot_ttl
-    )
+    d = Durations.from_cell(ceiling_s=7200)
+    assert client.eval.await_args.args[-2:] == (d.pending_ttl_s, d.slot_ttl)
+    await limiter.renew_slot(org_id=1, attempt_id="a", workflow_run_id=7)
+    # (script, numkeys, clock, org, scope, fleet, mapping, member, ttl, org_id, scope)
+    assert client.eval.await_args.args[8] == d.slot_ttl
 
 
 async def test_workflow_slot_mapping_ttl_is_the_slot_ttl():
