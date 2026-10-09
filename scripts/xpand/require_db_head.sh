@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
-# scripts/xpand/require_db_head.sh <where>, gate of every cell role (VOZ-AC-B5-44).
+# scripts/xpand/require_db_head.sh <where>, gate of every cell role (VOZ-AC-B5-44). It is also the startup gate for
+# the cell durations (VOZ-AC-B3-55, see below): the name predates that check and is kept so the entrypoints do not change.
 # Migrating is an explicit step run only by cellctl; a role never migrates. It refuses to start on a database
 # BEHIND this image, so a stale schema stops here, named, and not in a query at runtime. A database AHEAD of the
 # image (alembic cannot locate its revision) starts with a warning: during a rolling update the old call keeps
 # draining against the new schema (VOZ-AC-B5-43), and a rolled-back image keeps running on an expanded schema
 # (VOZ-AC-B5-45). ALEMBIC_CMD is injectable for tests.
+# It also asserts the cell durations (VOZ-AC-B3-55) first: the one place every role passes through at startup, so an
+# incoherent CELL_CALL_DURATION_CEILING_S stops the role, named, before it serves. DURATIONS_CMD is injectable.
 set -uo pipefail
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WHERE="${1:-unknown}"
 ALEMBIC_CMD="${ALEMBIC_CMD:-alembic -c api/alembic.ini}"
+DURATIONS_CMD="${DURATIONS_CMD:-python -m api.services.runtime.durations}"
 cd "$BASE_DIR"
+
+bash -c "$DURATIONS_CMD $WHERE" || exit 1 # the module prints its own VOZ-AC-B0-28 line
 
 # VOZ-AC-B0-28 shape, one line.
 report() { echo "code=$1 where=$WHERE reason=$2 hint=$3" >&2; } # <code> <reason> <hint>

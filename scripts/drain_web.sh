@@ -15,9 +15,9 @@
 set -eu
 
 PORT="${WEB_PORT:-8000}"
-INITIAL_DELAY="${DRAIN_INITIAL_DELAY:-15}"  # let the gateway observe endpoint removal
+INITIAL_DELAY="${DRAIN_INITIAL_DELAY:-15}"  # let the gateway observe endpoint removal; rendered from durations.py (scripts/xpand/render_durations.py)
 INTERVAL="${DRAIN_INTERVAL:-5}"
-MAX_WAIT="${DRAIN_MAX_WAIT:-570}"           # MUST stay < terminationGracePeriodSeconds
+MAX_WAIT="${DRAIN_MAX_WAIT:-1260}"          # MUST stay < terminationGracePeriodSeconds; rendered from durations.py (scripts/xpand/render_durations.py)
 
 # Give the load balancer / gateway time to stop routing new connections here.
 sleep "$INITIAL_DELAY"

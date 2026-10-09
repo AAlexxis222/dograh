@@ -8,7 +8,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
+
+from api.services.runtime.durations import CEILING_ENV, STOP_GRACE_ENV, Durations
+from api.tests.support.cell_overlay import overlay_source
 
 ROOT = Path(__file__).resolve().parents[2]
 # Every service the base defines under the profiles below, minus cloudflared (the cell never tunnels).
@@ -21,7 +23,17 @@ PROFILES = "remote,local-turn,tunnel"
 CELL_ROLES = {"api", "call", "arq", "coordinators"}
 # Not a secret: any memory size the cell host sets; the placeholder "x" used for the secrets is not a valid size.
 CELL_API_IMAGE = "registry.example/xpand-api@sha256:" + "0" * 64  # the fork image, pinned by digest
-VALID_VALUES = {"CALL_MEM_LIMIT": "1g", "CELL_API_IMAGE": CELL_API_IMAGE}
+# The two durations are what render_durations emits for the default ceiling; a unit-less number is not a duration.
+_DURATIONS = Durations.from_env({})
+VALID_VALUES = {
+    "CALL_MEM_LIMIT": "1g",
+    "CELL_API_IMAGE": CELL_API_IMAGE,
+    CEILING_ENV: str(_DURATIONS.ceiling),
+    STOP_GRACE_ENV: str(_DURATIONS.grace),
+    "DRAIN_MAX_WAIT": str(_DURATIONS.drain_max),
+    "DRAIN_INITIAL_DELAY": str(_DURATIONS.pre_stop_delay_s),
+}
+ROLE_STOP_GRACE_S = 60  # VOZ-AC-B5-72: api, arq and coordinators; only call waits for live calls
 AWS_CONFIG_TARGET = "/etc/xpand/aws/config"
 COMPOSE = ["docker", "compose", "-f", "docker-compose.yaml", "-f", "docker-compose.cell.yaml"]
 # Docker on Windows needs these to find its compose plugin (ProgramFiles) and config/context; none is a secret.
@@ -45,23 +57,6 @@ def _platform_env():
 def _require_docker():
     if not shutil.which("docker"):
         pytest.skip("GATED docker_missing: install Docker Compose >= 2.26.0 (2.24.6 to 2.25.0 reject this overlay)")
-
-
-def _overlay_source():
-    """The overlay as written. Compose's own tags (!reset, !override) load as their plain value."""
-
-    class Loader(yaml.SafeLoader):
-        pass
-
-    def plain(loader, _suffix, node):
-        if isinstance(node, yaml.MappingNode):
-            return loader.construct_mapping(node)
-        if isinstance(node, yaml.SequenceNode):
-            return loader.construct_sequence(node)
-        return loader.construct_scalar(node)
-
-    Loader.add_multi_constructor("!", plain)
-    return yaml.load((ROOT / "docker-compose.cell.yaml").read_text(encoding="utf-8"), Loader=Loader)
 
 
 def _compose_major():
@@ -196,7 +191,7 @@ def test_overlay_source_forbids_creating_the_credentials_dir():
     # A missing credentials directory must fail the start, never be created empty. Checked on the overlay as written
     # because the rendering of the flag differs by Compose version (2.x renders false as `bind: {}`, the same as an
     # empty `bind` from 5.0.2 on, which creates the path). Needs no Docker.
-    assert _overlay_source()["x-cell-aws-creds"]["bind"] == {"create_host_path": False}
+    assert overlay_source()["x-cell-aws-creds"]["bind"] == {"create_host_path": False}
 
 
 def test_coturn_is_on_its_own_network(cfg):
@@ -249,7 +244,35 @@ def test_call_role_drains_and_is_the_oom_victim(cfg):
     assert "call_entrypoint.sh" in " ".join(call["entrypoint"])
     assert call["mem_limit"] == str(1024**3)  # CALL_MEM_LIMIT=1g
     assert call["oom_score_adj"] == 500
-    assert "stop_grace_period" not in call  # VOZ-N0-20 renders it from durations.py
+
+
+def _compose_seconds(duration):
+    """Compose renders 1305s as 21m45s."""
+    hours, minutes, seconds = (int(part or 0) for part in re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", duration).groups())
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def test_stop_grace_is_rendered_from_the_cell_env(cfg):
+    # VOZ-AC-B5-72: call waits for its longest call plus the drain; the other roles hold nothing and stop in 60 s.
+    assert _compose_seconds(cfg["call"]["stop_grace_period"]) == _DURATIONS.grace
+    for role in CELL_ROLES - {"call"}:
+        assert _compose_seconds(cfg[role]["stop_grace_period"]) == ROLE_STOP_GRACE_S, role
+
+
+def test_call_drains_for_as_long_as_the_ceiling_says(cfg):
+    # drain_web.sh falls back to a literal when DRAIN_MAX_WAIT is not exported: the call role must always receive it,
+    # or at a raised ceiling the drain gives up while calls are still live.
+    env = cfg["call"]["environment"]
+    assert (env["DRAIN_MAX_WAIT"], env["DRAIN_INITIAL_DELAY"]) == (
+        str(_DURATIONS.drain_max),
+        str(_DURATIONS.pre_stop_delay_s),
+    )
+
+
+@pytest.mark.parametrize("role", sorted(CELL_ROLES))
+def test_every_role_gets_the_ceiling_and_the_grace_it_is_asserted_against(role, cfg):
+    env = cfg[role]["environment"]
+    assert (env[CEILING_ENV], env[STOP_GRACE_ENV]) == (str(_DURATIONS.ceiling), str(_DURATIONS.grace))
 
 
 def test_each_duty_runs_in_exactly_one_role(cfg):

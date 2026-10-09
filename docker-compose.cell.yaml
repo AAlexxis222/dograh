@@ -8,7 +8,12 @@ x-logging: &logging
   options: { max-size: "50m", max-file: "5" }
 
 # Cell environment of api; the roles that share its code (call, arq, coordinators) reuse it. Each role adds CELL_ROLE (its name) for the schema gate.
+# CELL_CALL_DURATION_CEILING_S is the one duration a cell writes; CELL_STOP_GRACE_S is rendered from it
+# (python -m scripts.xpand.render_durations) and both reach every role, which refuses to start when its grace or
+# drain is below the one derived from the ceiling (api/services/runtime/durations.py).
 x-cell-env: &cell-env
+  CELL_CALL_DURATION_CEILING_S: "${CELL_CALL_DURATION_CEILING_S:?CELL_CALL_DURATION_CEILING_S must be set (render it: python -m scripts.xpand.render_durations)}"
+  CELL_STOP_GRACE_S: "${CELL_STOP_GRACE_S:?CELL_STOP_GRACE_S must be set (render it: python -m scripts.xpand.render_durations)}"
   ENABLE_TELEMETRY: "false"
   POSTHOG_API_KEY: ""
   POSTHOG_HOST: ""
@@ -62,7 +67,10 @@ x-cell-aws-creds: &cell-aws-creds
 # No `ports: !reset []` here: Compose before 5.1.4 (every 2.x, 5.0.x, 5.1.0) drops a !reset tag that arrives
 # through a `<<:` merge, so the four roles would publish the base file's 8000. Each role below carries its own
 # `ports: !reset []`; do not hoist it back.
+# stop_grace_period: api, arq and coordinators hold no live call, so 60 s (VOZ-AC-B5-72). That number is fixed by the
+# spec on purpose, not derived from the call-duration ceiling; call overrides it below with the rendered grace.
 x-cell-role: &cell-role
+  stop_grace_period: 60s
   image: "${CELL_API_IMAGE:?CELL_API_IMAGE must be set (fork image, pinned by digest)}"
   restart: unless-stopped
   logging: *logging
@@ -98,9 +106,11 @@ services:
       <<: *cell-env
       CELL_ROLE: api
   # call holds the live phone calls; its entrypoint drains them before uvicorn receives TERM.
-  # stop_grace_period is not set here: VOZ-N0-20 renders it from durations.py.
+  # stop_grace_period is the cell's rendered grace (pre-stop delay + drain window + SIGTERM headroom, from durations.py),
+  # never a number written here: smaller than the drain window and the orchestrator's KILL lands mid-drain.
   call:
     <<: *cell-role
+    stop_grace_period: "${CELL_STOP_GRACE_S}s"
     ports: !reset []
     extends: { file: docker-compose.yaml, service: api } # same image as api; the base command is replaced below
     entrypoint: ["bash", "scripts/xpand/call_entrypoint.sh"]
@@ -109,6 +119,10 @@ services:
     environment:
       <<: *cell-env
       CELL_ROLE: call
+      # drain_web.sh falls back to a literal when these are not exported, which would cut live calls at a raised
+      # ceiling. Rendered with the grace (python -m scripts.xpand.render_durations); the startup gate compares them.
+      DRAIN_MAX_WAIT: "${DRAIN_MAX_WAIT:?DRAIN_MAX_WAIT must be set (render it: python -m scripts.xpand.render_durations)}"
+      DRAIN_INITIAL_DELAY: "${DRAIN_INITIAL_DELAY:?DRAIN_INITIAL_DELAY must be set (render it: python -m scripts.xpand.render_durations)}"
   arq:
     <<: *cell-role
     ports: !reset []

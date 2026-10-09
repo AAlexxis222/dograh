@@ -39,6 +39,23 @@ def test_max_call_duration_rejects_over_cap():
         WorkflowConfigurationDefaults(max_call_duration=MAX_CALL_DURATION_SECONDS + 1)
 
 
+def test_max_call_duration_over_cap_is_the_named_422():
+    with pytest.raises(ValidationError) as e:
+        WorkflowConfigurationDefaults(max_call_duration=MAX_CALL_DURATION_SECONDS + 1)
+    (error,) = e.value.errors()
+    assert error["type"] == "knob_out_of_range" and error["loc"] == ("max_call_duration",)
+    assert "cell.call_duration_ceiling_s" in error["msg"]
+
+
+@pytest.mark.parametrize("value", [MAX_CALL_DURATION_SECONDS + 100, MAX_CALL_DURATION_SECONDS + 100.0, str(MAX_CALL_DURATION_SECONDS + 100)])
+def test_every_value_pydantic_reads_as_an_int_gets_the_named_422(value):
+    # JSON 1300.0 and the string "1300" are accepted by pydantic as the int 1300: they must not slip past the named error.
+    with pytest.raises(ValidationError) as e:
+        WorkflowConfigurationDefaults(max_call_duration=value)
+    (error,) = e.value.errors()
+    assert error["type"] == "knob_out_of_range"
+
+
 def test_max_call_duration_rejects_non_positive():
     with pytest.raises(ValidationError):
         WorkflowConfigurationDefaults(max_call_duration=0)
@@ -308,10 +325,11 @@ def test_exclude_unset_round_trip_stays_sparse():
 
 def test_cap_stays_within_concurrency_stale_timeout():
     """A call outliving the rate limiter's stale window has its concurrency
-    slot purged mid-call, so the cap must never exceed it."""
+    slot purged mid-call, so the cap must never exceed it. Both derive from
+    the cell ceiling in durations.py."""
     from api.services.call_concurrency.rate_limiter import rate_limiter
 
-    assert MAX_CALL_DURATION_SECONDS <= rate_limiter.stale_call_timeout
+    assert MAX_CALL_DURATION_SECONDS < rate_limiter.stale_call_timeout
 
 
 def test_external_pbx_field_mapping_is_validated():

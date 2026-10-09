@@ -7,6 +7,7 @@ import redis.asyncio as aioredis
 from loguru import logger
 
 from api.constants import REDIS_URL
+from api.services.runtime.durations import Durations, cell_durations
 
 # Fleet-wide mirror of every live slot ("<org_id>:<slot_id>", scored by acquire
 # time), maintained by the acquire/release paths alongside the per-org sets so
@@ -25,9 +26,10 @@ class ConcurrentSlotAcquisition:
 class RateLimiter:
     """Sliding window rate limiter to enforce strict per-second limits and concurrent call limits"""
 
-    def __init__(self):
+    def __init__(self, durations: Durations | None = None):
         self.redis_client: Optional[aioredis.Redis] = None
-        self.stale_call_timeout = 1200  # 20 minutes in seconds
+        # The slot outlives the longest call by the slot margin (durations.py): never purged mid-call.
+        self.stale_call_timeout = (durations or cell_durations()).slot_ttl
 
     async def _get_redis(self) -> aioredis.Redis:
         """Get or create Redis connection"""
@@ -172,6 +174,7 @@ class RateLimiter:
         local slot_id = ARGV[4]
         local scope_max_concurrent = tonumber(ARGV[5])
         local fleet_member = ARGV[6]
+        local slot_ttl = tonumber(ARGV[7])
 
         -- Remove stale entries (older than the stale-call timeout)
         redis.call('ZREMRANGEBYSCORE', key, 0, stale_cutoff)
@@ -189,17 +192,17 @@ class RateLimiter:
                 return nil
             end
             redis.call('ZADD', scope_key, now, slot_id)
-            redis.call('EXPIRE', scope_key, 3600)
+            redis.call('EXPIRE', scope_key, slot_ttl)
         end
 
         redis.call('ZADD', key, now, slot_id)
-        redis.call('EXPIRE', key, 3600)  -- Expire after 1 hour
+        redis.call('EXPIRE', key, slot_ttl)
 
         -- Mirror the slot into the fleet-wide set (autoscaling signal); stale
         -- members are pruned here since no other write path touches this key.
         redis.call('ZREMRANGEBYSCORE', fleet_key, 0, stale_cutoff)
         redis.call('ZADD', fleet_key, now, fleet_member)
-        redis.call('EXPIRE', fleet_key, 3600)
+        redis.call('EXPIRE', fleet_key, slot_ttl)
         return {slot_id, current_count + 1}
         """
 
@@ -219,6 +222,7 @@ class RateLimiter:
                 slot_id,
                 scope_max_concurrent if scope_max_concurrent is not None else 0,
                 f"{organization_id}:{slot_id}",
+                self.stale_call_timeout,
             )
             if not result:
                 return None

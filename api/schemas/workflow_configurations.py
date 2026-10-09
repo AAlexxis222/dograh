@@ -5,9 +5,12 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    TypeAdapter,
+    ValidationError,
     field_validator,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 
 from api.constants import (
     MAX_TEXT_CHAT_INACTIVITY_TIMEOUT_SECONDS,
@@ -16,13 +19,20 @@ from api.constants import (
 )
 from api.schemas.service_tuning import ServiceTuning
 from api.schemas.turn_configuration import TurnConfiguration
+from api.services.runtime.durations import (
+    DEFAULT_MAX_CALL_DURATION_S,
+    DurationsError,
+    cell_durations,
+)
 from api.services.workflow.voz_bug_18 import LEGACY_TO_CURRENT
 
-DEFAULT_MAX_CALL_DURATION_SECONDS = 300
-# Hard ceiling on configurable call duration. Must stay <= the concurrency
-# rate limiter's stale_call_timeout (20 min): a call running past that has
-# its slot purged as stale and the org concurrency limit under-counts.
-MAX_CALL_DURATION_SECONDS = 1200
+DEFAULT_MAX_CALL_DURATION_SECONDS = DEFAULT_MAX_CALL_DURATION_S
+# Hard ceiling on configurable call duration: the cell ceiling of durations.py.
+# The concurrency slot TTL (rate limiter stale_call_timeout) derives from the
+# same ceiling and sits above it, so a call within the ceiling never has its
+# slot purged as stale.
+MAX_CALL_DURATION_SECONDS = cell_durations().ceiling
+_AS_INT = TypeAdapter(int)
 DEFAULT_MAX_USER_IDLE_TIMEOUT_SECONDS = 10.0
 DEFAULT_SMART_TURN_STOP_SECS = 2.0
 # VOZ-AC-B2-30 / VOZ-BUG-18: "default", not upstream's min_words.
@@ -239,6 +249,26 @@ class WorkflowConfigurationDefaults(BaseModel):
     # When true, the workflow's call_dispositions extend the organization
     # catalog (dedupe by code) instead of replacing it.
     call_dispositions_extend_org: bool = False
+
+    @field_validator("max_call_duration", mode="before")
+    @classmethod
+    def _max_call_duration_within_cell_ceiling(cls, value: object) -> object:
+        # Runs before the field's own le= bound, which stays for the OpenAPI schema,
+        # so the 422 for an over-ceiling value is the named one (VOZ-AC-B3-57).
+        try:
+            # Whatever pydantic would read as an int (1300, 1300.0, "1300"); the rest fails in the field's own validation.
+            seconds = _AS_INT.validate_python(value)
+        except ValidationError:
+            return value
+        try:
+            cell_durations().check_workflow_max(seconds)
+        except DurationsError as e:
+            raise PydanticCustomError(
+                e.code,
+                "{reason} (hint: {hint})",
+                {"reason": e.reason, "hint": e.hint},
+            ) from None
+        return value
 
     @field_validator("turn_start_strategy", mode="before")
     @classmethod
