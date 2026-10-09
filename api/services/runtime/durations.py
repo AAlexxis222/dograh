@@ -11,7 +11,10 @@ STOP_GRACE_ENV = "CELL_STOP_GRACE_S"
 DEFAULT_CEILING_S = 1200
 # Default max_call_duration of a workflow; the cell ceiling cannot be lower (max_call_duration <= ceiling).
 DEFAULT_MAX_CALL_DURATION_S = 300
-_CEILING_HINT = f"set {CEILING_ENV} (cell.call_duration_ceiling_s) to a positive whole number of seconds"
+_CEILING_HINT = (
+    f"set {CEILING_ENV} (cell.call_duration_ceiling_s) to a whole number of seconds "
+    f">= {DEFAULT_MAX_CALL_DURATION_S} (the default max_call_duration)"
+)
 
 
 class DurationsError(ValueError):

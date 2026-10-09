@@ -58,6 +58,9 @@ def test_ceiling_below_the_default_workflow_max_is_a_named_error():
         Durations.from_cell(ceiling_s=DEFAULT_MAX_CALL_DURATION_S - 1)
     assert e.value.code == "knob_out_of_range" and CEILING_ENV in e.value.hint
     assert (
+        f">= {DEFAULT_MAX_CALL_DURATION_S}" in e.value.hint
+    )  # the hint states the real lower bound
+    assert (
         Durations.from_cell(ceiling_s=DEFAULT_MAX_CALL_DURATION_S).ceiling
         == DEFAULT_MAX_CALL_DURATION_S
     )
@@ -167,7 +170,12 @@ def test_committed_files_carry_the_rendered_default_values():
     reference = (
         (ROOT / "deploy/cell/.env.reference").read_text(encoding="utf-8").split()
     )
-    assert {CEILING_ENV, STOP_GRACE_ENV} <= set(reference)
+    assert {
+        CEILING_ENV,
+        STOP_GRACE_ENV,
+        "DRAIN_MAX_WAIT",
+        "DRAIN_INITIAL_DELAY",
+    } <= set(reference)
     assert (out["env"][CEILING_ENV], out["env"][STOP_GRACE_ENV]) == (
         str(d.ceiling),
         str(d.grace),
@@ -263,3 +271,18 @@ async def test_acquire_gives_the_lua_script_the_slot_ttl(monkeypatch):
     assert (
         client.eval.await_args.args[-1] == Durations.from_cell(ceiling_s=7200).slot_ttl
     )
+
+
+async def test_workflow_slot_mapping_ttl_is_the_slot_ttl(monkeypatch):
+    """Both mapping writers, at ceiling 7200: a TTL held in a constant (not a literal on the EXPIRE line) still fails here."""
+    monkeypatch.setenv(CEILING_ENV, "7200")
+    slot_ttl = Durations.from_cell(ceiling_s=7200).slot_ttl
+    limiter = RateLimiter()
+    client = AsyncMock()
+    limiter._get_redis = AsyncMock(return_value=client)
+    await limiter.store_workflow_slot_mapping(7, 1, "slot")
+    assert client.expire.await_args.args == ("workflow_slot_mapping:7", slot_ttl)
+    await limiter.store_workflow_slot_mapping_if_absent(7, 1, "slot")
+    assert (
+        client.eval.await_args.args[5] == slot_ttl
+    )  # (script, numkeys, key, org_id, slot_id, ttl, scope_key)

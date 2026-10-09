@@ -30,6 +30,8 @@ VALID_VALUES = {
     "CELL_API_IMAGE": CELL_API_IMAGE,
     CEILING_ENV: str(_DURATIONS.ceiling),
     STOP_GRACE_ENV: str(_DURATIONS.grace),
+    "DRAIN_MAX_WAIT": str(_DURATIONS.drain_max),
+    "DRAIN_INITIAL_DELAY": str(_DURATIONS.pre_stop_delay_s),
 }
 ROLE_STOP_GRACE_S = 60  # VOZ-AC-B5-72: api, arq and coordinators; only call waits for live calls
 AWS_CONFIG_TARGET = "/etc/xpand/aws/config"
@@ -272,6 +274,16 @@ def test_stop_grace_is_rendered_from_the_cell_env(cfg):
     assert _compose_seconds(cfg["call"]["stop_grace_period"]) == _DURATIONS.grace
     for role in CELL_ROLES - {"call"}:
         assert _compose_seconds(cfg[role]["stop_grace_period"]) == ROLE_STOP_GRACE_S, role
+
+
+def test_call_drains_for_as_long_as_the_ceiling_says(cfg):
+    # drain_web.sh falls back to a literal when DRAIN_MAX_WAIT is not exported: the call role must always receive it,
+    # or at a raised ceiling the drain gives up while calls are still live.
+    env = cfg["call"]["environment"]
+    assert (env["DRAIN_MAX_WAIT"], env["DRAIN_INITIAL_DELAY"]) == (
+        str(_DURATIONS.drain_max),
+        str(_DURATIONS.pre_stop_delay_s),
+    )
 
 
 @pytest.mark.parametrize("role", sorted(CELL_ROLES))

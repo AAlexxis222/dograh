@@ -118,6 +118,10 @@ services:
     environment:
       <<: *cell-env
       CELL_ROLE: call
+      # drain_web.sh falls back to a literal when these are not exported, which would cut live calls at a raised
+      # ceiling. Rendered with the grace (python -m scripts.xpand.render_durations); the startup gate compares them.
+      DRAIN_MAX_WAIT: "${DRAIN_MAX_WAIT:?DRAIN_MAX_WAIT must be set (render it: python -m scripts.xpand.render_durations)}"
+      DRAIN_INITIAL_DELAY: "${DRAIN_INITIAL_DELAY:?DRAIN_INITIAL_DELAY must be set (render it: python -m scripts.xpand.render_durations)}"
   arq:
     <<: *cell-role
     ports: !reset []
