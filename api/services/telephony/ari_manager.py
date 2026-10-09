@@ -953,10 +953,10 @@ class ARIConnection:
                     source="ari_inbound",
                     timeout=0,
                 )
-            except CallConcurrencyLimitError:
+            except CallConcurrencyLimitError as e:
                 logger.warning(
-                    f"[ARI org={self.organization_id}] Concurrent call limit "
-                    f"reached; hanging up inbound channel {channel_id}"
+                    f"[ARI org={self.organization_id}] Call admission refused "
+                    f"({e.reason}); hanging up inbound channel {channel_id}"
                 )
                 await self._delete_channel(channel_id)
                 return

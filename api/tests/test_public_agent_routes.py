@@ -12,6 +12,7 @@ from api.routes.public_agent import (
     router,
 )
 from api.services.call_concurrency import CallConcurrencyLimitError
+from api.services.runtime.durations import cell_durations
 from api.services.telephony.outbound_readiness import OutboundSetupIncompleteError
 from api.tests.conftest import mock_configuration_cascade
 
@@ -190,6 +191,7 @@ def test_trigger_route_executes_as_workflow_owner():
         workflow.organization_id,
         source="public_agent",
         timeout=0,
+        outbound=True,
     )
     mock_concurrency.bind_workflow_run.assert_awaited_once_with(slot, 501)
     mock_db.get_workflow.assert_awaited_once_with(workflow.id, organization_id=11)
@@ -399,6 +401,7 @@ def test_workflow_uuid_route_uses_scoped_lookup_and_shared_execution():
         workflow.organization_id,
         source="public_agent",
         timeout=0,
+        outbound=True,
     )
     mock_concurrency.bind_workflow_run.assert_awaited_once_with(slot, 601)
 
@@ -669,7 +672,14 @@ def test_trigger_route_still_returns_success_when_metadata_persistence_fails():
     mock_concurrency.release_workflow_run_slot.assert_not_awaited()
 
 
-def test_trigger_route_rejects_when_concurrency_limit_reached():
+@pytest.mark.parametrize(
+    ("reason", "status", "detail"),
+    [
+        ("concurrent_call_limit", 429, "Concurrent call limit reached"),
+        ("admission_backend_unavailable", 503, "admission_backend_unavailable"),
+    ],
+)
+def test_trigger_route_rejects_when_concurrency_limit_reached(reason, status, detail):
     app = _make_test_app()
     client = TestClient(app)
 
@@ -690,6 +700,7 @@ def test_trigger_route_rejects_when_concurrency_limit_reached():
                 source="public_agent",
                 wait_time=0,
                 max_concurrent=2,
+                reason=reason,
             )
         )
         mock_configuration_cascade(mock_db)
@@ -715,8 +726,12 @@ def test_trigger_route_rejects_when_concurrency_limit_reached():
             json={"phone_number": "+15551234567"},
         )
 
-    assert response.status_code == 429
-    assert response.json()["detail"] == "Concurrent call limit reached"
+    assert response.status_code == status
+    assert response.json()["detail"] == detail
+    if status == 503:  # RFC 9110 §10.2.3: when to come back
+        assert response.headers["Retry-After"] == str(
+            cell_durations().admission_retry_after_s
+        )
     mock_db.create_workflow_run.assert_not_called()
 
 

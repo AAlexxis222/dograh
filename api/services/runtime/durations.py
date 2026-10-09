@@ -24,6 +24,11 @@ _RERENDER_HINT = (
 )
 # Deployed values that must not be below the ones derived from the ceiling.
 _FLOOR_ENVS = (STOP_GRACE_ENV, DRAIN_MAX_WAIT_ENV, DRAIN_TIMEOUT_ENV)
+# An outbound call must ring at least this long before it is abandoned (US TSR, 16 CFR 310.4(b)(4)).
+MIN_RING_TIMEOUT_S = 15
+# Documented maximum ring timeout each carrier's dial API accepts (Twilio Timeout, Vonage ringing_timer,
+# Telnyx timeout_secs). Carriers absent here (ARI, Plivo) get ring_timeout_s as is.
+CARRIER_MAX_RING_S = {"twilio": 600, "vonage": 120, "telnyx": 600}
 
 
 class DurationsError(ValueError):
@@ -45,6 +50,14 @@ class Durations:
     sigterm_headroom_s: int = 30
     # admission.pending_ttl_s: an admitted slot no worker has claimed yet expires after this (VOZ-AC-B3-22 lease).
     pending_ttl_s: int = 30
+    # An outbound call reaches a worker only when the callee answers: every outbound builder caps the ringing at
+    # ring_timeout_for(carrier) <= this (Twilio Timeout, Plivo ring_timeout, Vonage ringing_timer, Telnyx
+    # timeout_secs, ARI timeout), so the outbound pending lease, sized on this value, covers the ringing.
+    ring_timeout_s: int = 60
+    # A worker whose claim failed retries after base, 2x base, ... up to claim_retry_cap_s.
+    claim_retry_base_s: int = 1
+    # Retry-After of an admission refused because the slot backend is down (HTTP 503, RFC 9110 §10.2.3).
+    admission_retry_after_s: int = 5
 
     def __post_init__(self) -> None:
         # The invariants live in the type: no Durations exists that breaks them, however it was built.
@@ -53,6 +66,13 @@ class Durations:
                 "knob_out_of_range",
                 f"call duration ceiling {self.ceiling}s is below the default max_call_duration {DEFAULT_MAX_CALL_DURATION_S}s",
                 _CEILING_HINT,
+            )
+        if self.ring_timeout_s < MIN_RING_TIMEOUT_S:
+            raise DurationsError(
+                "knob_out_of_range",
+                f"ring_timeout_s={self.ring_timeout_s}s is below the {MIN_RING_TIMEOUT_S}s minimum ring "
+                "(US TSR, 16 CFR 310.4(b)(4))",
+                f"keep ring_timeout_s >= {MIN_RING_TIMEOUT_S} (api/services/runtime/durations.py)",
             )
         if not (self.ceiling < self.slot_ttl <= self.drain_max < self.grace):
             raise DurationsError(
@@ -102,6 +122,23 @@ class Durations:
     @property
     def heartbeat_renew_s(self) -> int:
         return self.slot_ttl // 3
+
+    def ring_timeout_for(self, carrier: str) -> int:
+        """The ring timeout an outbound builder sends: ring_timeout_s clamped to the carrier's documented maximum,
+        so never above the ringing the outbound pending lease is sized for."""
+        return min(
+            self.ring_timeout_s, CARRIER_MAX_RING_S.get(carrier, self.ring_timeout_s)
+        )
+
+    @property
+    def outbound_pending_ttl_s(self) -> int:
+        """Pending lease of an outbound admission: the ringing, then the same margin as an inbound one."""
+        return self.ring_timeout_s + self.pending_ttl_s
+
+    @property
+    def claim_retry_cap_s(self) -> int:
+        """Retries stay well inside the pending lease, so a failed claim is retried before the slot expires."""
+        return self.pending_ttl_s // 3
 
     def check_workflow_max(self, max_call_duration_s: int) -> None:
         if max_call_duration_s > self.ceiling:

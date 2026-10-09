@@ -518,6 +518,7 @@ class CampaignCallDispatcher:
                 ),
                 scope_max_concurrent=campaign_max_concurrency,
                 retry_interval=1,
+                outbound=True,
             )
         except CallConcurrencyLimitError as e:
             raise ConcurrentSlotAcquisitionError(

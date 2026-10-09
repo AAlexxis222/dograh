@@ -17,6 +17,7 @@ from pipecat.utils.enums import EndTaskReason
 
 from api.db import db_client
 from api.enums import TelephonyCallStatus, WorkflowRunMode
+from api.services.runtime.durations import cell_durations
 from api.services.telephony.base import (
     CallInitiationResult,
     NormalizedInboundData,
@@ -118,6 +119,8 @@ class ARIProvider(TelephonyProvider):
             "channelId": channel_id,
             "endpoint": dial_string,
             "app": self.stasis_app_name,
+            # Ringing bound the outbound pending lease is sized for (durations.ring_timeout_s).
+            "timeout": cell_durations().ring_timeout_for("ari"),
             "appArgs": ",".join(
                 filter(
                     None,

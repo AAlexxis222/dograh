@@ -15,6 +15,7 @@ from loguru import logger
 
 from api.db import db_client
 from api.enums import TelephonyCallStatus, WorkflowRunMode
+from api.services.runtime.durations import cell_durations
 from api.services.telephony import ws_auth
 from api.services.telephony.base import (
     CallInitiationResult,
@@ -70,6 +71,8 @@ class PlivoProvider(TelephonyProvider):
             "to": to_number.lstrip("+"),
             "answer_url": webhook_url,
             "answer_method": "POST",
+            # Ringing bound the outbound pending lease is sized for (durations.ring_timeout_s).
+            "ring_timeout": cell_durations().ring_timeout_for("plivo"),
         }
 
         if workflow_run_id:

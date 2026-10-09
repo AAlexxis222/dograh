@@ -8,7 +8,8 @@ from sqlalchemy import update
 
 from api.db import db_client
 from api.db.models import QueuedRunModel, WorkflowRunModel
-from api.services.call_concurrency.rate_limiter import FLEET_CONCURRENT_KEY, RateLimiter
+from api.services.call_concurrency import keys
+from api.services.call_concurrency.rate_limiter import RateLimiter
 from api.services.campaign.campaign_call_dispatcher import CampaignCallDispatcher
 from api.services.campaign.campaign_orchestrator import CampaignOrchestrator
 from api.tests.test_campaign_call_dispatcher import (
@@ -190,10 +191,7 @@ async def test_monitor_recovers_without_callback_and_retries_redis_cleanup(
             with patch.object(limiter, "release_slot", AsyncMock(return_value=None)):
                 await monitor._check_stale_campaigns()
             monitor.publisher.publish_campaign_completed.assert_awaited_once()
-            assert (
-                await redis.zscore(f"concurrent_calls:{scope}", slot.slot_id)
-                is not None
-            )
+            assert await redis.zscore(keys.scope_key(scope), slot.slot_id) is not None
             async with sessions() as session:
                 run = await session.get(WorkflowRunModel, s.run.id)
                 assert run.logs["campaign_dispatch"]["slot_cleanup_pending"]
@@ -202,12 +200,11 @@ async def test_monitor_recovers_without_callback_and_retries_redis_cleanup(
             await CampaignOrchestrator(AsyncMock())._check_stale_campaigns()
             await CampaignCallDispatcher().recover_stale_dispatches()
         assert not await redis.exists(mapping_key)
-        assert await redis.zscore(f"concurrent_calls:{s.org.id}", slot.slot_id) is None
-        assert await redis.zscore(f"concurrent_calls:{scope}", slot.slot_id) is None
-        assert await redis.zscore(FLEET_CONCURRENT_KEY, slot.slot_id) is None
+        assert await redis.zscore(keys.org_key(s.org.id), slot.slot_id) is None
+        assert await redis.zscore(keys.scope_key(scope), slot.slot_id) is None
+        assert await redis.zscore(keys.fleet_key(), slot.slot_id) is None
         assert (
-            await redis.zscore(f"concurrent_calls:{s.org.id}", other_slot.slot_id)
-            is not None
+            await redis.zscore(keys.org_key(s.org.id), other_slot.slot_id) is not None
         )
         async with sessions() as session:
             run = await session.get(WorkflowRunModel, s.run.id)

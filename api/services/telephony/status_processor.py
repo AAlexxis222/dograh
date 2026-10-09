@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from api.db import db_client
 from api.db.workflow_run_client import append_unique_tags
 from api.enums import TelephonyCallStatus, WorkflowRunState
+from api.services.call_concurrency import call_concurrency
 from api.services.campaign.campaign_call_dispatcher import campaign_call_dispatcher
 from api.services.campaign.campaign_event_publisher import (
     notify_campaign_call_completed,
@@ -40,6 +41,9 @@ IN_FLIGHT_STATUSES = frozenset(
         TelephonyCallStatus.IN_PROGRESS,
         TelephonyCallStatus.ANSWERED,
     }
+)
+RINGING_STATUSES = frozenset(
+    {TelephonyCallStatus.INITIATED, TelephonyCallStatus.RINGING}
 )
 RETRYABLE_NOT_CONNECTED_STATUSES = frozenset(
     {TelephonyCallStatus.BUSY, TelephonyCallStatus.NO_ANSWER}
@@ -228,6 +232,9 @@ async def _process_status_update(workflow_run_id: int, status: StatusCallbackReq
             await _enqueue_integrations_for_unconnected_run(
                 workflow_run_id, normalized_status.value
             )
+    elif normalized_status in RINGING_STATUSES:
+        # Not answered yet: keep the outbound slot's pending lease alive while it rings.
+        await call_concurrency.extend_ringing_slot(workflow_run_id)
     elif normalized_status in IN_FLIGHT_STATUSES:
         # No-op while the call is in flight.
         pass

@@ -10,6 +10,7 @@ from api.errors.telephony_errors import TelephonyError
 from api.routes.telephony import _handle_telephony_websocket, handle_inbound_run, router
 from api.services.auth.depends import get_user
 from api.services.call_concurrency import CallConcurrencyLimitError
+from api.services.runtime.durations import cell_durations
 from api.tests.conftest import mock_configuration_cascade
 
 
@@ -204,6 +205,7 @@ def test_initiate_call_executes_as_workflow_owner_for_shared_org_workflow():
         workflow.organization_id,
         source="telephony_outbound",
         timeout=0,
+        outbound=True,
     )
     mock_concurrency.bind_workflow_run.assert_awaited_once_with(slot, 501)
 
@@ -418,7 +420,14 @@ def test_initiate_call_rejects_existing_run_for_different_workflow():
     assert provider.initiate_call.await_count == 0
 
 
-def test_initiate_call_rejects_when_concurrency_limit_reached():
+@pytest.mark.parametrize(
+    ("reason", "status", "detail"),
+    [
+        ("concurrent_call_limit", 429, "Concurrent call limit reached"),
+        ("admission_backend_unavailable", 503, "admission_backend_unavailable"),
+    ],
+)
+def test_initiate_call_rejects_when_concurrency_limit_reached(reason, status, detail):
     app = _make_test_app()
     client = TestClient(app)
 
@@ -439,6 +448,7 @@ def test_initiate_call_rejects_when_concurrency_limit_reached():
                 source="telephony_outbound",
                 wait_time=0,
                 max_concurrent=1,
+                reason=reason,
             )
         )
         mock_configuration_cascade(mock_db)
@@ -454,8 +464,12 @@ def test_initiate_call_rejects_when_concurrency_limit_reached():
             json={"workflow_id": workflow.id, "phone_number": "+15551234567"},
         )
 
-    assert response.status_code == 429
-    assert response.json()["detail"] == "Concurrent call limit reached"
+    assert response.status_code == status
+    assert response.json()["detail"] == detail
+    if status == 503:  # RFC 9110 §10.2.3: when to come back
+        assert response.headers["Retry-After"] == str(
+            cell_durations().admission_retry_after_s
+        )
     mock_db.create_workflow_run.assert_not_called()
     provider.initiate_call.assert_not_awaited()
 
@@ -552,8 +566,15 @@ async def test_inbound_run_routes_exotel_without_account_id_by_called_number():
     assert response == '{"url":"wss://x"}'
 
 
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        ("concurrent_call_limit", TelephonyError.CONCURRENT_CALL_LIMIT),
+        ("admission_backend_unavailable", TelephonyError.ADMISSION_BACKEND_UNAVAILABLE),
+    ],
+)
 @pytest.mark.asyncio
-async def test_inbound_run_rejects_when_concurrency_limit_reached():
+async def test_inbound_run_rejects_when_concurrency_limit_reached(reason, expected):
     request = SimpleNamespace(headers={}, url="https://api.example.com/inbound/run")
     provider_class = SimpleNamespace(
         PROVIDER_NAME="twilio",
@@ -614,15 +635,14 @@ async def test_inbound_run_rejects_when_concurrency_limit_reached():
                 source="inbound:twilio",
                 wait_time=0,
                 max_concurrent=1,
+                reason=reason,
             )
         )
 
         response = await handle_inbound_run(request)
 
     assert response == "limit-response"
-    provider_class.generate_validation_error_response.assert_called_once_with(
-        TelephonyError.CONCURRENT_CALL_LIMIT
-    )
+    provider_class.generate_validation_error_response.assert_called_once_with(expected)
     mock_db.create_workflow_run.assert_not_awaited()
 
 

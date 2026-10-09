@@ -19,6 +19,7 @@ from api.services.call_concurrency import (
     call_concurrency,
 )
 from api.services.quota_service import authorize_workflow_run_start
+from api.services.runtime.durations import cell_durations
 from api.services.telephony.factory import get_telephony_provider_by_id
 from api.services.telephony.outbound_readiness import (
     OutboundConfigurationNotFoundError,
@@ -275,8 +276,15 @@ async def _execute_resolved_target(
             target.organization_id,
             source="public_agent",
             timeout=0,
+            outbound=True,
         )
-    except CallConcurrencyLimitError:
+    except CallConcurrencyLimitError as e:
+        if e.backend_unavailable:
+            raise HTTPException(
+                status_code=503,
+                detail=e.reason,
+                headers={"Retry-After": str(cell_durations().admission_retry_after_s)},
+            )
         raise HTTPException(
             status_code=429,
             detail="Concurrent call limit reached",

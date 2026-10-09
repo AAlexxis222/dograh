@@ -271,8 +271,8 @@ async def test_acquire_gives_the_lua_script_the_slot_ttl():
     d = Durations.from_cell(ceiling_s=7200)
     assert client.eval.await_args.args[-2:] == (d.pending_ttl_s, d.slot_ttl)
     await limiter.renew_slot(org_id=1, attempt_id="a", workflow_run_id=7)
-    # (script, numkeys, clock, org, scope, fleet, mapping, member, ttl, org_id, scope)
-    assert client.eval.await_args.args[8] == d.slot_ttl
+    # (script, numkeys, clock, org, scope, fleet, mapping, legacy org, member, ttl, org_id, scope)
+    assert client.eval.await_args.args[9] == d.slot_ttl
 
 
 async def test_workflow_slot_mapping_ttl_is_the_slot_ttl():
@@ -362,3 +362,16 @@ def test_the_rate_limiter_asks_the_resolved_durations(monkeypatch):
         module.RateLimiter().stale_call_timeout
         == Durations.from_cell(ceiling_s=400).slot_ttl
     )
+
+
+def test_ring_timeout_has_the_tsr_floor_and_each_carrier_gets_at_most_its_documented_max():
+    with pytest.raises(DurationsError) as e:
+        Durations(ceiling=1200, ring_timeout_s=14)
+    assert (
+        e.value.code == "knob_out_of_range" and "16 CFR 310.4(b)(4)" in e.value.reason
+    )
+    d = Durations(ceiling=1200, ring_timeout_s=300)
+    assert d.ring_timeout_for("vonage") == 120  # ringing_timer max
+    assert d.ring_timeout_for("twilio") == 300
+    assert d.ring_timeout_for("ari") == 300  # no documented max: as configured
+    assert d.outbound_pending_ttl_s == 300 + d.pending_ttl_s

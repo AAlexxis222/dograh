@@ -142,8 +142,17 @@ async def test_agent_stream_marks_run_failed_when_quota_exceeded():
     db_client.update_workflow_run.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    ("reason", "code", "close_reason"),
+    [
+        ("concurrent_call_limit", 1008, "Concurrent call limit reached"),
+        ("admission_backend_unavailable", 1013, "admission_backend_unavailable"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_agent_stream_rejects_when_concurrency_limit_reached():
+async def test_agent_stream_rejects_when_concurrency_limit_reached(
+    reason, code, close_reason
+):
     from api.routes.agent_stream import agent_stream_websocket
 
     websocket = _FakeWebSocket()
@@ -175,13 +184,11 @@ async def test_agent_stream_rejects_when_concurrency_limit_reached():
                 source="agent_stream:cloudonix",
                 wait_time=0,
                 max_concurrent=1,
+                reason=reason,
             )
         )
 
         await agent_stream_websocket(websocket, "cloudonix", "agent-uuid")
 
-    websocket.close.assert_awaited_once_with(
-        code=1008,
-        reason="Concurrent call limit reached",
-    )
+    websocket.close.assert_awaited_once_with(code=code, reason=close_reason)
     db_client.create_workflow_run.assert_not_awaited()

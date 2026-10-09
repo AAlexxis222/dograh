@@ -28,8 +28,29 @@ def _offer_payload(pc_id: str = "pc-1") -> dict:
     }
 
 
+@pytest.mark.parametrize(
+    ("reason", "payload"),
+    [
+        (
+            "concurrent_call_limit",
+            {
+                "error_type": "concurrency_limit_exceeded",
+                "message": "Concurrent call limit reached",
+            },
+        ),
+        (
+            "admission_backend_unavailable",
+            {
+                "error_type": "admission_backend_unavailable",
+                "message": "Service temporarily unavailable",
+            },
+        ),
+    ],
+)
 @pytest.mark.asyncio
-async def test_public_embed_offer_rejects_when_org_concurrency_limit_reached():
+async def test_public_embed_offer_rejects_when_org_concurrency_limit_reached(
+    reason, payload
+):
     manager = SignalingManager()
     ws = _FakeWebSocket()
     user = SimpleNamespace(id=7)
@@ -56,6 +77,7 @@ async def test_public_embed_offer_rejects_when_org_concurrency_limit_reached():
                 source="public_embed",
                 wait_time=0,
                 max_concurrent=2,
+                reason=reason,
             )
         )
         mock_concurrency.bind_workflow_run = AsyncMock()
@@ -72,15 +94,7 @@ async def test_public_embed_offer_rejects_when_org_concurrency_limit_reached():
             call_concurrency_source="public_embed",
         )
 
-    ws.send_json.assert_awaited_once_with(
-        {
-            "type": "error",
-            "payload": {
-                "error_type": "concurrency_limit_exceeded",
-                "message": "Concurrent call limit reached",
-            },
-        }
-    )
+    ws.send_json.assert_awaited_once_with({"type": "error", "payload": payload})
     mock_concurrency.bind_workflow_run.assert_not_called()
 
 

@@ -25,6 +25,7 @@ class CallConcurrencySlot:
     max_concurrent: int
     source: str
     scope_key: str | None = None
+    scope_max_concurrent: int | None = None
 
 
 class CallConcurrencyLimitError(Exception):
@@ -47,6 +48,8 @@ class CallConcurrencyLimitError(Exception):
         self.max_concurrent = max_concurrent
         self.reason = reason
         self.hint = hint
+        # Callers answer this case differently (carrier code, HTTP 503): the org is not full, Redis is down.
+        self.backend_unavailable = reason == AdmissionBackendUnavailable.reason
         super().__init__(
             f"Call admission refused for org {organization_id}: {reason} "
             f"(source={source}, limit={max_concurrent}, waited={wait_time:.1f}s)"
@@ -112,13 +115,15 @@ class CallConcurrencyService:
         scope_key: str | None = None,
         scope_max_concurrent: int | None = None,
         retry_interval: float = 1,
+        outbound: bool = False,
     ) -> CallConcurrencySlot:
         """Acquire a slot in the org-wide concurrency counter.
 
         ``scope_key``/``scope_max_concurrent`` additionally bound a secondary
         counter (e.g. ``campaign:<id>``) so a source can cap its own
         concurrency without measuring — or being starved by — unrelated calls
-        in the same org.
+        in the same org. ``outbound`` calls get the longer pending lease that
+        covers the ringing (durations.outbound_pending_ttl_s).
         """
         max_concurrent = await self.get_org_concurrent_limit(organization_id)
         if scope_max_concurrent is not None:
@@ -134,6 +139,7 @@ class CallConcurrencyService:
                     max_concurrent=max_concurrent,
                     scope_key=scope_key,
                     scope_max_concurrent=scope_max_concurrent,
+                    outbound=outbound,
                 )
             except AdmissionBackendUnavailable as e:
                 logger.error(
@@ -161,6 +167,7 @@ class CallConcurrencyService:
                     max_concurrent=max_concurrent,
                     source=source,
                     scope_key=scope_key,
+                    scope_max_concurrent=scope_max_concurrent,
                 )
 
             wait_time = time.time() - wait_start
@@ -241,6 +248,8 @@ class CallConcurrencyService:
             slot.organization_id,
             slot.slot_id,
             scope_key=slot.scope_key,
+            max_concurrent=slot.max_concurrent,
+            scope_max_concurrent=slot.scope_max_concurrent,
         )
         if stored:
             return
@@ -333,60 +342,111 @@ class CallConcurrencyService:
             )
         return released
 
+    async def extend_ringing_slot(self, workflow_run_id: int) -> None:
+        """A carrier's initiated/ringing callback: the outbound call is still on its way to an answer, so its
+        pending lease restarts (a CPS queue can outlast the lease sized at dial). Never raises: the late claim
+        on answer still re-checks the limit if this is missed."""
+        try:
+            mapping = await rate_limiter.get_workflow_slot_mapping(workflow_run_id)
+            if mapping:
+                org_id, slot_id, scope_key = mapping
+                await rate_limiter.extend_pending_slot(
+                    org_id=org_id, attempt_id=slot_id, scope_key=scope_key
+                )
+        except Exception as e:
+            logger.warning(
+                f"Pending slot extension failed for workflow run {workflow_run_id}: {e}"
+            )
+
     @asynccontextmanager
-    async def hold_run_slot(self, workflow_run_id: int) -> AsyncIterator[None]:
+    async def hold_run_slot(
+        self, workflow_run_id: int, *, renew_interval_s: float | None = None
+    ) -> AsyncIterator[None]:
         """Hold the run's slot for the life of the call on this worker.
 
         Entering claims the pending slot (phase 2 of the lease); a task of
-        this call renews it every ``heartbeat_renew_s``, independent of any
-        worker heartbeat (VOZ-AC-B3-66); leaving cancels the renewal and
-        releases through the funnel. Never raises on Redis errors: a failed
-        claim is retried at each renewal.
+        this call renews it every ``renew_interval_s`` (default
+        ``heartbeat_renew_s``), independent of any worker heartbeat
+        (VOZ-AC-B3-66); leaving cancels the renewal and releases through the
+        funnel, by the claimed lease when there is one. Never raises on Redis
+        errors: a failed claim is retried on a short bounded backoff.
         """
+        hold = _SlotHold()
+        renewal = None
         try:
-            lease = await rate_limiter.claim_slot(workflow_run_id)
-            holds_slot = lease is not None
-        except Exception as e:
-            logger.warning(
-                f"Slot claim failed for workflow run {workflow_run_id}: {e}; "
-                "retrying at each renewal"
-            )
-            lease, holds_slot = None, True
-        renewal = (
-            asyncio.create_task(self._renew_run_slot(workflow_run_id, lease))
-            if holds_slot
-            else None
-        )
-        try:
+            claimed = await self._claim(workflow_run_id, hold)
+            if hold.lease is not None or not claimed:
+                renewal = asyncio.create_task(
+                    self._keep_run_slot(
+                        workflow_run_id,
+                        hold,
+                        renew_interval_s or rate_limiter.durations.heartbeat_renew_s,
+                    )
+                )
             yield
         finally:
-            if renewal is not None:
-                renewal.cancel()
-                await asyncio.wait([renewal])
-            await self.unregister_active_call(workflow_run_id)
+            try:
+                if renewal is not None:
+                    renewal.cancel()
+                    await asyncio.wait([renewal])
+            finally:
+                await self._release_held(workflow_run_id, hold.lease)
 
-    async def _renew_run_slot(
-        self, workflow_run_id: int, lease: SlotLease | None
+    async def _claim(self, workflow_run_id: int, hold: "_SlotHold") -> bool:
+        """True when Redis answered (``hold.lease`` is None if the run holds no slot), False on an error."""
+        try:
+            hold.lease = await rate_limiter.claim_slot(workflow_run_id)
+            return True
+        except Exception as e:
+            logger.warning(f"Slot claim failed for workflow run {workflow_run_id}: {e}")
+            return False
+
+    async def _keep_run_slot(
+        self, workflow_run_id: int, hold: "_SlotHold", interval: float
     ) -> None:
-        interval = rate_limiter.durations.heartbeat_renew_s
+        durations = rate_limiter.durations
+        retry = durations.claim_retry_base_s
+        while hold.lease is None:
+            # The claim failed: retry well inside the pending lease, not one renewal interval later.
+            await asyncio.sleep(min(retry, interval))
+            retry = min(retry * 2, durations.claim_retry_cap_s)
+            if await self._claim(workflow_run_id, hold) and hold.lease is None:
+                return  # released meanwhile: nothing left to hold
+        lease = hold.lease
         while True:
             await asyncio.sleep(interval)
             try:
-                if lease is None:
-                    lease = await rate_limiter.claim_slot(workflow_run_id)
-                    if lease is None:
-                        return  # released meanwhile: nothing left to hold
-                else:
-                    await rate_limiter.renew_slot(
-                        org_id=lease.org_id,
-                        attempt_id=lease.attempt_id,
-                        scope_key=lease.scope_key,
-                        workflow_run_id=workflow_run_id,
-                    )
+                await rate_limiter.renew_slot(
+                    org_id=lease.org_id,
+                    attempt_id=lease.attempt_id,
+                    scope_key=lease.scope_key,
+                    workflow_run_id=workflow_run_id,
+                )
             except Exception as e:
                 logger.warning(
                     f"Slot renewal failed for workflow run {workflow_run_id}: {e}"
                 )
+
+    async def _release_held(
+        self, workflow_run_id: int, lease: SlotLease | None
+    ) -> None:
+        if lease is None:
+            await self.unregister_active_call(workflow_run_id)
+            return
+        # By the lease, so the release does not depend on the mapping still being there.
+        await rate_limiter.release_slot(
+            org_id=lease.org_id,
+            attempt_id=lease.attempt_id,
+            scope_key=lease.scope_key,
+            workflow_run_id=workflow_run_id,
+        )
+
+
+@dataclass
+class _SlotHold:
+    """The lease one call holds, shared by its claim, its renewal task and its release."""
+
+    lease: SlotLease | None = None
 
 
 call_concurrency = CallConcurrencyService()

@@ -620,16 +620,19 @@ class SignalingManager:
                         workflow_run_id,
                     )
                     concurrency_bound = True
-                except CallConcurrencyLimitError:
-                    await ws.send_json(
+                except CallConcurrencyLimitError as e:
+                    payload = (
                         {
-                            "type": "error",
-                            "payload": {
-                                "error_type": "concurrency_limit_exceeded",
-                                "message": "Concurrent call limit reached",
-                            },
+                            "error_type": e.reason,
+                            "message": "Service temporarily unavailable",
+                        }
+                        if e.backend_unavailable
+                        else {
+                            "error_type": "concurrency_limit_exceeded",
+                            "message": "Concurrent call limit reached",
                         }
                     )
+                    await ws.send_json({"type": "error", "payload": payload})
                     return
                 except WorkflowRunSlotAlreadyBoundError:
                     await ws.send_json(

@@ -32,6 +32,7 @@ from api.services.call_concurrency import (
     call_concurrency,
 )
 from api.services.quota_service import authorize_workflow_run_start
+from api.services.runtime.durations import cell_durations
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.factory import (
@@ -80,6 +81,13 @@ def _get_execution_user_id(workflow) -> int:
             detail="Workflow has no execution owner",
         )
     return workflow.user_id
+
+
+def _admission_refused(error: CallConcurrencyLimitError) -> TelephonyError:
+    """The carrier answer for a refused admission: a full org, or (failing closed) a slot backend that is down."""
+    if error.backend_unavailable:
+        return TelephonyError.ADMISSION_BACKEND_UNAVAILABLE
+    return TelephonyError.CONCURRENT_CALL_LIMIT
 
 
 @router.post(
@@ -182,8 +190,15 @@ async def initiate_call(
             user.selected_organization_id,
             source="telephony_outbound",
             timeout=0,
+            outbound=True,
         )
-    except CallConcurrencyLimitError:
+    except CallConcurrencyLimitError as e:
+        if e.backend_unavailable:
+            raise HTTPException(
+                status_code=503,
+                detail=e.reason,
+                headers={"Retry-After": str(cell_durations().admission_retry_after_s)},
+            )
         raise HTTPException(status_code=429, detail="Concurrent call limit reached")
 
     try:
@@ -949,9 +964,9 @@ async def handle_inbound_run(request: Request):
                 source=f"inbound:{provider_class.PROVIDER_NAME}",
                 timeout=0,
             )
-        except CallConcurrencyLimitError:
+        except CallConcurrencyLimitError as e:
             return provider_class.generate_validation_error_response(
-                TelephonyError.CONCURRENT_CALL_LIMIT
+                _admission_refused(e)
             )
 
         workflow_run_id = None
@@ -1122,9 +1137,9 @@ async def handle_inbound_telephony(
                 source=f"inbound_legacy:{workflow_context['provider']}",
                 timeout=0,
             )
-        except CallConcurrencyLimitError:
+        except CallConcurrencyLimitError as e:
             return provider_class.generate_validation_error_response(
-                TelephonyError.CONCURRENT_CALL_LIMIT
+                _admission_refused(e)
             )
 
         workflow_run_id = None

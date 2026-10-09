@@ -11,12 +11,9 @@ from api.constants import REDIS_URL
 from api.services.call_concurrency import keys
 from api.services.runtime.durations import Durations, cell_durations
 
-# Fleet-wide mirror of every live slot (member = attempt_id, score = expiry in
-# Redis time, see keys.py), maintained by the acquire/renew/release paths
-# alongside the per-org sets so the autoscaling scrape
-# (get_fleet_concurrent_count) is a single ZCOUNT instead of a keyspace scan.
-# Deliberately outside the "concurrent_calls:" prefix so it can never collide
-# with an org or scope counter key.
+# LEGACY fleet-wide mirror of the previous code ("<org_id>:<slot_id>", scored by
+# acquire time): read-only during the transition, see keys.py. The live fleet
+# set is keys.fleet_key().
 FLEET_CONCURRENT_KEY = "concurrent_calls_fleet"
 
 
@@ -34,10 +31,46 @@ local function redis_now(clock)
     local t = redis.call('TIME')
     return tonumber(t[1]) + tonumber(t[2]) / 1000000
 end
+
+-- Unexpired v2 members of a set, after purging the expired ones.
+local function live(set, now)
+    redis.call('ZREMRANGEBYSCORE', set, '-inf', now)
+    return redis.call('ZCARD', set)
+end
+
+-- Members of a LEGACY (pre-v2) set still live under the old rule: score = acquisition time, live while
+-- score > now - slot_ttl. Read-only; the legacy sets die on their own expiry (keys.py, follow-up VOZ-N0-21-F1).
+local function legacy_live(set, now, slot_ttl)
+    if set == '' then
+        return 0
+    end
+    return redis.call('ZCOUNT', set, string.format('(%.17g', now - slot_ttl), '+inf')
+end
+
+-- Claim and renewal: ZADD without XX, so a slot a Redis restart lost comes back (VOZ-AC-B3-65-bis), the mapping
+-- is re-created if missing, and every expiry of the slot and of the mapping is refreshed (VOZ-AC-B3-66).
+local function readd(now, sets, mapping, member, slot_ttl, org_id, scope)
+    local expires = now + slot_ttl
+    for _, set in ipairs(sets) do
+        if set ~= '' then
+            redis.call('ZADD', set, expires, member)
+            redis.call('EXPIRE', set, slot_ttl)
+        end
+    end
+    if mapping ~= '' then
+        if redis.call('EXISTS', mapping) == 0 then
+            redis.call('HSET', mapping, 'org_id', org_id, 'slot_id', member)
+            if scope ~= '' then
+                redis.call('HSET', mapping, 'scope_key', scope)
+            end
+        end
+        redis.call('EXPIRE', mapping, slot_ttl)
+    end
+end
 """
 
-# Admission (phase 1 of the lease): the member is added with score now + pending_ttl; claim/renew moves it to
-# now + slot_ttl. Expired members (score <= now) are purged before counting.
+# Admission (phase 1 of the lease): the member is added with score now + pending_ttl (inbound or outbound);
+# claim/renew moves it to now + slot_ttl. Legacy calls still running count toward both limits.
 _ACQUIRE_SLOT = (
     _REDIS_NOW
     + """
@@ -49,16 +82,14 @@ local scope_max_concurrent = tonumber(ARGV[3])
 local pending_ttl = tonumber(ARGV[4])
 local slot_ttl = tonumber(ARGV[5])
 
-redis.call('ZREMRANGEBYSCORE', org, '-inf', now)
-local current_count = redis.call('ZCARD', org)
+local current_count = live(org, now) + legacy_live(KEYS[5], now, slot_ttl)
 if current_count >= max_concurrent then
     return nil
 end
 
 local expires = now + pending_ttl
 if scope ~= '' then
-    redis.call('ZREMRANGEBYSCORE', scope, '-inf', now)
-    if redis.call('ZCARD', scope) >= scope_max_concurrent then
+    if live(scope, now) + legacy_live(KEYS[6], now, slot_ttl) >= scope_max_concurrent then
         return nil
     end
     redis.call('ZADD', scope, expires, member)
@@ -76,48 +107,91 @@ return {member, current_count + 1}
 """
 )
 
-# Claim (phase 2) and every renewal (VOZ-AC-B3-65-bis, -66): ZADD without XX, so a slot a Redis restart lost
-# comes back, and the mapping is re-created if missing;
-# every EXPIRE is refreshed.
+# Claim (phase 2), when the worker takes the call. A member still pending just moves to now + slot_ttl. A member
+# that already expired (a late claim) is re-added through the same limit check: the answered call is kept either
+# way, but returns overcommit = 1 when the limit was already full. A legacy call is left to its legacy life.
+# Returns {late, overcommit, org count after}.
+_CLAIM_SLOT = (
+    _REDIS_NOW
+    + """
+local now = redis_now(KEYS[1])
+local org, scope, fleet, mapping = KEYS[2], KEYS[3], KEYS[4], KEYS[5]
+local member = ARGV[1]
+local slot_ttl = tonumber(ARGV[2])
+if KEYS[6] ~= '' and redis.call('ZSCORE', KEYS[6], member) then
+    return {0, 0, 0}
+end
+
+local score = redis.call('ZSCORE', org, member)
+local late = (not score) or tonumber(score) <= now
+local overcommit = 0
+if late then
+    if ARGV[5] ~= '' and live(org, now) + legacy_live(KEYS[6], now, slot_ttl) >= tonumber(ARGV[5]) then
+        overcommit = 1
+    end
+    if scope ~= '' and ARGV[6] ~= ''
+        and live(scope, now) + legacy_live(KEYS[7], now, slot_ttl) >= tonumber(ARGV[6]) then
+        overcommit = 1
+    end
+end
+readd(now, {org, scope, fleet}, mapping, member, slot_ttl, ARGV[3], ARGV[4])
+return {late and 1 or 0, overcommit, live(org, now) + legacy_live(KEYS[6], now, slot_ttl)}
+"""
+)
+
+# A carrier's initiated/ringing callback for an outbound call that is still pending: its lease restarts at
+# now + outbound pending lease (a CPS queue before the ringing can outlast the lease sized at dial). ZADD GT never
+# shortens a claimed slot; an already expired member is left to the late claim, which re-checks the limit.
+_EXTEND_PENDING = (
+    _REDIS_NOW
+    + """
+local now = redis_now(KEYS[1])
+local member = ARGV[1]
+local expires = now + tonumber(ARGV[2])
+local slot_ttl = ARGV[3]
+local extended = 0
+for _, set in ipairs({KEYS[2], KEYS[3], KEYS[4]}) do
+    local score = set ~= '' and redis.call('ZSCORE', set, member)
+    if score and tonumber(score) > now then
+        extended = extended + redis.call('ZADD', set, 'GT', 'CH', expires, member)
+        redis.call('EXPIRE', set, slot_ttl)
+    end
+end
+return extended
+"""
+)
+
+# Every renewal of a claimed call. A slot the carrier's terminal callback already released while this pipeline is
+# still live comes back here (the call is still holding capacity); the pipeline's own release at its end removes
+# it for good. A legacy call is left to its legacy life.
 _RENEW_SLOT = (
     _REDIS_NOW
     + """
 local now = redis_now(KEYS[1])
-local mapping = KEYS[5]
 local member = ARGV[1]
-local slot_ttl = tonumber(ARGV[2])
-local expires = now + slot_ttl
-
-for _, set in ipairs({KEYS[2], KEYS[3], KEYS[4]}) do
-    if set ~= '' then
-        redis.call('ZADD', set, expires, member)
-        redis.call('EXPIRE', set, slot_ttl)
-    end
+if KEYS[6] ~= '' and redis.call('ZSCORE', KEYS[6], member) then
+    return 0
 end
-if mapping ~= '' then
-    if redis.call('EXISTS', mapping) == 0 then
-        redis.call('HSET', mapping, 'org_id', ARGV[3], 'slot_id', member)
-        if ARGV[4] ~= '' then
-            redis.call('HSET', mapping, 'scope_key', ARGV[4])
-        end
-    end
-    redis.call('EXPIRE', mapping, slot_ttl)
-end
+readd(now, {KEYS[2], KEYS[3], KEYS[4]}, KEYS[5], member, tonumber(ARGV[2]), ARGV[3], ARGV[4])
 return 1
 """
 )
 
-# The single release (VOZ-AC-B3-67): the slot in every set, the semaphore members registered in the mapping
-# ("sem:<zset>" fields, none written yet) and the mapping itself, atomically. The mapping goes only with the
-# attempt that owns it. Idempotent: returns 0 when the org member was already gone.
+# The single release (VOZ-AC-B3-67): the slot in every set (and in the legacy sets, for a call the previous code
+# admitted), the semaphore members registered in the mapping ("sem:<zset>" fields, none written yet) and the
+# mapping itself, atomically. The mapping goes only with the attempt that owns it. Idempotent: returns 0 when the
+# member was already gone.
 _RELEASE_SLOT = """
 local org, scope, fleet, mapping = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
 local member = ARGV[1]
-local removed = redis.call('ZREM', org, member)
-if scope ~= '' then
-    redis.call('ZREM', scope, member)
+local removed = redis.call('ZREM', org, member) + redis.call('ZREM', KEYS[5], member)
+for _, set in ipairs({scope, KEYS[6]}) do
+    if set ~= '' then
+        redis.call('ZREM', set, member)
+    end
 end
 redis.call('ZREM', fleet, member)
+redis.call('ZREM', KEYS[7], ARGV[2])
 if mapping ~= '' and redis.call('HGET', mapping, 'slot_id') == member then
     local fields = redis.call('HGETALL', mapping)
     for i = 1, #fields, 2 do
@@ -134,8 +208,7 @@ _COUNT_SLOTS = (
     _REDIS_NOW
     + """
 local now = redis_now(KEYS[1])
-redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
-return redis.call('ZCARD', KEYS[2])
+return live(KEYS[2], now) + legacy_live(KEYS[3], now, tonumber(ARGV[1]))
 """
 )
 
@@ -145,8 +218,11 @@ _COUNT_FLEET = (
     + """
 local now = redis_now(KEYS[1])
 return redis.call('ZCOUNT', KEYS[2], string.format('(%.17g', now), '+inf')
+    + legacy_live(KEYS[3], now, tonumber(ARGV[1]))
 """
 )
+
+LATE_CLAIM_OVERCOMMIT = "slot_late_claim_overcommit"
 
 
 class AdmissionBackendUnavailable(Exception):
@@ -316,27 +392,36 @@ class RateLimiter:
         max_concurrent: int,
         scope_key: str | None = None,
         scope_max_concurrent: int | None = None,
+        outbound: bool = False,
     ) -> Optional[ConcurrentSlotAcquisition]:
-        """Admit an attempt: a pending slot (score = Redis TIME + pending_ttl_s) in the org set, the optional
-        scope set (``campaign:<id>``, bounded by ``scope_max_concurrent``) and the fleet set, atomically.
+        """Admit an attempt: a pending slot in the org set, the optional scope set (``campaign:<id>``, bounded by
+        ``scope_max_concurrent``) and the fleet set, atomically. Score = Redis TIME + ``pending_ttl_s``, or
+        + ``outbound_pending_ttl_s`` for an ``outbound`` call, which reaches a worker only once answered.
 
         None when a limit is reached. A Redis error fails closed with ``AdmissionBackendUnavailable``
-        (VOZ-AC-B3-65-bis) instead of reading as a full org. The worker must ``claim_slot`` within
-        pending_ttl_s or the slot expires on its own (two-phase lease).
+        (VOZ-AC-B3-65-bis) instead of reading as a full org. The worker must ``claim_slot`` within the pending
+        lease or the slot expires on its own (two-phase lease).
         """
+        pending_ttl = (
+            self.durations.outbound_pending_ttl_s
+            if outbound
+            else self.durations.pending_ttl_s
+        )
         try:
             redis_client = await self._get_redis()
             result = await redis_client.eval(
                 _ACQUIRE_SLOT,
-                4,
+                6,
                 self._test_clock,
                 keys.org_key(org_id),
                 keys.scope_key(scope_key),
-                FLEET_CONCURRENT_KEY,
+                keys.fleet_key(),
+                keys.legacy_org_key(org_id),
+                keys.legacy_scope_key(scope_key),
                 attempt_id,
                 max_concurrent,
                 scope_max_concurrent if scope_max_concurrent is not None else 0,
-                self.durations.pending_ttl_s,
+                pending_ttl,
                 self.durations.slot_ttl,
             )
         except (RedisError, OSError) as e:
@@ -352,7 +437,11 @@ class RateLimiter:
 
     async def claim_slot(self, workflow_run_id: int) -> SlotLease | None:
         """Phase 2 of the lease, when the worker takes the call: the run's slot moves from pending to
-        TIME + slot_ttl. None when the run holds no slot. Redis errors propagate (the caller retries)."""
+        TIME + slot_ttl. None when the run holds no slot. Redis errors propagate (the caller retries).
+
+        A late claim (the pending lease already expired) re-adds the slot through the admission limits stored in
+        the mapping: the answered call is always kept, and a full limit is logged as LATE_CLAIM_OVERCOMMIT.
+        """
         redis_client = await self._get_redis()
         mapping = await redis_client.hgetall(keys.mapping_key(workflow_run_id))
         if "slot_id" not in mapping:
@@ -362,13 +451,51 @@ class RateLimiter:
             attempt_id=mapping["slot_id"],
             scope_key=mapping.get("scope_key") or None,
         )
-        await self.renew_slot(
-            org_id=lease.org_id,
-            attempt_id=lease.attempt_id,
-            scope_key=lease.scope_key,
-            workflow_run_id=workflow_run_id,
+        _late, overcommit, count = await redis_client.eval(
+            _CLAIM_SLOT,
+            7,
+            self._test_clock,
+            keys.org_key(lease.org_id),
+            keys.scope_key(lease.scope_key),
+            keys.fleet_key(),
+            keys.mapping_key(workflow_run_id),
+            keys.legacy_org_key(lease.org_id),
+            keys.legacy_scope_key(lease.scope_key),
+            lease.attempt_id,
+            self.durations.slot_ttl,
+            lease.org_id,
+            lease.scope_key or "",
+            mapping.get("max_concurrent", ""),
+            mapping.get("scope_max_concurrent", ""),
         )
+        if overcommit:
+            logger.warning(
+                f"{LATE_CLAIM_OVERCOMMIT}: org={lease.org_id} "
+                f"attempt_id={lease.attempt_id} workflow_run_id={workflow_run_id} "
+                f"count={count} max_concurrent={mapping.get('max_concurrent')} "
+                f"scope={lease.scope_key} scope_max_concurrent="
+                f"{mapping.get('scope_max_concurrent')}: the answered call is kept"
+            )
         return lease
+
+    async def extend_pending_slot(
+        self, *, org_id: int, attempt_id: str, scope_key: str | None = None
+    ) -> bool:
+        """Restart the pending lease of a still-pending outbound slot on a carrier's initiated/ringing callback.
+        True if a set was extended. Redis errors propagate."""
+        redis_client = await self._get_redis()
+        extended = await redis_client.eval(
+            _EXTEND_PENDING,
+            4,
+            self._test_clock,
+            keys.org_key(org_id),
+            keys.scope_key(scope_key),
+            keys.fleet_key(),
+            attempt_id,
+            self.durations.outbound_pending_ttl_s,
+            self.durations.slot_ttl,
+        )
+        return bool(extended)
 
     async def renew_slot(
         self,
@@ -383,12 +510,13 @@ class RateLimiter:
         redis_client = await self._get_redis()
         await redis_client.eval(
             _RENEW_SLOT,
-            5,
+            6,
             self._test_clock,
             keys.org_key(org_id),
             keys.scope_key(scope_key),
-            FLEET_CONCURRENT_KEY,
+            keys.fleet_key(),
             keys.mapping_key(workflow_run_id),
+            keys.legacy_org_key(org_id),
             attempt_id,
             self.durations.slot_ttl,
             org_id,
@@ -415,12 +543,16 @@ class RateLimiter:
             redis_client = await self._get_redis()
             removed = await redis_client.eval(
                 _RELEASE_SLOT,
-                4,
+                7,
                 keys.org_key(org_id),
                 keys.scope_key(scope_key),
-                FLEET_CONCURRENT_KEY,
+                keys.fleet_key(),
                 keys.mapping_key(workflow_run_id),
+                keys.legacy_org_key(org_id),
+                keys.legacy_scope_key(scope_key),
+                FLEET_CONCURRENT_KEY,
                 attempt_id,
+                keys.legacy_fleet_member(org_id, attempt_id),
             )
         except Exception as e:
             logger.error(f"Error releasing concurrent slot: {e}")
@@ -453,7 +585,12 @@ class RateLimiter:
         try:
             redis_client = await self._get_redis()
             return await redis_client.eval(
-                _COUNT_SLOTS, 2, self._test_clock, keys.org_key(organization_id)
+                _COUNT_SLOTS,
+                3,
+                self._test_clock,
+                keys.org_key(organization_id),
+                keys.legacy_org_key(organization_id),
+                self.durations.slot_ttl,
             )
         except Exception as e:
             logger.error(f"Error getting concurrent count: {e}")
@@ -464,8 +601,9 @@ class RateLimiter:
     async def get_fleet_concurrent_count(self) -> int:
         """Total active calls across every org — the fleet-wide autoscaling signal.
 
-        One ZCOUNT over FLEET_CONCURRENT_KEY, the fleet-wide mirror the
-        acquire/release paths maintain alongside the per-org counters — no
+        One ZCOUNT over keys.fleet_key() (plus the legacy fleet set during the
+        transition, keys.py), the fleet-wide mirror the acquire/renew/release
+        paths maintain alongside the per-org counters — no
         keyspace scan, no per-org fan-out, and scrape cost is independent of
         whatever else lives in this (shared) Redis. Counting by score (not
         ZCARD) excludes expired slots (score = expiry <= Redis TIME) without
@@ -479,7 +617,12 @@ class RateLimiter:
         """
         redis_client = await self._get_redis()
         return await redis_client.eval(
-            _COUNT_FLEET, 2, self._test_clock, FLEET_CONCURRENT_KEY
+            _COUNT_FLEET,
+            3,
+            self._test_clock,
+            keys.fleet_key(),
+            FLEET_CONCURRENT_KEY,
+            self.durations.slot_ttl,
         )
 
     async def store_workflow_slot_mapping(
@@ -510,11 +653,15 @@ class RateLimiter:
         organization_id: int,
         slot_id: str,
         scope_key: str | None = None,
+        *,
+        max_concurrent: int | None = None,
+        scope_max_concurrent: int | None = None,
     ) -> bool:
         """
         Store the workflow_run_id -> concurrent slot mapping only if no mapping
         already exists. This prevents duplicate public/WebRTC starts for the
-        same workflow run from overwriting the cleanup pointer.
+        same workflow run from overwriting the cleanup pointer. The admission
+        limits ride along so a late claim can re-check them.
         """
         redis_client = await self._get_redis()
         mapping_key = keys.mapping_key(workflow_run_id)
@@ -534,6 +681,12 @@ class RateLimiter:
         if scope_key ~= '' then
             redis.call('HSET', key, 'scope_key', scope_key)
         end
+        if ARGV[5] ~= '' then
+            redis.call('HSET', key, 'max_concurrent', ARGV[5])
+        end
+        if ARGV[6] ~= '' then
+            redis.call('HSET', key, 'scope_max_concurrent', ARGV[6])
+        end
         redis.call('EXPIRE', key, ttl)
         return 1
         """
@@ -547,6 +700,8 @@ class RateLimiter:
                 slot_id,
                 self.stale_call_timeout,
                 scope_key or "",
+                "" if max_concurrent is None else max_concurrent,
+                "" if scope_max_concurrent is None else scope_max_concurrent,
             )
             return bool(stored)
         except Exception as e:

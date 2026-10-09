@@ -40,6 +40,7 @@ async def test_acquire_org_slot_logs_post_acquire_count_and_limit():
         max_concurrent=10,
         scope_key=None,
         scope_max_concurrent=None,
+        outbound=False,
     )
     mock_logger.info.assert_called_once()
     log_message = mock_logger.info.call_args.args[0]
@@ -153,9 +154,15 @@ async def test_acquire_org_slot_passes_scope_to_rate_limiter():
         max_concurrent=10,
         scope_key="campaign:42",
         scope_max_concurrent=3,
+        outbound=False,
     )
     mock_rate_limiter.store_workflow_slot_mapping_if_absent.assert_awaited_once_with(
-        501, 199, "slot-123", scope_key="campaign:42"
+        501,
+        199,
+        "slot-123",
+        scope_key="campaign:42",
+        max_concurrent=10,
+        scope_max_concurrent=3,
     )
 
 
@@ -228,6 +235,7 @@ async def test_unregister_active_call_never_raises():
 import os  # noqa: E402
 import uuid  # noqa: E402
 
+from api.services.call_concurrency import keys  # noqa: E402
 from api.services.call_concurrency.rate_limiter import RateLimiter  # noqa: E402
 
 requires_redis = pytest.mark.skipif(
@@ -261,8 +269,6 @@ async def test_strict_org_count_propagates_storage_errors():
 async def test_org_count_spans_workers_excludes_other_orgs_and_stale_slots():
     import time
 
-    from api.services.call_concurrency.rate_limiter import FLEET_CONCURRENT_KEY
-
     first_worker, second_worker = RateLimiter(), RateLimiter()
     org_a, org_b = uuid.uuid4().int, uuid.uuid4().int
     redis_client = await first_worker._get_redis()
@@ -280,7 +286,7 @@ async def test_org_count_spans_workers_excludes_other_orgs_and_stale_slots():
 
         # Score = expiry in Redis time: a member that expired a slot_ttl ago.
         await redis_client.zadd(
-            f"concurrent_calls:{org_a}",
+            keys.org_key(org_a),
             {"stale": time.time() - first_worker.stale_call_timeout - 1},
         )
         assert await first_worker.get_concurrent_count(org_a, raise_on_error=True) == 2
@@ -289,10 +295,8 @@ async def test_org_count_spans_workers_excludes_other_orgs_and_stale_slots():
         assert await first_worker.get_concurrent_count(org_a, raise_on_error=True) == 1
     finally:
         for _org, slot_id in slots:
-            await redis_client.zrem(FLEET_CONCURRENT_KEY, slot_id)
-        await redis_client.delete(
-            f"concurrent_calls:{org_a}", f"concurrent_calls:{org_b}"
-        )
+            await redis_client.zrem(keys.fleet_key(), slot_id)
+        await redis_client.delete(keys.org_key(org_a), keys.org_key(org_b))
         await first_worker.close()
         await second_worker.close()
 
@@ -305,8 +309,8 @@ async def test_scoped_acquisition_enforces_scope_limit_independently_of_org():
     rl = RateLimiter()
     org_id = _unique_org_id()
     scope = f"campaign:{org_id}"
-    org_key = f"concurrent_calls:{org_id}"
-    scope_key_full = f"concurrent_calls:{scope}"
+    org_key = keys.org_key(org_id)
+    scope_key_full = keys.scope_key(scope)
     redis_client = await rl._get_redis()
 
     try:
@@ -392,14 +396,12 @@ async def test_fleet_count_tracks_acquire_and_release_without_double_count():
         slots = []
         assert await rl.get_fleet_concurrent_count() == baseline
     finally:
-        from api.services.call_concurrency.rate_limiter import FLEET_CONCURRENT_KEY
-
         for _org_id, slot_id, _scope in slots:  # only on assertion failure
-            await redis_client.zrem(FLEET_CONCURRENT_KEY, slot_id)
+            await redis_client.zrem(keys.fleet_key(), slot_id)
         await redis_client.delete(
-            f"concurrent_calls:{org_a}",
-            f"concurrent_calls:{org_b}",
-            f"concurrent_calls:{scope}",
+            keys.org_key(org_a),
+            keys.org_key(org_b),
+            keys.scope_key(scope),
         )
         await rl.close()
 
@@ -410,8 +412,8 @@ async def test_org_limit_still_binds_scoped_acquisition():
     rl = RateLimiter()
     org_id = _unique_org_id()
     scope = f"campaign:{org_id}"
-    org_key = f"concurrent_calls:{org_id}"
-    scope_key_full = f"concurrent_calls:{scope}"
+    org_key = keys.org_key(org_id)
+    scope_key_full = keys.scope_key(scope)
     redis_client = await rl._get_redis()
 
     try:
