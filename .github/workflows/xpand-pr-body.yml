@@ -22,12 +22,13 @@ name: xpand-pr-body
 # Break-glass (Alexis only, e.g. this gate is broken on the default branch). Current required checks: guards, pr-body, principles-mechanical.
 #   gh api repos/AAlexxis222/dograh/branches/feat/foundations-base/protection/required_status_checks > before.json
 #   gh api -X DELETE repos/AAlexxis222/dograh/branches/feat/foundations-base/protection/required_status_checks/contexts -f "contexts[]=pr-body"
-#   (delete the context of the gate that is broken: principles-mechanical instead when its gate files are)
+#   (a broken principles gate file: add -f "contexts[]=principles-mechanical" as well; its fix also trips pr-body)
 #   ...merge the fix..., then re-add it WITH the app pin (the contexts endpoint drops it):
 #   gh api -X PATCH repos/AAlexxis222/dograh/branches/feat/foundations-base/protection/required_status_checks --input checks.json
 #   where checks.json = {"strict": true, "checks": [{"context": "guards", "app_id": 15368}, {"context": "pr-body", "app_id": 15368}, {"context": "principles-mechanical", "app_id": 15368}]}
 #   (keep every required check of before.json in the list: the PATCH replaces the whole set)
-#   then GET required_status_checks again and compare its strict and checks with before.json.
+#   then compare (checks carries the app pins; contexts alone hides a lost pin):
+#   diff <(jq -S '{strict,checks}' before.json) <(gh api repos/AAlexxis222/dograh/branches/feat/foundations-base/protection/required_status_checks | jq -S '{strict,checks}')
 on:
   pull_request_target:
     types: [opened, edited, synchronize, reopened]
