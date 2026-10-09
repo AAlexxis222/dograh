@@ -40,13 +40,18 @@ class CallConcurrencyLimitError(Exception):
         wait_time: float,
         max_concurrent: int,
         reason: str = "concurrent_call_limit",
+        what: str | None = None,
+        where: str | None = None,
         hint: str | None = None,
     ):
         self.organization_id = organization_id
         self.source = source
         self.wait_time = wait_time
         self.max_concurrent = max_concurrent
+        # ``reason`` is the stable code; ``what`` / ``where`` / ``hint`` complete the VOZ-AC-B0-28 record.
         self.reason = reason
+        self.what = what
+        self.where = where
         self.hint = hint
         # Callers answer this case differently (carrier code, HTTP 503): the org is not full, Redis is down.
         self.backend_unavailable = reason == AdmissionBackendUnavailable.reason
@@ -58,21 +63,34 @@ class CallConcurrencyLimitError(Exception):
 
     # One place maps the refusal's true reason to each channel's answer (VOZ-AC-B3-65-bis); the audible wording
     # of the carrier answer is VOZ-N0-29's.
+    def failure(self) -> dict:
+        """The VOZ-AC-B0-28 record of the refusal: stable code, what happened, where, and what to do."""
+        return {
+            "code": self.reason,
+            "reason": self.what,
+            "where": self.where,
+            "hint": self.hint,
+        }
+
     def http_answer(self) -> dict:
         """HTTPException kwargs: 429 for a full org, 503 with Retry-After (RFC 9110 §10.2.3) when Redis is down."""
         if self.backend_unavailable:
             retry_after = rate_limiter.durations.admission_retry_after_s
             return {
                 "status_code": 503,
-                "detail": self.reason,
+                "detail": self.failure(),
                 "headers": {"Retry-After": str(retry_after)},
             }
         return {"status_code": 429, "detail": "Concurrent call limit reached"}
 
     def ws_close(self) -> dict:
-        """WebSocket close kwargs: 1008 for a full org, 1013 (try again later) when Redis is down."""
+        """WebSocket close kwargs: 1008 for a full org, 1013 (try again later) when Redis is down. A close reason
+        holds at most 123 bytes (RFC 6455 §5.5), so it carries code, where and hint, not the whole record."""
         if self.backend_unavailable:
-            return {"code": 1013, "reason": self.reason}
+            return {
+                "code": 1013,
+                "reason": f"{self.reason} at {self.where}: {self.hint}",
+            }
         return {"code": 1008, "reason": "Concurrent call limit reached"}
 
     def client_error(self) -> dict:
@@ -81,6 +99,7 @@ class CallConcurrencyLimitError(Exception):
             return {
                 "error_type": self.reason,
                 "message": "Service temporarily unavailable",
+                **self.failure(),
             }
         return {
             "error_type": "concurrency_limit_exceeded",
@@ -146,15 +165,16 @@ class CallConcurrencyService:
         scope_key: str | None = None,
         scope_max_concurrent: int | None = None,
         retry_interval: float = 1,
-        outbound: bool = False,
+        outbound_carrier: str | None = None,
     ) -> CallConcurrencySlot:
         """Acquire a slot in the org-wide concurrency counter.
 
         ``scope_key``/``scope_max_concurrent`` additionally bound a secondary
         counter (e.g. ``campaign:<id>``) so a source can cap its own
         concurrency without measuring — or being starved by — unrelated calls
-        in the same org. ``outbound`` calls get the longer pending lease that
-        covers the ringing (durations.outbound_pending_ttl_s).
+        in the same org. An outbound call through ``outbound_carrier`` gets the
+        longer pending lease that covers that carrier's ringing
+        (durations.outbound_pending_ttl_s).
         """
         max_concurrent = await self.get_org_concurrent_limit(organization_id)
         if scope_max_concurrent is not None:
@@ -170,7 +190,7 @@ class CallConcurrencyService:
                     max_concurrent=max_concurrent,
                     scope_key=scope_key,
                     scope_max_concurrent=scope_max_concurrent,
-                    outbound=outbound,
+                    outbound_carrier=outbound_carrier,
                 )
             except AdmissionBackendUnavailable as e:
                 logger.error(
@@ -183,6 +203,8 @@ class CallConcurrencyService:
                     wait_time=time.time() - wait_start,
                     max_concurrent=max_concurrent,
                     reason=e.reason,
+                    what=e.what,
+                    where=e.where,
                     hint=e.hint,
                 ) from e
             if acquisition:
@@ -373,8 +395,8 @@ class CallConcurrencyService:
             )
         return released
 
-    async def extend_ringing_slot(self, workflow_run_id: int) -> None:
-        """A carrier's initiated/ringing callback: the outbound call is still on its way to an answer, so its
+    async def extend_ringing_slot(self, workflow_run_id: int, carrier: str) -> None:
+        """``carrier``'s initiated/ringing callback: the outbound call is still on its way to an answer, so its
         pending lease restarts (a CPS queue can outlast the lease sized at dial). Never raises: the late claim
         on answer still re-checks the limit if this is missed."""
         try:
@@ -382,7 +404,10 @@ class CallConcurrencyService:
             if mapping:
                 org_id, slot_id, scope_key = mapping
                 await rate_limiter.extend_pending_slot(
-                    org_id=org_id, attempt_id=slot_id, scope_key=scope_key
+                    org_id=org_id,
+                    attempt_id=slot_id,
+                    carrier=carrier,
+                    scope_key=scope_key,
                 )
         except Exception as e:
             logger.warning(

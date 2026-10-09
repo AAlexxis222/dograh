@@ -389,6 +389,15 @@ async def test_service_rejects_with_the_backend_reason_without_waiting_or_usage_
 
     assert e.value.reason == "admission_backend_unavailable"
     assert "admission_backend_unavailable" in str(e.value) and "hint:" in str(e.value)
+    # VOZ-AC-B0-28: the refusal carries the backend's record, every field non-empty.
+    record = e.value.failure()
+    assert record == {
+        "code": AdmissionBackendUnavailable.reason,
+        "reason": AdmissionBackendUnavailable.what,
+        "where": AdmissionBackendUnavailable.where,
+        "hint": AdmissionBackendUnavailable.hint,
+    }
+    assert all(record.values())
     rl.acquire_slot.assert_awaited_once()  # fails closed at once: no 30 s of retries
     notify.assert_not_awaited()  # not a usage-limit event
 
@@ -431,19 +440,51 @@ async def test_outbound_admission_keeps_its_slot_while_the_callee_rings(
     """Finding 1 / probe P1: an outbound call reaches a worker only once answered, so 35 s of ringing must not
     free its slot; one that is never answered still frees it after the ringing bound."""
     d = Durations.from_cell(1200)
-    assert d.outbound_pending_ttl_s == d.ring_timeout_s + d.pending_ttl_s
+    lease = d.outbound_pending_ttl_s("twilio")
+    assert lease == d.ring_timeout_for("twilio") + d.pending_ttl_s
     rl = RateLimiter(durations=d, test_clock=fake_redis_clock.key)
     cleanup.attempts += ["ring-a", "ring-b"]
     try:
         assert await rl.acquire_slot(
-            org_id=org_id, attempt_id="ring-a", max_concurrent=1, outbound=True
+            org_id=org_id,
+            attempt_id="ring-a",
+            max_concurrent=1,
+            outbound_carrier="twilio",
         )
         await fake_redis_clock.advance(35)
         assert (
             await rl.acquire_slot(org_id=org_id, attempt_id="ring-b", max_concurrent=1)
             is None
         )
-        await fake_redis_clock.advance(d.outbound_pending_ttl_s - 35 - 1)
+        await fake_redis_clock.advance(lease - 35 - 1)
+        assert await rl.get_concurrent_count(org_id) == 1
+        await fake_redis_clock.advance(2)
+        assert await rl.get_concurrent_count(org_id) == 0
+    finally:
+        await _close(rl)
+
+
+async def test_each_outbound_lease_is_its_carriers_ring_plus_the_pending_margin(
+    fake_redis_clock, org_id, cleanup
+):
+    """Fix round 2, item 1: a Telnyx call rings 30 s, a Plivo call 120 s (UNVERIFIED default): each pending lease
+    covers its own carrier's ringing, not one shared bound."""
+    rl = RateLimiter(test_clock=fake_redis_clock.key)
+    pending = rl.durations.pending_ttl_s
+    cleanup.attempts += ["telnyx-call", "plivo-call"]
+    try:
+        for attempt, carrier in (("telnyx-call", "telnyx"), ("plivo-call", "plivo")):
+            assert await rl.acquire_slot(
+                org_id=org_id,
+                attempt_id=attempt,
+                max_concurrent=5,
+                outbound_carrier=carrier,
+            )
+        await fake_redis_clock.advance(30 + pending - 1)
+        assert await rl.get_concurrent_count(org_id) == 2
+        await fake_redis_clock.advance(2)  # past the Telnyx ring + margin
+        assert await rl.get_concurrent_count(org_id) == 1
+        await fake_redis_clock.advance(120 - 30 - 2)  # 1 s before the Plivo lease ends
         assert await rl.get_concurrent_count(org_id) == 1
         await fake_redis_clock.advance(2)
         assert await rl.get_concurrent_count(org_id) == 0
@@ -488,6 +529,52 @@ async def test_late_claim_over_a_full_limit_keeps_the_call_and_names_the_overcom
         [event] = [m for m in warnings_log if LATE_CLAIM_OVERCOMMIT in m]
         assert f"org={org_id}" in event and "attempt_id=ring-a" in event
         assert "count=2" in event
+    finally:
+        await _close(rl)
+
+
+async def test_late_claim_over_a_full_campaign_scope_names_the_overcommit(
+    redis_client, fake_redis_clock, org_id, cleanup, warnings_log
+):
+    """Fix round 2, item 2: the org has room, the campaign scope is full: the late claim still overcommits."""
+    rl = RateLimiter(test_clock=fake_redis_clock.key)
+    scope = f"campaign:{org_id}"
+    run_id = org_id
+    limits = {"max_concurrent": 5, "scope_key": scope, "scope_max_concurrent": 1}
+    cleanup.attempts += ["camp-a", "camp-b"]
+    cleanup.runs.append(run_id)
+    try:
+        assert await rl.acquire_slot(org_id=org_id, attempt_id="camp-a", **limits)
+        assert await rl.store_workflow_slot_mapping_if_absent(
+            run_id, org_id, "camp-a", **limits
+        )
+        await fake_redis_clock.advance(rl.durations.pending_ttl_s + 1)
+        assert await rl.acquire_slot(org_id=org_id, attempt_id="camp-b", **limits)
+        assert await rl.claim_slot(run_id)  # camp-a answers after its lease expired
+        assert await redis_client.zcard(keys.scope_key(scope)) == 2
+        [event] = [m for m in warnings_log if LATE_CLAIM_OVERCOMMIT in m]
+        assert "attempt_id=camp-a" in event and f"scope={scope}" in event
+    finally:
+        await _close(rl)
+
+
+async def test_late_claim_counts_legacy_calls_toward_the_limit(
+    redis_client, fake_redis_clock, org_id, cleanup, warnings_log
+):
+    """Fix round 2, item 2: a call the previous code admitted fills the limit for a late claim too."""
+    rl = RateLimiter(test_clock=fake_redis_clock.key)
+    run_id = org_id
+    cleanup.attempts.append("late")
+    cleanup.runs.append(run_id)
+    try:
+        await _admit_and_bind(rl, org_id, "late", run_id, 1)
+        await fake_redis_clock.advance(rl.durations.pending_ttl_s + 1)
+        await redis_client.zadd(
+            keys.legacy_org_key(org_id), {"old-1": fake_redis_clock.now - 5}
+        )
+        assert await rl.claim_slot(run_id)
+        [event] = [m for m in warnings_log if LATE_CLAIM_OVERCOMMIT in m]
+        assert "attempt_id=late" in event and "count=2" in event
     finally:
         await _close(rl)
 
@@ -540,6 +627,7 @@ async def test_a_legacy_release_leaves_v2_alone_and_the_funnel_ends_legacy_calls
 ):
     rl = RateLimiter(test_clock=fake_redis_clock.key)
     now = fake_redis_clock.now
+    scope = f"campaign:{org_id}"
     run_id = org_id
     cleanup.attempts += ["new-1", "old-1"]
     cleanup.runs.append(run_id)
@@ -553,20 +641,22 @@ async def test_a_legacy_release_leaves_v2_alone_and_the_funnel_ends_legacy_calls
         assert await rl.get_concurrent_count(org_id) == 1
         assert await redis_client.zscore(keys.fleet_key(), "new-1") is not None
 
-        # A call the previous code admitted, taken and ended by the new code.
+        # A campaign call the previous code admitted, taken and ended by the new code.
         legacy_member = keys.legacy_fleet_member(org_id, "old-1")
         await redis_client.zadd(keys.legacy_org_key(org_id), {"old-1": now - 5})
+        await redis_client.zadd(keys.legacy_scope_key(scope), {"old-1": now - 5})
         await redis_client.zadd(FLEET_CONCURRENT_KEY, {legacy_member: now - 5})
-        await rl.store_workflow_slot_mapping_if_absent(run_id, org_id, "old-1")
+        await rl.store_workflow_slot_mapping_if_absent(run_id, org_id, "old-1", scope)
         assert await rl.claim_slot(run_id)
         await rl.renew_slot(org_id=org_id, attempt_id="old-1", workflow_run_id=run_id)
         assert await redis_client.zscore(keys.org_key(org_id), "old-1") is None
         assert await rl.get_concurrent_count(org_id) == 2  # counted once, as legacy
 
         assert await rl.release_slot(
-            org_id=org_id, attempt_id="old-1", workflow_run_id=run_id
+            org_id=org_id, attempt_id="old-1", scope_key=scope, workflow_run_id=run_id
         )
         assert await redis_client.zscore(keys.legacy_org_key(org_id), "old-1") is None
+        assert await redis_client.zscore(keys.legacy_scope_key(scope), "old-1") is None
         assert await redis_client.zscore(FLEET_CONCURRENT_KEY, legacy_member) is None
         assert await rl.get_concurrent_count(org_id) == 1
     finally:
@@ -601,6 +691,28 @@ async def test_the_per_call_renewal_task_keeps_a_long_call_counted(
                 assert score >= expected, "the renewal task did not renew"
             assert await rl.get_concurrent_count(org_id) == 1
         assert await rl.get_concurrent_count(org_id) == 0
+    finally:
+        await _close(rl)
+
+
+async def test_the_worker_releases_by_its_lease_when_the_mapping_is_gone(
+    monkeypatch, redis_client, fake_redis_clock, org_id, cleanup
+):
+    """Fix round 2, item 2: a pre-v2 pod deletes the shared mapping mid-call; the worker's own release goes by the
+    lease it claimed, so the slot does not outlive the call."""
+    from api.services.call_concurrency import service as service_module
+
+    rl = RateLimiter(test_clock=fake_redis_clock.key)
+    monkeypatch.setattr(service_module, "rate_limiter", rl)
+    run_id = org_id
+    cleanup.attempts.append("held")
+    cleanup.runs.append(run_id)
+    try:
+        await _admit_and_bind(rl, org_id, "held", run_id, 5)
+        async with CallConcurrencyService().hold_run_slot(run_id):
+            await redis_client.delete(keys.mapping_key(run_id))
+        assert await rl.get_concurrent_count(org_id) == 0
+        assert await redis_client.zscore(keys.fleet_key(), "held") is None
     finally:
         await _close(rl)
 
@@ -732,10 +844,12 @@ async def test_ringing_callback_restarts_the_pending_lease_of_an_outbound_call(
     run_id = org_id
     cleanup.attempts.append("queued")
     cleanup.runs.append(run_id)
-    lease = rl.durations.outbound_pending_ttl_s
+    # Plivo: its lease (120 s ring) is longer than one sized on another carrier, so the restart must use the run's
+    # own carrier (workflow_run.mode).
+    lease = rl.durations.outbound_pending_ttl_s("plivo")
     db = AsyncMock()
     db.get_workflow_run_by_id.return_value = SimpleNamespace(
-        logs={}, campaign_id=None, state="initialized"
+        logs={}, campaign_id=None, state="initialized", mode="plivo"
     )
 
     async def callback():
@@ -745,7 +859,7 @@ async def test_ringing_callback_restarts_the_pending_lease_of_an_outbound_call(
             )
 
     try:
-        await _admit_and_bind(rl, org_id, "queued", run_id, 5, outbound=True)
+        await _admit_and_bind(rl, org_id, "queued", run_id, 5, outbound_carrier="plivo")
         await fake_redis_clock.advance(lease - 10)  # still queued at the carrier
         await callback()
         await fake_redis_clock.advance(lease - 10)  # past the lease sized at dial
@@ -759,10 +873,14 @@ async def test_ringing_callback_restarts_the_pending_lease_of_an_outbound_call(
         assert await redis_client.zscore(keys.org_key(org_id), "queued") == claimed
 
         await rl.release_slot(org_id=org_id, attempt_id="queued")
-        await _admit_and_bind(rl, org_id, "queued", run_id + 1, 5, outbound=True)
+        await _admit_and_bind(
+            rl, org_id, "queued", run_id + 1, 5, outbound_carrier="plivo"
+        )
         cleanup.runs.append(run_id + 1)
         await fake_redis_clock.advance(lease + 1)  # expired before any callback
-        await rl.extend_pending_slot(org_id=org_id, attempt_id="queued")
+        await rl.extend_pending_slot(
+            org_id=org_id, attempt_id="queued", carrier="plivo"
+        )
         assert await rl.get_concurrent_count(org_id) == 0
     finally:
         await _close(rl)

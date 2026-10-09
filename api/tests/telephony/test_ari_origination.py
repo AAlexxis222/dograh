@@ -11,7 +11,6 @@ from aiohttp import ClientConnectionError
 from fastapi import HTTPException
 
 from api.enums import TelephonyCallStatus
-from api.services.runtime.durations import cell_durations
 from api.services.telephony import ari_manager
 from api.services.telephony.providers.ari import channel_registry
 from api.services.telephony.providers.ari import provider as provider_module
@@ -141,7 +140,7 @@ async def test_origination_uses_a_unique_registered_id(ari_call, workflow_run_id
         assert params["endpoint"] == "PJSIP/1001"
         assert params["app"] == "dograh-config-10"
         assert params["callerId"] == "1002"
-        assert params["timeout"] == cell_durations().ring_timeout_for("ari")
+        assert params["timeout"] == 30  # the ARI originate default ring
         channel_id = params["channelId"]
         key = f"{channel_registry.CHANNEL_KEY_PREFIX}{channel_id}"
         if workflow_run_id is not None:

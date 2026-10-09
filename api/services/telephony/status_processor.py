@@ -234,7 +234,7 @@ async def _process_status_update(workflow_run_id: int, status: StatusCallbackReq
             )
     elif normalized_status in RINGING_STATUSES:
         # Not answered yet: keep the outbound slot's pending lease alive while it rings.
-        await call_concurrency.extend_ringing_slot(workflow_run_id)
+        await call_concurrency.extend_ringing_slot(workflow_run_id, workflow_run.mode)
     elif normalized_status in IN_FLIGHT_STATUSES:
         # No-op while the call is in flight.
         pass

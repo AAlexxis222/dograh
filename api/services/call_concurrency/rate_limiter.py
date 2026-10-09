@@ -227,11 +227,12 @@ LATE_CLAIM_OVERCOMMIT = "slot_late_claim_overcommit"
 
 class AdmissionBackendUnavailable(Exception):
     """VOZ-AC-B3-65-bis: admission fails closed when Redis cannot answer, with its own reason
-    (not "concurrent call limit", which would be false). VOZ-AC-B0-28 shape: reason, where, hint."""
+    (not "concurrent call limit", which would be false). VOZ-AC-B0-28 shape: code (``reason``), what, where, hint."""
 
     reason = "admission_backend_unavailable"
+    what = "the slot backend (Redis) did not answer, so admission failed closed"
     where = "call_concurrency.acquire_slot"
-    hint = "check Redis (REDIS_URL): admission stays closed until it answers"
+    hint = "check Redis (REDIS_URL), then retry the call"
 
 
 @dataclass(frozen=True)
@@ -392,19 +393,20 @@ class RateLimiter:
         max_concurrent: int,
         scope_key: str | None = None,
         scope_max_concurrent: int | None = None,
-        outbound: bool = False,
+        outbound_carrier: str | None = None,
     ) -> Optional[ConcurrentSlotAcquisition]:
         """Admit an attempt: a pending slot in the org set, the optional scope set (``campaign:<id>``, bounded by
         ``scope_max_concurrent``) and the fleet set, atomically. Score = Redis TIME + ``pending_ttl_s``, or
-        + ``outbound_pending_ttl_s`` for an ``outbound`` call, which reaches a worker only once answered.
+        + ``outbound_pending_ttl_s(outbound_carrier)`` for an outbound call, which reaches a worker only once
+        answered.
 
         None when a limit is reached. A Redis error fails closed with ``AdmissionBackendUnavailable``
         (VOZ-AC-B3-65-bis) instead of reading as a full org. The worker must ``claim_slot`` within the pending
         lease or the slot expires on its own (two-phase lease).
         """
         pending_ttl = (
-            self.durations.outbound_pending_ttl_s
-            if outbound
+            self.durations.outbound_pending_ttl_s(outbound_carrier)
+            if outbound_carrier
             else self.durations.pending_ttl_s
         )
         try:
@@ -479,9 +481,14 @@ class RateLimiter:
         return lease
 
     async def extend_pending_slot(
-        self, *, org_id: int, attempt_id: str, scope_key: str | None = None
+        self,
+        *,
+        org_id: int,
+        attempt_id: str,
+        carrier: str,
+        scope_key: str | None = None,
     ) -> bool:
-        """Restart the pending lease of a still-pending outbound slot on a carrier's initiated/ringing callback.
+        """Restart the pending lease of a still-pending outbound slot on ``carrier``'s initiated/ringing callback.
         True if a set was extended. Redis errors propagate."""
         redis_client = await self._get_redis()
         extended = await redis_client.eval(
@@ -492,7 +499,7 @@ class RateLimiter:
             keys.scope_key(scope_key),
             keys.fleet_key(),
             attempt_id,
-            self.durations.outbound_pending_ttl_s,
+            self.durations.outbound_pending_ttl_s(carrier),
             self.durations.slot_ttl,
         )
         return bool(extended)

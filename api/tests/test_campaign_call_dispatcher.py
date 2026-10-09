@@ -20,9 +20,10 @@ from api.db.models import (
     WorkflowModel,
     WorkflowRunModel,
 )
-from api.services.call_concurrency import CallConcurrencySlot
+from api.services.call_concurrency import CallConcurrencyLimitError, CallConcurrencySlot
 from api.services.campaign.campaign_call_dispatcher import CampaignCallDispatcher
 from api.services.campaign.campaign_retry import schedule_campaign_retry
+from api.services.campaign.errors import ConcurrentSlotAcquisitionError
 
 
 def expired_claim_time():
@@ -252,14 +253,39 @@ async def test_campaign_slot_keeps_org_and_campaign_limits():
     ) as concurrency:
         concurrency.acquire_org_slot = AsyncMock(return_value=slot)
         assert (
-            await CampaignCallDispatcher().acquire_concurrent_slot(206, campaign)
+            await CampaignCallDispatcher().acquire_concurrent_slot(
+                206, campaign, carrier="telnyx"
+            )
             == slot
         )
-        assert (
-            concurrency.acquire_org_slot.await_args.kwargs["scope_max_concurrent"]
-            == 200
-        )
+        kwargs = concurrency.acquire_org_slot.await_args.kwargs
+        assert kwargs["scope_max_concurrent"] == 200
+        # An outbound call: the pending lease covers this carrier's ringing.
+        assert kwargs["outbound_carrier"] == "telnyx"
         assert concurrency.acquire_org_slot.await_args.args == (206,)
+
+
+@pytest.mark.asyncio
+async def test_campaign_slot_refusal_keeps_the_backend_reason():
+    """A down slot backend still refuses the campaign call (fail closed), under its own reason, not as a wait."""
+    campaign = SimpleNamespace(id=48, orchestrator_metadata=None)
+    refusal = CallConcurrencyLimitError(
+        organization_id=206,
+        source="campaign:48",
+        wait_time=0,
+        max_concurrent=250,
+        reason="admission_backend_unavailable",
+    )
+    with patch(
+        "api.services.campaign.campaign_call_dispatcher.call_concurrency"
+    ) as concurrency:
+        concurrency.acquire_org_slot = AsyncMock(side_effect=refusal)
+        with pytest.raises(ConcurrentSlotAcquisitionError) as e:
+            await CampaignCallDispatcher().acquire_concurrent_slot(
+                206, campaign, carrier="twilio"
+            )
+    assert e.value.reason == "admission_backend_unavailable"
+    assert "admission_backend_unavailable" in str(e.value)
 
 
 @pytest.mark.asyncio

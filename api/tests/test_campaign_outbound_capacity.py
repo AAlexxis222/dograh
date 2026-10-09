@@ -133,6 +133,9 @@ async def test_rate_admission_follows_capacity_and_preparation(setup_call):
 
     async def acquire(*args, **kwargs):
         events.append("capacity")
+        assert (
+            kwargs["carrier"] == "ari"
+        )  # the lease covers the campaign carrier's ringing
         await asyncio.sleep(0.01)
         return s.slot
 

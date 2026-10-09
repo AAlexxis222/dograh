@@ -40,7 +40,7 @@ async def test_acquire_org_slot_logs_post_acquire_count_and_limit():
         max_concurrent=10,
         scope_key=None,
         scope_max_concurrent=None,
-        outbound=False,
+        outbound_carrier=None,
     )
     mock_logger.info.assert_called_once()
     log_message = mock_logger.info.call_args.args[0]
@@ -154,7 +154,7 @@ async def test_acquire_org_slot_passes_scope_to_rate_limiter():
         max_concurrent=10,
         scope_key="campaign:42",
         scope_max_concurrent=3,
-        outbound=False,
+        outbound_carrier=None,
     )
     mock_rate_limiter.store_workflow_slot_mapping_if_absent.assert_awaited_once_with(
         501,

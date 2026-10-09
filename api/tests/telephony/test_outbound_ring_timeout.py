@@ -1,6 +1,6 @@
-"""Every outbound builder caps the ringing at durations.ring_timeout_s: the outbound pending lease of a concurrency
-slot (outbound_pending_ttl_s = ring_timeout_s + pending_ttl_s) only holds if the carrier stops ringing by then.
-Telnyx and ARI are pinned in their own provider tests."""
+"""Each outbound builder that sends a ring field sends its carrier's own default ring (no behaviour change), the
+bound the outbound pending lease (ring + pending_ttl_s) is sized for. Plivo states no default, so it sends none.
+Telnyx (30) and ARI (30) are pinned in their own provider tests."""
 
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -29,38 +29,38 @@ def _session(status: int) -> MagicMock:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("carrier", "provider", "status", "body_kwarg", "field"),
+    ("provider", "status", "body_kwarg", "field", "ring"),
     [
         (
-            "twilio",
             TwilioProvider(
                 {"account_sid": "AC1", "auth_token": "t", "from_numbers": FROM}
             ),
             201,
             "data",
             "Timeout",
+            60,
         ),
         (
-            "plivo",
             PlivoProvider({"auth_id": "MA1", "auth_token": "t", "from_numbers": FROM}),
             201,
             "json",
             "ring_timeout",
+            None,
         ),
         (
-            "vonage",
             VonageProvider(
                 {"application_id": "app", "private_key": "k", "from_numbers": FROM}
             ),
             201,
             "json",
             "ringing_timer",
+            60,
         ),
     ],
     ids=["twilio", "plivo", "vonage"],
 )
-async def test_outbound_call_rings_at_most_ring_timeout(
-    monkeypatch, carrier, provider, status, body_kwarg, field
+async def test_outbound_call_rings_the_carrier_default(
+    monkeypatch, provider, status, body_kwarg, field, ring
 ):
     module = type(provider).__module__
     session = _session(status)
@@ -71,7 +71,10 @@ async def test_outbound_call_rings_at_most_ring_timeout(
         )
 
     body = session.post.call_args.kwargs[body_kwarg]
-    assert body[field] == cell_durations().ring_timeout_for(carrier)
+    assert body.get(field) == ring
+    carrier = provider.PROVIDER_NAME
+    assert cell_durations().ring_timeout_for(carrier) == (ring or 120)
     assert (
-        body[field] <= cell_durations().ring_timeout_s
-    )  # within the outbound pending lease
+        cell_durations().outbound_pending_ttl_s(carrier)
+        == cell_durations().ring_timeout_for(carrier) + cell_durations().pending_ttl_s
+    )

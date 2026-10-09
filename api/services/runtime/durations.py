@@ -26,9 +26,24 @@ _RERENDER_HINT = (
 _FLOOR_ENVS = (STOP_GRACE_ENV, DRAIN_MAX_WAIT_ENV, DRAIN_TIMEOUT_ENV)
 # An outbound call must ring at least this long before it is abandoned (US TSR, 16 CFR 310.4(b)(4)).
 MIN_RING_TIMEOUT_S = 15
-# Documented maximum ring timeout each carrier's dial API accepts (Twilio Timeout, Vonage ringing_timer,
-# Telnyx timeout_secs). Carriers absent here (ARI, Plivo) get ring_timeout_s as is.
-CARRIER_MAX_RING_S = {"twilio": 600, "vonage": 120, "telnyx": 600}
+# Ring timeout of an outbound call per carrier (keyed by PROVIDER_NAME): each carrier's own documented default, so
+# no call rings longer or shorter than it did before. The builders that send a ring field send exactly this value
+# (Twilio Timeout, Vonage ringing_timer, Telnyx timeout_secs, ARI originate timeout), which keeps the outbound
+# pending lease (ring + pending_ttl_s) a true bound. Plivo: its API reference states no default for ring_timeout
+# (https://plivo.com/docs/voice/api/calls), so its builder sends none and 120 here is UNVERIFIED, used only to size
+# the lease. Carriers whose builder has no ring field (exotel, vobiz, cloudonix) size the lease on
+# DEFAULT_RING_TIMEOUT_S and rely on the ringing re-extension (initiated/ringing callbacks) and, past it, on the late
+# claim's slot_late_claim_overcommit event (accepted, VOZ-N0-21).
+CARRIER_RING_TIMEOUT_S = {
+    "twilio": 60,
+    "vonage": 60,
+    "telnyx": 30,
+    "ari": 30,
+    "plivo": 120,
+}
+DEFAULT_RING_TIMEOUT_S = 60
+# Upper bound of the renewal period of a claimed slot (VOZ-AC-B3-66: heartbeat_renew_s <= slot_ttl / 3, default 300).
+HEARTBEAT_RENEW_DEFAULT_S = 300
 
 
 class DurationsError(ValueError):
@@ -50,10 +65,6 @@ class Durations:
     sigterm_headroom_s: int = 30
     # admission.pending_ttl_s: an admitted slot no worker has claimed yet expires after this (VOZ-AC-B3-22 lease).
     pending_ttl_s: int = 30
-    # An outbound call reaches a worker only when the callee answers: every outbound builder caps the ringing at
-    # ring_timeout_for(carrier) <= this (Twilio Timeout, Plivo ring_timeout, Vonage ringing_timer, Telnyx
-    # timeout_secs, ARI timeout), so the outbound pending lease, sized on this value, covers the ringing.
-    ring_timeout_s: int = 60
     # A worker whose claim failed retries after base, 2x base, ... up to claim_retry_cap_s.
     claim_retry_base_s: int = 1
     # Retry-After of an admission refused because the slot backend is down (HTTP 503, RFC 9110 §10.2.3).
@@ -67,12 +78,14 @@ class Durations:
                 f"call duration ceiling {self.ceiling}s is below the default max_call_duration {DEFAULT_MAX_CALL_DURATION_S}s",
                 _CEILING_HINT,
             )
-        if self.ring_timeout_s < MIN_RING_TIMEOUT_S:
+        rings = {**CARRIER_RING_TIMEOUT_S, "default": DEFAULT_RING_TIMEOUT_S}
+        short = {carrier: s for carrier, s in rings.items() if s < MIN_RING_TIMEOUT_S}
+        if short:
             raise DurationsError(
                 "knob_out_of_range",
-                f"ring_timeout_s={self.ring_timeout_s}s is below the {MIN_RING_TIMEOUT_S}s minimum ring "
-                "(US TSR, 16 CFR 310.4(b)(4))",
-                f"keep ring_timeout_s >= {MIN_RING_TIMEOUT_S} (api/services/runtime/durations.py)",
+                f"ring timeout {short} is below the {MIN_RING_TIMEOUT_S}s minimum ring (US TSR, 16 CFR 310.4(b)(4))",
+                f"keep every ring timeout >= {MIN_RING_TIMEOUT_S} (CARRIER_RING_TIMEOUT_S, "
+                "api/services/runtime/durations.py)",
             )
         if not (self.ceiling < self.slot_ttl <= self.drain_max < self.grace):
             raise DurationsError(
@@ -121,19 +134,15 @@ class Durations:
 
     @property
     def heartbeat_renew_s(self) -> int:
-        return self.slot_ttl // 3
+        return min(HEARTBEAT_RENEW_DEFAULT_S, self.slot_ttl // 3)
 
     def ring_timeout_for(self, carrier: str) -> int:
-        """The ring timeout an outbound builder sends: ring_timeout_s clamped to the carrier's documented maximum,
-        so never above the ringing the outbound pending lease is sized for."""
-        return min(
-            self.ring_timeout_s, CARRIER_MAX_RING_S.get(carrier, self.ring_timeout_s)
-        )
+        """The ring timeout of an outbound call through ``carrier`` (CARRIER_RING_TIMEOUT_S)."""
+        return CARRIER_RING_TIMEOUT_S.get(carrier, DEFAULT_RING_TIMEOUT_S)
 
-    @property
-    def outbound_pending_ttl_s(self) -> int:
-        """Pending lease of an outbound admission: the ringing, then the same margin as an inbound one."""
-        return self.ring_timeout_s + self.pending_ttl_s
+    def outbound_pending_ttl_s(self, carrier: str) -> int:
+        """Pending lease of an outbound admission through ``carrier``: its ringing, then the inbound margin."""
+        return self.ring_timeout_for(carrier) + self.pending_ttl_s
 
     @property
     def claim_retry_cap_s(self) -> int:

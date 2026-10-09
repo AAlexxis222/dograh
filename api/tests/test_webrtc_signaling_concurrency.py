@@ -5,6 +5,23 @@ import pytest
 
 from api.routes.webrtc_signaling import SignalingManager
 from api.services.call_concurrency import CallConcurrencyLimitError
+from api.services.call_concurrency.rate_limiter import AdmissionBackendUnavailable
+
+DOWN = AdmissionBackendUnavailable
+# The VOZ-AC-B0-28 record a refusal for a down slot backend must carry (code, what, where, hint).
+DOWN_RECORD = {
+    "code": DOWN.reason,
+    "reason": DOWN.what,
+    "where": DOWN.where,
+    "hint": DOWN.hint,
+}
+
+
+def _refused(reason: str) -> dict:
+    """The fields acquire_org_slot puts on a CallConcurrencyLimitError for this reason."""
+    if reason != DOWN.reason:
+        return {"reason": reason}
+    return {"reason": reason, "what": DOWN.what, "where": DOWN.where, "hint": DOWN.hint}
 
 
 class _FakeWebSocket:
@@ -39,10 +56,11 @@ def _offer_payload(pc_id: str = "pc-1") -> dict:
             },
         ),
         (
-            "admission_backend_unavailable",
+            DOWN.reason,
             {
-                "error_type": "admission_backend_unavailable",
+                "error_type": DOWN.reason,
                 "message": "Service temporarily unavailable",
+                **DOWN_RECORD,
             },
         ),
     ],
@@ -77,7 +95,7 @@ async def test_public_embed_offer_rejects_when_org_concurrency_limit_reached(
                 source="public_embed",
                 wait_time=0,
                 max_concurrent=2,
-                reason=reason,
+                **_refused(reason),
             )
         )
         mock_concurrency.bind_workflow_run = AsyncMock()

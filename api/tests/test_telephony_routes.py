@@ -10,8 +10,25 @@ from api.errors.telephony_errors import TelephonyError
 from api.routes.telephony import _handle_telephony_websocket, handle_inbound_run, router
 from api.services.auth.depends import get_user
 from api.services.call_concurrency import CallConcurrencyLimitError
+from api.services.call_concurrency.rate_limiter import AdmissionBackendUnavailable
 from api.services.runtime.durations import cell_durations
 from api.tests.conftest import mock_configuration_cascade
+
+DOWN = AdmissionBackendUnavailable
+# The VOZ-AC-B0-28 record a refusal for a down slot backend must carry (code, what, where, hint).
+DOWN_RECORD = {
+    "code": DOWN.reason,
+    "reason": DOWN.what,
+    "where": DOWN.where,
+    "hint": DOWN.hint,
+}
+
+
+def _refused(reason: str) -> dict:
+    """The fields acquire_org_slot puts on a CallConcurrencyLimitError for this reason."""
+    if reason != DOWN.reason:
+        return {"reason": reason}
+    return {"reason": reason, "what": DOWN.what, "where": DOWN.where, "hint": DOWN.hint}
 
 
 def _make_test_app() -> FastAPI:
@@ -205,7 +222,7 @@ def test_initiate_call_executes_as_workflow_owner_for_shared_org_workflow():
         workflow.organization_id,
         source="telephony_outbound",
         timeout=0,
-        outbound=True,
+        outbound_carrier="twilio",
     )
     mock_concurrency.bind_workflow_run.assert_awaited_once_with(slot, 501)
 
@@ -424,7 +441,7 @@ def test_initiate_call_rejects_existing_run_for_different_workflow():
     ("reason", "status", "detail"),
     [
         ("concurrent_call_limit", 429, "Concurrent call limit reached"),
-        ("admission_backend_unavailable", 503, "admission_backend_unavailable"),
+        (DOWN.reason, 503, DOWN_RECORD),
     ],
 )
 def test_initiate_call_rejects_when_concurrency_limit_reached(reason, status, detail):
@@ -448,7 +465,7 @@ def test_initiate_call_rejects_when_concurrency_limit_reached(reason, status, de
                 source="telephony_outbound",
                 wait_time=0,
                 max_concurrent=1,
-                reason=reason,
+                **_refused(reason),
             )
         )
         mock_configuration_cascade(mock_db)

@@ -110,7 +110,7 @@ class VonageProvider(TelephonyProvider):
             "from": {"type": "phone", "number": from_number},
             "answer_url": [webhook_url],
             "answer_method": "GET",
-            # Ringing bound the outbound pending lease is sized for (durations.ring_timeout_s).
+            # The carrier's default ring, sent explicitly: the bound the outbound pending lease is sized for.
             "ringing_timer": cell_durations().ring_timeout_for("vonage"),
         }
 

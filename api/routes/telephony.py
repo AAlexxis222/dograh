@@ -189,7 +189,7 @@ async def initiate_call(
             user.selected_organization_id,
             source="telephony_outbound",
             timeout=0,
-            outbound=True,
+            outbound_carrier=provider.PROVIDER_NAME,
         )
     except CallConcurrencyLimitError as e:
         raise HTTPException(**e.http_answer())

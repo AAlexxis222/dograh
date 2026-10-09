@@ -29,7 +29,9 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_default_ceiling_derivations():
     d = Durations.from_cell(ceiling_s=1200)
     assert (d.slot_ttl, d.drain_max, d.grace) == (1260, 1260, 1305)
-    assert d.heartbeat_renew_s <= d.slot_ttl / 3
+    # VOZ-AC-B3-66: heartbeat_renew_s <= slot_ttl / 3, default 300.
+    assert d.heartbeat_renew_s == 300
+    assert Durations.from_cell(ceiling_s=600).heartbeat_renew_s == 660 // 3
 
 
 def test_raised_ceiling_keeps_invariants():
@@ -364,14 +366,22 @@ def test_the_rate_limiter_asks_the_resolved_durations(monkeypatch):
     )
 
 
-def test_ring_timeout_has_the_tsr_floor_and_each_carrier_gets_at_most_its_documented_max():
+def test_each_carrier_rings_its_own_default_and_the_lease_covers_it(monkeypatch):
+    """No ring changes behaviour: each carrier keeps its documented default ring, and the outbound pending lease is
+    that ring plus pending_ttl_s. The US TSR 15 s floor still holds for every entry."""
+    d = Durations(ceiling=1200)
+    rings = {c: d.ring_timeout_for(c) for c in ("twilio", "vonage", "telnyx", "ari")}
+    assert rings == {"twilio": 60, "vonage": 60, "telnyx": 30, "ari": 30}
+    assert d.ring_timeout_for("plivo") == 120  # UNVERIFIED default, lease only
+    assert d.ring_timeout_for("exotel") == 60  # no ring field: DEFAULT_RING_TIMEOUT_S
+    assert d.outbound_pending_ttl_s("telnyx") == 30 + d.pending_ttl_s
+    assert d.outbound_pending_ttl_s("plivo") == 120 + d.pending_ttl_s
+
+    from api.services.runtime import durations as module
+
+    monkeypatch.setitem(module.CARRIER_RING_TIMEOUT_S, "telnyx", 14)
     with pytest.raises(DurationsError) as e:
-        Durations(ceiling=1200, ring_timeout_s=14)
+        Durations(ceiling=1200)
     assert (
         e.value.code == "knob_out_of_range" and "16 CFR 310.4(b)(4)" in e.value.reason
     )
-    d = Durations(ceiling=1200, ring_timeout_s=300)
-    assert d.ring_timeout_for("vonage") == 120  # ringing_timer max
-    assert d.ring_timeout_for("twilio") == 300
-    assert d.ring_timeout_for("ari") == 300  # no documented max: as configured
-    assert d.outbound_pending_ttl_s == 300 + d.pending_ttl_s

@@ -5,7 +5,7 @@ in the org set, the scope set and the fleet set, so a release built from the sam
 because of a format mismatch.
 
 Score of every slot member = its expiry in Redis's clock (``TIME + ttl``): ``TIME + pending_ttl_s`` (inbound) or
-``TIME + outbound_pending_ttl_s`` (outbound, it rings first) while the admission waits for a worker,
+``TIME + outbound_pending_ttl_s(carrier)`` (outbound, it rings first) while the admission waits for a worker,
 ``TIME + slot_ttl`` once the worker claims it and at every renewal. A member whose score is <= ``TIME`` is expired:
 writers purge it, readers do not count it.
 
@@ -19,6 +19,10 @@ Assumption: one single-node Redis per cell. The scripts touch several keys at on
 the fleet set, the mapping and the ``sem:`` keys named inside it), which Redis Cluster would only allow within one
 hash slot; the existing keys carry no hash tags, so none are added here. Moving to a cluster means tagging every key
 of an org (both versions) with the same ``{org}`` tag and rethinking the fleet set.
+
+Precondition: this change must not be rolled onto a running deployment whose call workers run pre-v2 code; drain/replace
+the call role first. A pre-v2 worker never claims a slot this code admits, so a live call drops out of every count
+when its pending lease ends.
 
 Keys, and every reader / writer of them (all in ``rate_limiter.py``):
 

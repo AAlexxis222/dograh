@@ -133,7 +133,7 @@ class TelnyxProvider(TelephonyProvider):
             "stream_bidirectional_codec": "PCMU",
             "webhook_url": events_url,
             "webhook_url_method": "POST",
-            # Ringing bound the outbound pending lease is sized for (durations.ring_timeout_s).
+            # The carrier's default ring, sent explicitly: the bound the outbound pending lease is sized for.
             "timeout_secs": cell_durations().ring_timeout_for("telnyx"),
         }
 

@@ -12,9 +12,26 @@ from api.routes.public_agent import (
     router,
 )
 from api.services.call_concurrency import CallConcurrencyLimitError
+from api.services.call_concurrency.rate_limiter import AdmissionBackendUnavailable
 from api.services.runtime.durations import cell_durations
 from api.services.telephony.outbound_readiness import OutboundSetupIncompleteError
 from api.tests.conftest import mock_configuration_cascade
+
+DOWN = AdmissionBackendUnavailable
+# The VOZ-AC-B0-28 record a refusal for a down slot backend must carry (code, what, where, hint).
+DOWN_RECORD = {
+    "code": DOWN.reason,
+    "reason": DOWN.what,
+    "where": DOWN.where,
+    "hint": DOWN.hint,
+}
+
+
+def _refused(reason: str) -> dict:
+    """The fields acquire_org_slot puts on a CallConcurrencyLimitError for this reason."""
+    if reason != DOWN.reason:
+        return {"reason": reason}
+    return {"reason": reason, "what": DOWN.what, "where": DOWN.where, "hint": DOWN.hint}
 
 
 @pytest.fixture(autouse=True)
@@ -191,7 +208,7 @@ def test_trigger_route_executes_as_workflow_owner():
         workflow.organization_id,
         source="public_agent",
         timeout=0,
-        outbound=True,
+        outbound_carrier="twilio",
     )
     mock_concurrency.bind_workflow_run.assert_awaited_once_with(slot, 501)
     mock_db.get_workflow.assert_awaited_once_with(workflow.id, organization_id=11)
@@ -401,7 +418,7 @@ def test_workflow_uuid_route_uses_scoped_lookup_and_shared_execution():
         workflow.organization_id,
         source="public_agent",
         timeout=0,
-        outbound=True,
+        outbound_carrier="twilio",
     )
     mock_concurrency.bind_workflow_run.assert_awaited_once_with(slot, 601)
 
@@ -676,7 +693,7 @@ def test_trigger_route_still_returns_success_when_metadata_persistence_fails():
     ("reason", "status", "detail"),
     [
         ("concurrent_call_limit", 429, "Concurrent call limit reached"),
-        ("admission_backend_unavailable", 503, "admission_backend_unavailable"),
+        (DOWN.reason, 503, DOWN_RECORD),
     ],
 )
 def test_trigger_route_rejects_when_concurrency_limit_reached(reason, status, detail):
@@ -700,7 +717,7 @@ def test_trigger_route_rejects_when_concurrency_limit_reached(reason, status, de
                 source="public_agent",
                 wait_time=0,
                 max_concurrent=2,
-                reason=reason,
+                **_refused(reason),
             )
         )
         mock_configuration_cascade(mock_db)

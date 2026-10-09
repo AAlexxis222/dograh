@@ -148,7 +148,7 @@ class TwilioProvider(TelephonyProvider):
             "To": to_number,
             "From": from_number,
             "Url": webhook_url,
-            # Ringing bound the outbound pending lease is sized for (durations.ring_timeout_s).
+            # The carrier's default ring, sent explicitly: the bound the outbound pending lease is sized for.
             "Timeout": cell_durations().ring_timeout_for("twilio"),
         }
 

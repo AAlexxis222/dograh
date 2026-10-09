@@ -275,7 +275,7 @@ async def _execute_resolved_target(
             target.organization_id,
             source="public_agent",
             timeout=0,
-            outbound=True,
+            outbound_carrier=provider.PROVIDER_NAME,
         )
     except CallConcurrencyLimitError as e:
         raise HTTPException(**e.http_answer())

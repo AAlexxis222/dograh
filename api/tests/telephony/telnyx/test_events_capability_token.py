@@ -18,7 +18,6 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from api import constants
-from api.services.runtime.durations import cell_durations
 from api.services.telephony import ws_auth
 from api.services.telephony.providers.telnyx.provider import TelnyxProvider
 from api.services.telephony.providers.telnyx.routes import handle_telnyx_events
@@ -137,7 +136,7 @@ async def test_dial_webhook_url_carries_events_token_when_secret_set(secret):
         f"https://api.backend.test/api/v1/telephony/telnyx/events/123?token={token}"
     )
     # The outbound pending lease of the concurrency slot assumes this ringing bound.
-    assert body["timeout_secs"] == cell_durations().ring_timeout_for("telnyx")
+    assert body["timeout_secs"] == 30  # Telnyx's own default ring
 
 
 @pytest.mark.asyncio

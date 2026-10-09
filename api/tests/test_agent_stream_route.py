@@ -4,6 +4,23 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from api.services.call_concurrency import CallConcurrencyLimitError
+from api.services.call_concurrency.rate_limiter import AdmissionBackendUnavailable
+
+DOWN = AdmissionBackendUnavailable
+# The VOZ-AC-B0-28 record a refusal for a down slot backend must carry (code, what, where, hint).
+DOWN_RECORD = {
+    "code": DOWN.reason,
+    "reason": DOWN.what,
+    "where": DOWN.where,
+    "hint": DOWN.hint,
+}
+
+
+def _refused(reason: str) -> dict:
+    """The fields acquire_org_slot puts on a CallConcurrencyLimitError for this reason."""
+    if reason != DOWN.reason:
+        return {"reason": reason}
+    return {"reason": reason, "what": DOWN.what, "where": DOWN.where, "hint": DOWN.hint}
 
 
 class _FakeWebSocket:
@@ -146,7 +163,7 @@ async def test_agent_stream_marks_run_failed_when_quota_exceeded():
     ("reason", "code", "close_reason"),
     [
         ("concurrent_call_limit", 1008, "Concurrent call limit reached"),
-        ("admission_backend_unavailable", 1013, "admission_backend_unavailable"),
+        (DOWN.reason, 1013, f"{DOWN.reason} at {DOWN.where}: {DOWN.hint}"),
     ],
 )
 @pytest.mark.asyncio
@@ -184,11 +201,14 @@ async def test_agent_stream_rejects_when_concurrency_limit_reached(
                 source="agent_stream:cloudonix",
                 wait_time=0,
                 max_concurrent=1,
-                reason=reason,
+                **_refused(reason),
             )
         )
 
         await agent_stream_websocket(websocket, "cloudonix", "agent-uuid")
 
     websocket.close.assert_awaited_once_with(code=code, reason=close_reason)
+    assert (
+        len(close_reason.encode()) <= 123
+    )  # RFC 6455 §5.5: a close reason fits in 123 bytes
     db_client.create_workflow_run.assert_not_awaited()

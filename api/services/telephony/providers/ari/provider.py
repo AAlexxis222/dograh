@@ -119,7 +119,7 @@ class ARIProvider(TelephonyProvider):
             "channelId": channel_id,
             "endpoint": dial_string,
             "app": self.stasis_app_name,
-            # Ringing bound the outbound pending lease is sized for (durations.ring_timeout_s).
+            # The carrier's default ring, sent explicitly: the bound the outbound pending lease is sized for.
             "timeout": cell_durations().ring_timeout_for("ari"),
             "appArgs": ",".join(
                 filter(
