@@ -32,7 +32,6 @@ from api.services.call_concurrency import (
     call_concurrency,
 )
 from api.services.quota_service import authorize_workflow_run_start
-from api.services.runtime.durations import cell_durations
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.factory import (
@@ -193,13 +192,7 @@ async def initiate_call(
             outbound=True,
         )
     except CallConcurrencyLimitError as e:
-        if e.backend_unavailable:
-            raise HTTPException(
-                status_code=503,
-                detail=e.reason,
-                headers={"Retry-After": str(cell_durations().admission_retry_after_s)},
-            )
-        raise HTTPException(status_code=429, detail="Concurrent call limit reached")
+        raise HTTPException(**e.http_answer())
 
     try:
         if not workflow_run_id:

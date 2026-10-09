@@ -56,6 +56,37 @@ class CallConcurrencyLimitError(Exception):
             + (f" (hint: {hint})" if hint else "")
         )
 
+    # One place maps the refusal's true reason to each channel's answer (VOZ-AC-B3-65-bis); the audible wording
+    # of the carrier answer is VOZ-N0-29's.
+    def http_answer(self) -> dict:
+        """HTTPException kwargs: 429 for a full org, 503 with Retry-After (RFC 9110 §10.2.3) when Redis is down."""
+        if self.backend_unavailable:
+            retry_after = rate_limiter.durations.admission_retry_after_s
+            return {
+                "status_code": 503,
+                "detail": self.reason,
+                "headers": {"Retry-After": str(retry_after)},
+            }
+        return {"status_code": 429, "detail": "Concurrent call limit reached"}
+
+    def ws_close(self) -> dict:
+        """WebSocket close kwargs: 1008 for a full org, 1013 (try again later) when Redis is down."""
+        if self.backend_unavailable:
+            return {"code": 1013, "reason": self.reason}
+        return {"code": 1008, "reason": "Concurrent call limit reached"}
+
+    def client_error(self) -> dict:
+        """Error payload sent to a browser client over the signaling socket."""
+        if self.backend_unavailable:
+            return {
+                "error_type": self.reason,
+                "message": "Service temporarily unavailable",
+            }
+        return {
+            "error_type": "concurrency_limit_exceeded",
+            "message": "Concurrent call limit reached",
+        }
+
 
 class WorkflowRunSlotAlreadyBoundError(Exception):
     """Raised when a workflow run already owns a concurrent call slot."""

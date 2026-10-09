@@ -388,6 +388,7 @@ async def test_service_rejects_with_the_backend_reason_without_waiting_or_usage_
             await service.acquire_org_slot(1, source="inbound:twilio", timeout=30)
 
     assert e.value.reason == "admission_backend_unavailable"
+    assert "admission_backend_unavailable" in str(e.value) and "hint:" in str(e.value)
     rl.acquire_slot.assert_awaited_once()  # fails closed at once: no 30 s of retries
     notify.assert_not_awaited()  # not a usage-limit event
 
