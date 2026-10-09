@@ -43,7 +43,12 @@ def _platform_env():
 
 def _require_docker():
     if not shutil.which("docker"):
-        pytest.skip("GATED docker_missing: install Docker Compose >= 2.24.4")
+        pytest.skip("GATED docker_missing: install Docker Compose >= 2.26.1 (2.24.6 to 2.25.0 reject this overlay)")
+
+
+def _compose_major():
+    out = subprocess.run([*COMPOSE[:2], "version", "--short"], env=_platform_env(), capture_output=True, text=True)
+    return int(out.stdout.strip().lstrip("v").split(".")[0])
 
 
 @pytest.fixture(scope="module")
@@ -157,7 +162,11 @@ def test_api_mounts_credentials_directory_read_only(cfg):
     assert mount["type"] == "bind" and mount.get("read_only") is True
     # Docker on Windows may rewrite the host path (drive letter, backslashes); only that is tolerated.
     assert mount["source"].replace("\\", "/").endswith("/run/xpand/aws/recordings"), mount["source"]
-    assert mount["bind"].get("create_host_path") is False
+    # A missing credentials directory must fail the start, never be created empty. Compose 2.x renders create_host_path: false as `bind: {}` (true as an explicit true); 5.x the reverse.
+    if _compose_major() >= 5:
+        assert mount["bind"].get("create_host_path") is False
+    else:
+        assert mount.get("bind") is not None and "create_host_path" not in mount["bind"]
 
 
 def test_coturn_is_on_its_own_network(cfg):
