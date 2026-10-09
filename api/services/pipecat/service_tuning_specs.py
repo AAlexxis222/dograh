@@ -1259,6 +1259,12 @@ def _model_error(path: str, model: Any, value: Any) -> str | None:
             for step in first["loc"]
         )
         return f"{path}{where}: {first['msg']}"
+    except AttributeError as exc:
+        # google-genai's case-insensitive enums call ``value.upper()`` in
+        # ``_missing_``, so a non-string raises AttributeError. pydantic
+        # 2.13 reported that as a ValidationError; 2.14 lets it escape, which
+        # would be a 500 at the PUT. The error carries no ``loc``.
+        return f"{path}: {exc}"
     return None
 
 
