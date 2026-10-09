@@ -94,4 +94,4 @@ storybook-static/
 # Package manager files (only need package*.json)
 yarn.lock
 pnpm-lock.yaml
-bun.lockb
+bun.lockb# ci path probe (throwaway PR, closed unmerged)
