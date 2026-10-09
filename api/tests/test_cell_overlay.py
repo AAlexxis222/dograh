@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 # Every service the base defines under the profiles below, minus cloudflared (the cell never tunnels).
@@ -43,7 +44,33 @@ def _platform_env():
 
 def _require_docker():
     if not shutil.which("docker"):
-        pytest.skip("GATED docker_missing: install Docker Compose >= 2.24.4")
+        pytest.skip("GATED docker_missing: install Docker Compose >= 2.26.0 (2.24.6 to 2.25.0 reject this overlay)")
+
+
+def _overlay_source():
+    """The overlay as written. Compose's own tags (!reset, !override) load as their plain value."""
+
+    class Loader(yaml.SafeLoader):
+        pass
+
+    def plain(loader, _suffix, node):
+        if isinstance(node, yaml.MappingNode):
+            return loader.construct_mapping(node)
+        if isinstance(node, yaml.SequenceNode):
+            return loader.construct_sequence(node)
+        return loader.construct_scalar(node)
+
+    Loader.add_multi_constructor("!", plain)
+    return yaml.load((ROOT / "docker-compose.cell.yaml").read_text(encoding="utf-8"), Loader=Loader)
+
+
+def _compose_major():
+    cmd = ["docker", "compose", "version", "--short"]
+    out = subprocess.run(cmd, env=_platform_env(), capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    found = re.match(r"v?(\d+)\.", out.stdout.strip())
+    assert found, out.stdout
+    return int(found.group(1))
 
 
 @pytest.fixture(scope="module")
@@ -157,7 +184,19 @@ def test_api_mounts_credentials_directory_read_only(cfg):
     assert mount["type"] == "bind" and mount.get("read_only") is True
     # Docker on Windows may rewrite the host path (drive letter, backslashes); only that is tolerated.
     assert mount["source"].replace("\\", "/").endswith("/run/xpand/aws/recordings"), mount["source"]
-    assert mount["bind"].get("create_host_path") is False
+    # Second layer to test_overlay_source_forbids_creating_the_credentials_dir: 5.x renders the flag faithfully,
+    # 2.x renders `create_host_path: false` as `bind: {}`, so there only the bind block is ours to check.
+    if _compose_major() >= 5:
+        assert mount["bind"].get("create_host_path") is False
+    else:
+        assert mount.get("bind") is not None
+
+
+def test_overlay_source_forbids_creating_the_credentials_dir():
+    # A missing credentials directory must fail the start, never be created empty. Checked on the overlay as written
+    # because the rendering of the flag differs by Compose version (2.x renders false as `bind: {}`, the same as an
+    # empty `bind` from 5.0.2 on, which creates the path). Needs no Docker.
+    assert _overlay_source()["x-cell-aws-creds"]["bind"] == {"create_host_path": False}
 
 
 def test_coturn_is_on_its_own_network(cfg):
