@@ -212,6 +212,16 @@ def test_require_head_fails_when_alembic_itself_fails(alembic_env, current_error
     assert "DATABASE_URL" in hint and "migrat" not in hint, hint  # about reaching the database, not about migrating
 
 
+@posix_only
+def test_require_head_refuses_incoherent_durations_before_touching_the_database(alembic_env):
+    # VOZ-AC-B3-55: every role asserts the cell durations at startup; the failure is named and nothing else runs.
+    env = {**alembic_env(), "CELL_CALL_DURATION_CEILING_S": "0"}
+    r = subprocess.run(["bash", str(REQUIRE_HEAD), "call"], env=env, capture_output=True, text=True)
+    assert r.returncode != 0
+    assert re.search(r"code=knob_out_of_range where=call reason=\S.* hint=\S.*", r.stderr), r.stderr
+    assert not alembic_env.log.exists()
+
+
 def _start_script_env(base):
     # Every optional duty off: only the migration gate of the start script is under test.
     return {**base, "RUN_MIGRATIONS_ON_START": "false", "ENABLE_ARI_MANAGER": "false",

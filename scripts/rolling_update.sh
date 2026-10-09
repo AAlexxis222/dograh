@@ -46,7 +46,7 @@ ENABLE_ARI_MANAGER=${ENABLE_ARI_MANAGER:-true}
 ENABLE_CAMPAIGN_ORCHESTRATOR=${ENABLE_CAMPAIGN_ORCHESTRATOR:-true}
 
 # Tuning knobs (override via environment)
-DRAIN_TIMEOUT=${DRAIN_TIMEOUT:-300}          # seconds to wait for active calls to finish
+DRAIN_TIMEOUT=${DRAIN_TIMEOUT:-1260}         # seconds to wait for active calls to finish (rendered from durations.py: scripts/xpand/render_durations.py)
 DRAIN_INTERVAL=${DRAIN_INTERVAL:-5}          # seconds between active-call drain polls
 STOP_TIMEOUT=${STOP_TIMEOUT:-30}             # seconds to wait for drained workers to exit after SIGTERM
 HEALTH_MAX_ATTEMPTS=${HEALTH_MAX_ATTEMPTS:-30}  # per-worker health-check retries

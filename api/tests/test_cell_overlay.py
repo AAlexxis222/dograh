@@ -249,7 +249,6 @@ def test_call_role_drains_and_is_the_oom_victim(cfg):
     assert "call_entrypoint.sh" in " ".join(call["entrypoint"])
     assert call["mem_limit"] == str(1024**3)  # CALL_MEM_LIMIT=1g
     assert call["oom_score_adj"] == 500
-    assert "stop_grace_period" not in call  # VOZ-N0-20 renders it from durations.py
 
 
 def test_each_duty_runs_in_exactly_one_role(cfg):

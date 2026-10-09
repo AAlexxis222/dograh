@@ -98,9 +98,12 @@ services:
       <<: *cell-env
       CELL_ROLE: api
   # call holds the live phone calls; its entrypoint drains them before uvicorn receives TERM.
-  # stop_grace_period is not set here: VOZ-N0-20 renders it from durations.py.
+  # stop_grace_period is rendered from durations.py (scripts/xpand/render_durations.py): pre-stop delay + drain window
+  # + SIGTERM headroom. Never smaller than the drain window, or the orchestrator's KILL lands mid-drain. A test fails
+  # when it is edited by hand: raise the cell call-duration ceiling instead.
   call:
     <<: *cell-role
+    stop_grace_period: 1305s
     ports: !reset []
     extends: { file: docker-compose.yaml, service: api } # same image as api; the base command is replaced below
     entrypoint: ["bash", "scripts/xpand/call_entrypoint.sh"]
