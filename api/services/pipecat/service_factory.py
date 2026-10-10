@@ -455,9 +455,13 @@ def _reject_unread_on_responses(plan) -> None:
         )
 
 
-def _openai_llm_plan(plan, model: str, api: str = "chat_completions"):
-    """Translate an LLM plan into what ``model`` accepts over ``api``; a no-op
-    for a model that does not reason over chat/completions.
+def _openai_api(plan) -> str:
+    return plan.options.get("api", "chat_completions")
+
+
+def _openai_llm_plan(plan, model: str):
+    """Translate an LLM plan into what ``model`` accepts over the plan's api;
+    a no-op for a model that does not reason over chat/completions.
 
     ``build_chat_completion_params`` sends ``temperature`` and ``max_tokens``
     verbatim (openai/base_llm.py:356-358), and a reasoning model rejects both
@@ -470,6 +474,7 @@ def _openai_llm_plan(plan, model: str, api: str = "chat_completions"):
     An explicitly tuned ``max_completion_tokens`` wins over a translated
     ``max_tokens``. Returns a copy; the plan is never mutated.
     """
+    api = _openai_api(plan)
     if api == "responses":
         _reject_unread_on_responses(plan)
     elif not reasons(model):
@@ -508,6 +513,34 @@ def _openai_responses_llm(api_key, model: str, wire: dict, plan, kwargs: dict):
     if "text" in wire:
         settings.extra["text"] = wire["text"]
     return DograhOpenAIResponsesLLMService(api_key=api_key, settings=settings, **kwargs)
+
+
+def _openai_llm(provider: str, model: str, api_key, plan, kwargs: dict):
+    """The OpenAI/Atlas Cloud branch: every impact knob declared from the
+    effort matrix (spec §5.4, VOZ-AC-B1-47). ``extra`` is REGISTRY_OWNED, so
+    the matrix keys are only ever reachable through ``options``, never
+    through ``from_mapping``'s overflow."""
+    options = plan.options
+    if not reasons(model):
+        dropped = {"reasoning", "verbosity"} & set(options)
+        _warn_dropped(
+            "options",
+            f"llm.{provider}",
+            model,
+            dropped,
+            "only a reasoning model takes reasoning_effort/verbosity",
+        )
+        options = {k: v for k, v in options.items() if k not in dropped}
+    api = _openai_api(plan)
+    wire = _openai_wire(model, api, options)
+    if api == "responses":
+        return _openai_responses_llm(api_key, model, wire, plan, kwargs)
+    base = {"model": model}
+    if "temperature" in wire:
+        base["temperature"] = wire.pop("temperature")
+    settings = build_settings(OpenAILLMSettings, base, plan)
+    settings.extra.update(wire)
+    return OpenAILLMService(api_key=api_key, settings=settings, **kwargs)
 
 
 def _openai_realtime_stt_base_url(base_url: str) -> str:
@@ -1719,9 +1752,8 @@ def create_llm_service_from_provider(
         + (f", location={vertex_location}" if vertex_location else "")
     )
     plan = tuning_for(tuning, "llm", provider)
-    api = plan.options.get("api", "chat_completions")
     if provider in _OPENAI_MODEL_WIRES:
-        plan = _openai_llm_plan(plan, model, api)
+        plan = _openai_llm_plan(plan, model)
 
     if provider in (
         ServiceProviders.OPENAI.value,
@@ -1735,30 +1767,7 @@ def create_llm_service_from_provider(
         if base_url:
             _validate_runtime_service_url(base_url, "base_url")
             kwargs["base_url"] = base_url
-        options = plan.options
-        if not reasons(model):
-            dropped = {"reasoning", "verbosity"} & set(options)
-            _warn_dropped(
-                "options",
-                f"llm.{provider}",
-                model,
-                dropped,
-                "only a reasoning model takes reasoning_effort/verbosity",
-            )
-            options = {k: v for k, v in options.items() if k not in dropped}
-        # Every impact knob declared from the effort matrix (spec §5.4,
-        # VOZ-AC-B1-47). ``extra`` is REGISTRY_OWNED, so the matrix keys are
-        # only ever reachable through ``options``, never through
-        # ``from_mapping``'s overflow.
-        wire = _openai_wire(model, api, options)
-        if api == "responses":
-            return _openai_responses_llm(api_key, model, wire, plan, kwargs)
-        base = {"model": model}
-        if "temperature" in wire:
-            base["temperature"] = wire.pop("temperature")
-        settings = build_settings(OpenAILLMSettings, base, plan)
-        settings.extra.update(wire)
-        return OpenAILLMService(api_key=api_key, settings=settings, **kwargs)
+        return _openai_llm(provider, model, api_key, plan, kwargs)
     elif provider == ServiceProviders.GROQ.value:
         return GroqLLMService(
             api_key=api_key,
