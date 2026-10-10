@@ -37,6 +37,8 @@ from api.services.pipecat.minimax_tts import (
 # Module level, unlike the rest of the realtime module's contents, so the
 # branches below name the service class the way every other branch in this
 # file does — and so a test can patch one.
+from api.services.pipecat.openai_efforts import EffortError, reasons, wire_params
+from api.services.pipecat.openai_responses import DograhOpenAIResponsesLLMService
 from api.services.pipecat.realtime.azure_realtime import DograhAzureRealtimeLLMService
 from api.services.pipecat.realtime.gemini_live import DograhGeminiLiveLLMService
 from api.services.pipecat.realtime.gemini_live_vertex import (
@@ -126,6 +128,7 @@ from pipecat.services.openai.base_llm import OpenAILLMSettings
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.openai.realtime.events import InputAudioNoiseReduction, Reasoning
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMSettings
+from pipecat.services.openai.responses.llm import OpenAIResponsesReasoningConfig
 from pipecat.services.openai.stt import (
     OpenAIRealtimeSTTService,
     OpenAIRealtimeSTTSettings,
@@ -389,22 +392,10 @@ def _nova_ctor_allowed() -> frozenset[str]:
     return SPECS[("stt", "deepgram")].ctor_allowed - {"url"}
 
 
-def _is_gpt5_reasoning(model: str) -> bool:
-    """Whether ``model`` is a gpt-5 reasoning model over chat/completions.
-
-    Keyed to the model name rather than the provider branch: OpenRouter
-    spells it ``openai/gpt-5-mini`` and Dograh's proxy forwards the bare
-    name. ``gpt-5-chat*`` is the non-reasoning member of the family — it
-    accepts ``temperature`` and rejects ``reasoning_effort``/``verbosity`` —
-    so it is excluded (#15).
-    """
-    return "gpt-5" in model and "gpt-5-chat" not in model
-
-
 # Wires that carry OpenAI's own models and speak chat/completions through an
-# ``OpenAILLMService`` subclass, so the gpt-5 rule applies (#12). Groq,
+# ``OpenAILLMService`` subclass, so the effort matrix applies (#12). Groq,
 # HuggingFace, Speaches, MiniMax and Sarvam serve their own catalogues, which
-# have no gpt-5 model.
+# the matrix does not list.
 _OPENAI_MODEL_WIRES = frozenset(
     {
         ServiceProviders.OPENAI.value,
@@ -414,52 +405,109 @@ _OPENAI_MODEL_WIRES = frozenset(
         ServiceProviders.DOGRAH.value,
     }
 )
+_API_LABELS = {"chat_completions": "chat/completions", "responses": "the Responses API"}
+# Declared on ``OpenAILLMSettings`` but never read by the Responses service
+# (responses/llm.py:378-390 sends only temperature, top_p and the cap).
+_RESPONSES_UNREAD = frozenset({"frequency_penalty", "presence_penalty", "seed"})
+
+
+def _openai_wire(model: str, api: str, options: dict) -> dict:
+    """The matrix's declared knobs for ``model`` over ``api``, with a matrix
+    refusal turned into the run-start 400 every other branch raises."""
+    reasoning = options.get("reasoning") or {}
+    try:
+        return wire_params(
+            model=model,
+            api=api,
+            requested_effort=reasoning.get("effort"),
+            requested_verbosity=options.get("verbosity"),
+            requested_summary=reasoning.get("summary"),
+        )
+    except EffortError as e:
+        raise HTTPException(status_code=400, detail=e.as_detail()) from e
 
 
 def _chat_llm_base(model: str) -> dict:
     """Base settings for a chat/completions branch that defaults temperature.
 
-    Today's ``temperature: 0.1`` default, except on a gpt-5 reasoning model,
-    which rejects the field over this API: the default would start the run
-    and fail every turn (§1.2), and the plan rewrite in ``_gpt5_chat_plan``
-    never sees the base kwargs.
+    Today's ``temperature: 0.1`` where the effort matrix lets it travel; a
+    reasoning model rejects the field with any effort but ``none``, so the
+    default would start the run and fail every turn (§1.2), and the plan
+    rewrite in ``_openai_llm_plan`` never sees the base kwargs.
     """
-    if _is_gpt5_reasoning(model):
-        return {"model": model}
-    return {"model": model, "temperature": 0.1}
+    wire = wire_params(model=model, requested_effort=None, api="chat_completions")
+    if "temperature" in wire:
+        return {"model": model, "temperature": wire["temperature"]}
+    return {"model": model}
 
 
-def _gpt5_chat_plan(plan, model: str):
-    """Translate an LLM plan into what a gpt-5 reasoning model accepts over
-    chat/completions; a no-op on any other model.
+def _reject_unread_on_responses(plan) -> None:
+    unread = sorted(_RESPONSES_UNREAD & set(plan.settings))
+    if unread:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "knob_not_supported",
+                "where": f"llm.openai.settings.{unread[0]}",
+                "reason": "the Responses API does not read " + ", ".join(unread),
+                "hint": "remove it or set llm.openai.options.api to chat_completions",
+            },
+        )
+
+
+def _openai_llm_plan(plan, model: str, api: str = "chat_completions"):
+    """Translate an LLM plan into what ``model`` accepts over ``api``; a no-op
+    for a model that does not reason over chat/completions.
 
     ``build_chat_completion_params`` sends ``temperature`` and ``max_tokens``
-    verbatim (openai/base_llm.py:356-358), and gpt-5 rejects both over this
-    API: the completion cap has to arrive as ``max_completion_tokens``, and
-    temperature is not supported at all. The cap is translated (lossless);
-    an explicit temperature cannot be honoured, so it fails the run start by
-    name rather than starting a run that silently differs from the document
-    (spec §1.2, R20). An explicitly tuned ``max_completion_tokens`` wins over
-    a translated ``max_tokens``. Returns a copy; the plan is never mutated.
+    verbatim (openai/base_llm.py:356-358), and a reasoning model rejects both
+    over this API: the completion cap has to arrive as
+    ``max_completion_tokens``, and temperature only travels with effort
+    ``none`` (effort matrix). The Responses service reads the cap only as
+    ``max_completion_tokens`` too. The cap is translated (lossless); a
+    temperature the model cannot take fails the run start by name rather than
+    starting a run that silently differs from the document (spec §1.2, R20).
+    An explicitly tuned ``max_completion_tokens`` wins over a translated
+    ``max_tokens``. Returns a copy; the plan is never mutated.
     """
-    if not _is_gpt5_reasoning(model) or not (
-        {"temperature", "max_tokens"} & set(plan.settings)
-    ):
+    if api == "responses":
+        _reject_unread_on_responses(plan)
+    elif not reasons(model):
         return plan
-    if "temperature" in plan.settings:
+    if not {"temperature", "max_tokens"} & set(plan.settings):
+        return plan
+    if (
+        "temperature" in plan.settings
+        and reasons(model)
+        and "temperature" not in _openai_wire(model, api, plan.options)
+    ):
         raise HTTPException(
             status_code=400,
             detail=(
                 f"llm temperature is not accepted by {model} over "
-                "chat/completions; remove llm.*.settings.temperature or "
+                f"{_API_LABELS[api]}; remove llm.*.settings.temperature or "
                 "choose another model"
             ),
         )
     settings = {
         name: value for name, value in plan.settings.items() if name != "max_tokens"
     }
-    settings.setdefault("max_completion_tokens", plan.settings["max_tokens"])
+    if "max_tokens" in plan.settings:
+        settings.setdefault("max_completion_tokens", plan.settings["max_tokens"])
     return replace(plan, settings=settings)
+
+
+def _openai_responses_llm(api_key, model: str, wire: dict, plan, kwargs: dict):
+    """The Responses service with every matrix knob declared (VOZ-BUG-03)."""
+    base: dict[str, Any] = {"model": model}
+    if "temperature" in wire:
+        base["temperature"] = wire["temperature"]
+    if "reasoning" in wire:
+        base["reasoning"] = OpenAIResponsesReasoningConfig(**wire["reasoning"])
+    settings = build_settings(DograhOpenAIResponsesLLMService.Settings, base, plan)
+    if "text" in wire:
+        settings.extra["text"] = wire["text"]
+    return DograhOpenAIResponsesLLMService(api_key=api_key, settings=settings, **kwargs)
 
 
 def _openai_realtime_stt_base_url(base_url: str) -> str:
@@ -1671,8 +1719,9 @@ def create_llm_service_from_provider(
         + (f", location={vertex_location}" if vertex_location else "")
     )
     plan = tuning_for(tuning, "llm", provider)
+    api = plan.options.get("api", "chat_completions")
     if provider in _OPENAI_MODEL_WIRES:
-        plan = _gpt5_chat_plan(plan, model)
+        plan = _openai_llm_plan(plan, model, api)
 
     if provider in (
         ServiceProviders.OPENAI.value,
@@ -1686,30 +1735,30 @@ def create_llm_service_from_provider(
         if base_url:
             _validate_runtime_service_url(base_url, "base_url")
             kwargs["base_url"] = base_url
-        if _is_gpt5_reasoning(model):
-            # Today's behaviour, declared: two extras and no temperature
-            # (spec §5.4). ``extra`` is REGISTRY_OWNED, so these two keys are
-            # only ever reachable through ``options`` — never through
-            # ``from_mapping``'s overflow.
-            reasoning = plan.options.get("reasoning") or {}
-            settings = build_settings(OpenAILLMSettings, {"model": model}, plan)
-            settings.extra = {
-                "reasoning_effort": reasoning.get("effort", "minimal"),
-                "verbosity": plan.options.get("verbosity", "low"),
-            }
-            return OpenAILLMService(api_key=api_key, settings=settings, **kwargs)
-        _warn_dropped(
-            "options",
-            f"llm.{provider}",
-            model,
-            {"reasoning", "verbosity"} & set(plan.options),
-            "only a gpt-5 reasoning model takes reasoning_effort/verbosity",
-        )
-        return OpenAILLMService(
-            api_key=api_key,
-            settings=build_settings(OpenAILLMSettings, _chat_llm_base(model), plan),
-            **kwargs,
-        )
+        options = plan.options
+        if not reasons(model):
+            dropped = {"reasoning", "verbosity"} & set(options)
+            _warn_dropped(
+                "options",
+                f"llm.{provider}",
+                model,
+                dropped,
+                "only a reasoning model takes reasoning_effort/verbosity",
+            )
+            options = {k: v for k, v in options.items() if k not in dropped}
+        # Every impact knob declared from the effort matrix (spec §5.4,
+        # VOZ-AC-B1-47). ``extra`` is REGISTRY_OWNED, so the matrix keys are
+        # only ever reachable through ``options``, never through
+        # ``from_mapping``'s overflow.
+        wire = _openai_wire(model, api, options)
+        if api == "responses":
+            return _openai_responses_llm(api_key, model, wire, plan, kwargs)
+        base = {"model": model}
+        if "temperature" in wire:
+            base["temperature"] = wire.pop("temperature")
+        settings = build_settings(OpenAILLMSettings, base, plan)
+        settings.extra.update(wire)
+        return OpenAILLMService(api_key=api_key, settings=settings, **kwargs)
     elif provider == ServiceProviders.GROQ.value:
         return GroqLLMService(
             api_key=api_key,
