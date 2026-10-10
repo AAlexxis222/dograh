@@ -1,8 +1,10 @@
 """VOZ-N0-22: a cell refuses to start without the devops secret, and active-calls reports the drain fields."""
 
 import os
+import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -11,6 +13,7 @@ from fastapi.testclient import TestClient
 from api.app import assert_cell_startup_config
 from api.routes import main as main_routes
 from api.services.observability import loop_lag
+from api.services.runtime import cell_state
 
 SECRET = "test-dograh-devops-secret"
 
@@ -110,12 +113,6 @@ def test_startup_refuses_bad_k_p_in_cell(cell_env, monkeypatch, value):
         assert_cell_startup_config()
 
 
-def test_startup_reports_incoherent_durations_in_cell(cell_env, monkeypatch):
-    monkeypatch.setenv("CELL_CALL_DURATION_CEILING_S", "1")
-    with pytest.raises(RuntimeError, match="code=knob_out_of_range"):
-        assert_cell_startup_config()
-
-
 def test_startup_is_a_noop_outside_a_cell(monkeypatch):
     monkeypatch.delenv("CELL_ROLE", raising=False)
     monkeypatch.delenv("DOGRAH_DEVOPS_SECRET", raising=False)
@@ -155,3 +152,20 @@ def test_module_passes_in_a_valid_cell_and_outside_a_cell():
     ok = _run_module("arq", CELL_ROLE="arq", DOGRAH_DEVOPS_SECRET=SECRET, LOG_LEVEL="INFO")
     assert (ok.returncode, ok.stderr) == (0, "")
     assert _run_module("arq").returncode == 0
+
+
+def test_drain_flag_default_is_the_same_in_python_and_the_entrypoint():
+    # A drift would make the endpoint report draining=false forever, with no error.
+    script = (Path(__file__).resolve().parents[2] / "scripts/xpand/call_entrypoint.sh").read_text()
+    match = re.search(r'DRAIN_FLAG_FILE="\$\{DRAIN_FLAG_FILE:-([^}]+)\}"', script)
+    assert match, "call_entrypoint.sh no longer sets the DRAIN_FLAG_FILE default"
+    assert match.group(1) == cell_state.DEFAULT_DRAIN_FLAG_FILE
+
+
+def test_invalid_k_p_outside_a_cell_warns_once_not_per_poll(monkeypatch):
+    warnings = []
+    monkeypatch.setattr(cell_state.logger, "warning", warnings.append)
+    cell_state._resolve_call_k_p.cache_clear()
+    monkeypatch.setenv("CALL_K_P", "zero")
+    assert [cell_state.call_k_p() for _ in range(3)] == [4, 4, 4]
+    assert len(warnings) == 1

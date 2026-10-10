@@ -7,9 +7,8 @@ Light on purpose (no FastAPI import): the api lifespan calls it, and scripts/xpa
 import os
 import sys
 
-from api.services.runtime.durations import Durations, DurationsError
+from api.services.runtime.cell_state import parse_call_k_p
 
-DEFAULT_CALL_K_P = 4
 # Levels at or above INFO. Anything else (DEBUG, TRACE, numbers, unknown names, unset) can log caller text.
 _SAFE_LOG_LEVELS = {"INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"}
 
@@ -19,16 +18,6 @@ class CellStartupError(RuntimeError):
 
     def __init__(self, code: str, where: str, reason: str, hint: str):
         super().__init__(f"code={code} where={where} reason={reason} hint={hint}")
-
-
-def parse_call_k_p(raw: str | None) -> int:
-    """CALL_K_P as an int >= 1; unset means the default. Raises ValueError otherwise."""
-    if raw is None or raw == "":
-        return DEFAULT_CALL_K_P
-    value = int(raw)
-    if value < 1:
-        raise ValueError(f"CALL_K_P must be >= 1, got {value}")
-    return value
 
 
 def assert_cell_startup_config(where: str = "api.app") -> None:
@@ -59,10 +48,7 @@ def assert_cell_startup_config(where: str = "api.app") -> None:
             f"CALL_K_P is not an integer >= 1 ({e})",
             "set CALL_K_P to a positive integer, or unset it for the default of 4",
         ) from e
-    try:
-        Durations.from_env().check_deployed(os.environ)
-    except DurationsError as e:
-        raise CellStartupError(e.code, where, e.reason, e.hint) from e
+    # Durations are not checked here: the gate in scripts/xpand/require_db_head.sh owns them for every role.
 
 
 def main(where: str) -> int:
