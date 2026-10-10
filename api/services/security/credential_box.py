@@ -112,7 +112,13 @@ def load_keys() -> tuple[tuple[str, bytes], ...]:
 
 def aad_for(table: str, pk, column: str, path: Sequence[str | int]) -> bytes:
     """The AAD of the leaf at ``path`` (concrete: list indexes as ints, no ``*``/``**``) of ``table.column`` in row
-    ``pk``. The path is compact JSON, so a ``.`` or ``:`` inside a key cannot make two leaves share an AAD."""
+    ``pk``. The path is compact JSON, so a ``.`` or ``:`` inside a key cannot make two leaves share an AAD.
+    Build ``path`` with ``secrets_registry.iter_concrete_leaves``: it records every list position."""
+    if isinstance(path, str):
+        raise ValueError(  # noqa: TRY004 ruled: every malformed aad_for path is a ValueError, like the wildcard one
+            "code=credential_aad_path_str where=credential_box.aad_for reason=path is a str, "
+            "which would be rendered character by character hint=pass a tuple of keys and list indexes"
+        )
     if any(part in ("*", "**") for part in path):
         raise ValueError(
             "code=credential_aad_wildcard where=credential_box.aad_for reason=path holds a registry wildcard "

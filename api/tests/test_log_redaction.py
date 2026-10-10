@@ -213,6 +213,12 @@ def test_each_credential_master_key_is_redacted_alone(monkeypatch):
         # A key id ending in "v1": one whole match, never a second one starting inside the token.
         ("kv1", ""),
         ("kv1", "x"),
+        # A word ending in "v1" right before the token must not start the match early (it would leave the
+        # ciphertext in clear), nor must a "v1:" look-alike a few parts before it.
+        ("k1", "workflow_v1:"),
+        ("k1", "dev1:"),
+        ("k1", "kv1:"),
+        ("k1", "a v1:x:y:"),
     ],
 )
 def test_credential_box_tokens_are_redacted_whatever_precedes_them(
@@ -233,7 +239,22 @@ def test_credential_box_tokens_are_redacted_whatever_precedes_them(
     finally:
         credential_box.load_keys.cache_clear()
     out = redact(f"stored {glue}{token} end", secrets=())
+    assert token.split(":")[3] not in out
     assert out == f"stored {glue}<redacted:credential_token> end"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "dev1:host:12:34",
+        "eleven_v1:a:b:c",
+        # Only one of the two shape rules fails: a short third part, then a short fourth part.
+        "build_v1:prod:eu:0123456789abcdefghijklmnop",
+        "release_v1:eu:0123456789abcdef:42",
+    ],
+)
+def test_v1_look_alikes_that_are_not_tokens_stay(text):
+    assert redact(f"at {text} now", secrets=()) == f"at {text} now"
 
 
 def test_derived_forms_of_a_credential_master_key_are_redacted(monkeypatch):

@@ -211,6 +211,66 @@ def test_aad_for_refuses_a_wildcard_path(path):
         cb.aad_for("t", 1, "c", path)
 
 
+def test_aad_for_refuses_a_string_path():
+    # A str is a Sequence too: "$.byok.api_key" would be rendered character by character.
+    with pytest.raises(ValueError, match="code=credential_aad_path_str"):
+        cb.aad_for("t", 1, "c", "$.byok.api_key")
+
+
+def test_the_concrete_walk_records_list_positions_under_wildcards():
+    from api.services.configuration.secrets_registry import iter_concrete_leaves
+
+    document = {"s": {"x": [{"api_key": "a"}, {"deep": [{"api_key": "b"}]}]}}
+    assert set(iter_concrete_leaves(document, ("s", "*", "api_key"))) == {
+        (("s", "x", 0, "api_key"), "a")
+    }
+    assert set(iter_concrete_leaves(document, ("s", "**", "api_key"))) == {
+        (("s", "x", 0, "api_key"), "a"),
+        (("s", "x", 1, "deep", 0, "api_key"), "b"),
+    }
+
+
+def test_every_leaf_of_a_graph_walk_gets_its_own_aad():
+    # The walk N0-24 encrypts over: each leaf's concrete path (list indexes included) binds its token to that leaf.
+    from api.services.configuration.secrets_registry import iter_concrete_leaves
+    from api.services.security.secret_surfaces import WORKFLOW_GRAPH_SECRET_PATHS
+
+    graph = {
+        "nodes": [
+            {
+                "data": {
+                    "custom_headers": [
+                        {"key": "Authorization", "value": "Bearer a"},
+                        {"key": "X-Api-Key", "value": "b"},
+                    ]
+                }
+            },
+            {"data": {"qa_api_key": "c"}},
+            {"data": {"custom_headers": [{"key": "X-Other", "value": "d"}]}},
+        ]
+    }
+    leaves = [
+        leaf
+        for pattern in WORKFLOW_GRAPH_SECRET_PATHS
+        for leaf in iter_concrete_leaves(graph, pattern)
+    ]
+    assert len(leaves) == 4
+    assert set(leaves) == {
+        (("nodes", 0, "data", "custom_headers", 0, "value"), "Bearer a"),
+        (("nodes", 0, "data", "custom_headers", 1, "value"), "b"),
+        (("nodes", 1, "data", "qa_api_key"), "c"),
+        (("nodes", 2, "data", "custom_headers", 0, "value"), "d"),
+    }
+    aads = [
+        cb.aad_for("workflow_definitions", 7, "workflow_json", p) for p, _ in leaves
+    ]
+    assert len(set(aads)) == len(leaves) == 4
+    token = cb.encrypt(b"Bearer a", aad=aads[0])
+    for other in aads[1:]:
+        with pytest.raises(cb.CredentialUnreadable):
+            cb.decrypt(token, aad=other)
+
+
 # --- Registry ---------------------------------------------------------------------------------------------------
 
 
@@ -326,7 +386,7 @@ def test_every_node_secret_field_is_registered():
 
 def test_webhook_node_custom_header_values_are_registered_in_every_graph_column():
     # The source of webhook_deliveries.custom_headers: run_integrations.py copies these values verbatim.
-    from api.services.configuration.secrets_registry import _iter_leaves
+    from api.services.configuration.secrets_registry import iter_concrete_leaves
 
     graph = {
         "nodes": [
@@ -344,7 +404,7 @@ def test_webhook_node_custom_header_values_are_registered_in_every_graph_column(
         paths = [p for p in _paths(table, column) if "custom_headers" in p]
         assert paths, (table, column)
         # Lists are transparent in the registry walk: the path must reach every header value, never a header name.
-        leaves = {c[k] for p in paths for _, c, k in _iter_leaves(graph, p, ())}
+        leaves = {v for p in paths for _, v in iter_concrete_leaves(graph, p)}
         assert leaves == {"Bearer canary", "canary-2"}, (table, column)
     # The delivery-row copy stays registered too.
     assert () in _paths("webhook_deliveries", "custom_headers")
@@ -353,7 +413,7 @@ def test_webhook_node_custom_header_values_are_registered_in_every_graph_column(
 def test_tool_static_header_values_are_registered():
     # HttpApiConfig.headers and HttpTransferResolverConfig.headers (api/schemas/tool.py): dict[str, str] sent on
     # every request.
-    from api.services.configuration.secrets_registry import _iter_leaves
+    from api.services.configuration.secrets_registry import iter_concrete_leaves
 
     definitions = [
         {"type": "http_api", "config": {"headers": {"Authorization": "Bearer canary"}}},
@@ -364,7 +424,7 @@ def test_tool_static_header_values_are_registered():
     ]
     paths = _paths("tools", "definition")
     leaves = {
-        c[k] for d in definitions for p in paths for _, c, k in _iter_leaves(d, p, ())
+        v for d in definitions for p in paths for _, v in iter_concrete_leaves(d, p)
     }
     assert leaves == {"Bearer canary", "canary-2"}
 

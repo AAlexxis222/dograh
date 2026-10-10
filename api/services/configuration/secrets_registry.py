@@ -4,7 +4,7 @@ Masking (API responses), the organization-level PUT (422 on any secret) and,
 eventually, secret merging read from this one list. Paths use ``*`` for one
 level and ``**`` for any depth; either may pass through a list (broadcast
 over every item, no index recorded in the path — ``find_secret_paths``
-dedupes). A schema field marked ``json_schema_extra={"secret": True}`` must
+dedupes; ``iter_concrete_leaves`` records it, one path per leaf). A schema field marked ``json_schema_extra={"secret": True}`` must
 appear in ``SECRET_PATHS``, which derives from the single registry in
 api/services/security/secret_surfaces.py (guarded by
 test_workflow_configuration_secrets_registry.py).
@@ -42,17 +42,23 @@ SECRET_PATHS: tuple[tuple[str, ...], ...] = WORKFLOW_CONFIGURATION_SECRET_PATHS
 
 
 def _iter_leaves(
-    node: Any, pattern: tuple[str, ...], path: tuple[str, ...]
-) -> Iterator[tuple[tuple[str, ...], dict[str, Any], str]]:
+    node: Any,
+    pattern: tuple[str, ...],
+    path: tuple[str | int, ...],
+    *,
+    indexed: bool = False,
+) -> Iterator[tuple[tuple[str | int, ...], dict[str, Any], str]]:
     """Yield ``(path, container, key)`` for every leaf ``container[key]``
     matched by ``pattern`` under ``node``. A list encountered anywhere before
     the leaf is broadcast over (each item walked with the same remaining
-    pattern and the same path)."""
+    pattern); ``indexed`` records each item's position in ``path``, otherwise
+    the item shares its list's path."""
     if not pattern:
         return
     if isinstance(node, list):
-        for item in node:
-            yield from _iter_leaves(item, pattern, path)
+        for index, item in enumerate(node):
+            item_path = path + (index,) if indexed else path
+            yield from _iter_leaves(item, pattern, item_path, indexed=indexed)
         return
     if not isinstance(node, dict):
         return
@@ -64,21 +70,34 @@ def _iter_leaves(
                 if len(rest) == 1:
                     yield (path + (key,), node, key)
                 else:
-                    yield from _iter_leaves(child, rest[1:], path + (key,))
+                    yield from _iter_leaves(
+                        child, rest[1:], path + (key,), indexed=indexed
+                    )
             # "**" keeps matching at any depth below this key too.
-            yield from _iter_leaves(child, pattern, path + (key,))
+            yield from _iter_leaves(child, pattern, path + (key,), indexed=indexed)
     elif head == "*":
         if not rest:
             for key in node:
                 yield (path + (key,), node, key)
         else:
             for key, child in node.items():
-                yield from _iter_leaves(child, rest, path + (key,))
+                yield from _iter_leaves(child, rest, path + (key,), indexed=indexed)
     elif head in node:
         if not rest:
             yield (path + (head,), node, head)
         else:
-            yield from _iter_leaves(node[head], rest, path + (head,))
+            yield from _iter_leaves(node[head], rest, path + (head,), indexed=indexed)
+
+
+def iter_concrete_leaves(
+    document: Any, pattern: tuple[str, ...]
+) -> Iterator[tuple[tuple[str | int, ...], Any]]:
+    """Yield ``(path, value)`` for every leaf of ``document`` matched by the
+    registry ``pattern`` (api/services/security/secret_surfaces.py), with each
+    list position recorded as an int: one path per leaf, the shape
+    ``credential_box.aad_for`` binds a token to."""
+    for path, container, key in _iter_leaves(document, pattern, (), indexed=True):
+        yield path, container[key]
 
 
 def _find_non_empty(
