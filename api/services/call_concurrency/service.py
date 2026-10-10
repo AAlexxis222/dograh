@@ -231,11 +231,18 @@ class CallConcurrencyService:
                 scope_max_concurrent=slot.scope_max_concurrent,
             )
         except SlotBackendError as e:
-            # The run cannot be bound, so it must not keep the slot: answered as before (released, already bound).
+            # The run cannot be bound, so it must not keep the slot. Redis did not answer: that is a backend
+            # failure (VOZ-AC-B3-65-bis), not a duplicate bind, so it is refused under its own reason.
             logger.error(
                 f"Could not bind workflow run {workflow_run_id} to its slot: {e}"
             )
-            stored = False
+            await self.release_slot(slot)
+            raise AdmissionBackendUnavailableError(
+                organization_id=slot.organization_id,
+                source=slot.source,
+                wait_time=0,
+                max_concurrent=slot.max_concurrent,
+            ) from e
         if stored:
             return
 

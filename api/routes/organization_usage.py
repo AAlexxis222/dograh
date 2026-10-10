@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, Field
-from redis.exceptions import RedisError
 
 from api.constants import DEPLOYMENT_MODE, UI_APP_URL
 from api.db import db_client
@@ -58,7 +57,7 @@ async def get_organization_concurrent_calls(
     try:
         async with asyncio.timeout(5):
             active_calls = await call_concurrency.get_org_active_calls(organization_id)
-    except (SlotBackendError, RedisError, OSError):
+    except (SlotBackendError, TimeoutError):
         logger.exception(
             "Organization call count unavailable for org {}", organization_id
         )

@@ -1,5 +1,5 @@
 """Each channel's answer to a refused admission (VOZ-AC-B3-65-bis): the one place that maps a refusal's true reason
-(a full org, or the slot backend down) to the HTTP, WebSocket, browser signaling, carrier and ARI answers. Every
+(a full org, or the slot backend down) to the HTTP, WebSocket, browser signaling and carrier answers. Every
 function takes the refusal; a route calls one of them. The audible wording of the carrier answer is VOZ-N0-29's.
 """
 
@@ -9,6 +9,7 @@ from api.errors.telephony_errors import TelephonyError
 from api.services.call_concurrency import (
     AdmissionBackendUnavailableError,
     CallConcurrencyLimitError,
+    WorkflowRunSlotAlreadyBoundError,
 )
 from api.services.runtime.durations import cell_durations
 
@@ -59,19 +60,23 @@ def client_error(error: CallConcurrencyLimitError) -> dict:
     }
 
 
-def carrier_error(error: CallConcurrencyLimitError) -> TelephonyError:
-    """The carrier answer for a refused inbound call: a full org, or (failing closed) a slot backend that is down."""
+def bind_failure_response(
+    error: CallConcurrencyLimitError | WorkflowRunSlotAlreadyBoundError,
+) -> JSONResponse:
+    """HTTP answer when binding a run to its slot fails: 409 when the run already holds one (a real duplicate), the
+    refusal's own answer (503) when the slot backend did not answer."""
+    if isinstance(error, CallConcurrencyLimitError):
+        return http_response(error)
+    return JSONResponse(
+        status_code=409, content={"detail": "Workflow run already has an active call"}
+    )
+
+
+def carrier_error(
+    error: CallConcurrencyLimitError | WorkflowRunSlotAlreadyBoundError,
+) -> TelephonyError:
+    """The carrier answer for an inbound call that got no slot: a slot backend that is down (failing closed), else
+    a full org or a run that already holds a slot."""
     if _backend_down(error):
         return TelephonyError.ADMISSION_BACKEND_UNAVAILABLE
     return TelephonyError.CONCURRENT_CALL_LIMIT
-
-
-def ari_hangup_note(
-    error: CallConcurrencyLimitError, organization_id: int, channel_id: str
-) -> str:
-    """ARI answers every refusal by hanging the inbound channel up; this is the line logged with it, which names
-    the true reason."""
-    return (
-        f"[ARI org={organization_id}] Call admission refused "
-        f"({error.reason}); hanging up inbound channel {channel_id}"
-    )

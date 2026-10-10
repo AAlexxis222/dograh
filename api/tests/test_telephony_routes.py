@@ -7,11 +7,17 @@ from fastapi.testclient import TestClient
 
 from api.enums import WorkflowRunMode, WorkflowRunState
 from api.errors.telephony_errors import TelephonyError
-from api.routes.telephony import _handle_telephony_websocket, handle_inbound_run, router
+from api.routes.telephony import (
+    _handle_telephony_websocket,
+    handle_inbound_run,
+    handle_inbound_telephony,
+    router,
+)
 from api.services.auth.depends import get_user
 from api.services.call_concurrency import (
     AdmissionBackendUnavailableError,
     CallConcurrencyLimitError,
+    WorkflowRunSlotAlreadyBoundError,
 )
 from api.services.runtime.durations import cell_durations
 from api.tests.conftest import mock_configuration_cascade
@@ -497,6 +503,155 @@ def test_initiate_call_rejects_when_concurrency_limit_reached(reason, status, de
         )
     mock_db.create_workflow_run.assert_not_called()
     provider.initiate_call.assert_not_awaited()
+
+
+def _bind_failure(kind: str) -> Exception:
+    """What bind_workflow_run raises: Redis failing mid-bind is a backend refusal, a taken run is a duplicate."""
+    if kind == "backend":
+        return DOWN(organization_id=11, source="test", wait_time=0, max_concurrent=1)
+    return WorkflowRunSlotAlreadyBoundError(501)
+
+
+@pytest.mark.parametrize("kind", ["backend", "duplicate"])
+def test_initiate_call_answers_a_bind_failure_with_its_true_reason(kind):
+    client = TestClient(_make_test_app())
+    workflow = _workflow()
+
+    with (
+        patch("api.routes.telephony.db_client") as mock_db,
+        patch("api.routes.telephony.call_concurrency") as mock_concurrency,
+        patch(
+            "api.routes.telephony.get_telephony_provider_by_id",
+            new=AsyncMock(return_value=_provider()),
+        ),
+    ):
+        mock_concurrency.acquire_org_slot = AsyncMock(return_value=object())
+        mock_concurrency.bind_workflow_run = AsyncMock(side_effect=_bind_failure(kind))
+        mock_concurrency.release_slot = AsyncMock()
+        mock_configuration_cascade(mock_db)
+        mock_db.get_default_telephony_configuration = AsyncMock(
+            return_value=SimpleNamespace(id=55)
+        )
+        _stub_outbound_setup_lookup(mock_db)
+        mock_db.get_workflow = AsyncMock(return_value=workflow)
+        mock_db.get_draft_version = AsyncMock(return_value=None)
+        mock_db.create_workflow_run = AsyncMock(
+            return_value=SimpleNamespace(
+                id=501, name="WR-TEL-OUT-1", initial_context={}
+            )
+        )
+        response = client.post(
+            "/telephony/initiate-call",
+            json={"workflow_id": workflow.id, "phone_number": "+15551234567"},
+        )
+
+    if kind == "backend":
+        assert response.status_code == 503
+        assert {k: response.json()[k] for k in DOWN_RECORD} == DOWN_RECORD
+        assert response.headers["Retry-After"] == str(
+            cell_durations().admission_retry_after_s
+        )
+        # The bind released the slot before it raised; the route does not release it again.
+        mock_concurrency.release_slot.assert_not_awaited()
+    else:
+        assert response.status_code == 409
+        assert response.json() == {"detail": "Workflow run already has an active call"}
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("backend", TelephonyError.ADMISSION_BACKEND_UNAVAILABLE),
+        ("duplicate", TelephonyError.CONCURRENT_CALL_LIMIT),
+    ],
+)
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.asyncio
+async def test_inbound_answers_a_bind_failure_with_its_true_carrier_answer(
+    kind, expected, legacy
+):
+    request = SimpleNamespace(headers={}, url="https://api.example.com/inbound/run")
+    provider_class = SimpleNamespace(
+        PROVIDER_NAME="twilio",
+        generate_validation_error_response=Mock(return_value="carrier-answer"),
+    )
+    normalized_data = SimpleNamespace(
+        provider="twilio",
+        direction="inbound",
+        to_number="+15551230000",
+        from_number="+15557650000",
+        to_country="US",
+        from_country="US",
+        account_id="acct-1",
+        call_id="call-1",
+        raw_data={},
+    )
+    config = SimpleNamespace(
+        id=55, organization_id=11, name="Twilio", credentials={"account_sid": "AC123"}
+    )
+    phone_row = SimpleNamespace(id=77, address="+15551230000", inbound_workflow_id=33)
+    provider_instance = SimpleNamespace(
+        verify_inbound_signature=AsyncMock(return_value=True),
+        start_inbound_stream=AsyncMock(),
+    )
+    legacy_context = {
+        "user_id": 99,
+        "organization_id": 11,
+        "provider": "twilio",
+        "telephony_configuration_id": 55,
+    }
+
+    with (
+        patch(
+            "api.routes.telephony.parse_webhook_request",
+            new=AsyncMock(return_value=({}, "raw-body")),
+        ),
+        patch(
+            "api.routes.telephony._detect_provider",
+            new=AsyncMock(return_value=provider_class),
+        ),
+        patch(
+            "api.routes.telephony.normalize_webhook_data",
+            return_value=normalized_data,
+        ),
+        patch("api.routes.telephony.db_client") as mock_db,
+        patch(
+            "api.routes.telephony.get_telephony_provider_by_id",
+            new=AsyncMock(return_value=provider_instance),
+        ),
+        patch(
+            "api.routes.telephony._validate_inbound_request",
+            new=AsyncMock(return_value=(True, None, legacy_context, provider_instance)),
+        ),
+        patch(
+            "api.routes.telephony._create_inbound_workflow_run",
+            new=AsyncMock(return_value=501),
+        ),
+        patch("api.routes.telephony.call_concurrency") as mock_concurrency,
+    ):
+        mock_configuration_cascade(mock_db)
+        mock_db.find_inbound_route_by_account = AsyncMock(
+            return_value=(config, phone_row)
+        )
+        mock_db.get_workflow = AsyncMock(
+            return_value=SimpleNamespace(id=33, user_id=99)
+        )
+        mock_concurrency.acquire_org_slot = AsyncMock(return_value=object())
+        mock_concurrency.bind_workflow_run = AsyncMock(side_effect=_bind_failure(kind))
+        mock_concurrency.release_slot = AsyncMock()
+        mock_concurrency.release_workflow_run_slot = AsyncMock()
+
+        if legacy:
+            response = await handle_inbound_telephony(33, request)
+        else:
+            response = await handle_inbound_run(request)
+
+    assert response == "carrier-answer"
+    provider_class.generate_validation_error_response.assert_called_once_with(expected)
+    provider_instance.start_inbound_stream.assert_not_awaited()
+    # The bind released the slot before it raised; neither answer releases it again.
+    mock_concurrency.release_slot.assert_not_awaited()
+    mock_concurrency.release_workflow_run_slot.assert_not_awaited()
 
 
 @pytest.mark.asyncio

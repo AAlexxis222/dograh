@@ -1,5 +1,6 @@
 """VOZ-N0-20 / VOZ-AT-B3-19: durations.py is the single source of call, slot, drain and grace durations."""
 
+import importlib.util
 import json
 import os
 import re
@@ -391,6 +392,32 @@ def test_each_carrier_rings_its_own_default_and_the_lease_covers_it():
     assert (
         e.value.code == "knob_out_of_range" and "16 CFR 310.4(b)(4)" in e.value.reason
     )
+
+
+def test_importing_the_module_refuses_a_ring_below_the_floor(tmp_path):
+    """The floor is enforced by the module itself at import, not only by calling the check: importing a copy of the
+    module with one ring edited below 15 s fails with the named error, and importing the unedited copy does not."""
+    from api.services.runtime import durations as module
+
+    def import_copy(name: str, source: str):
+        path = tmp_path / f"{name}.py"
+        path.write_text(source, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location(name, path)
+        copy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(copy)
+        return copy
+
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    short = source.replace(
+        "WorkflowRunMode.TELNYX.value: 30,", "WorkflowRunMode.TELNYX.value: 14,"
+    )
+    assert short != source
+
+    import_copy("durations_unedited", source)
+    with pytest.raises(ValueError) as e:
+        import_copy("durations_short_ring", short)
+    assert type(e.value).__name__ == "DurationsError"
+    assert e.value.code == "knob_out_of_range" and "telnyx" in e.value.reason
 
 
 def test_a_pending_lease_below_three_seconds_is_a_named_error():

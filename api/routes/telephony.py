@@ -24,7 +24,11 @@ from api.db.models import UserModel
 from api.enums import CallType, WorkflowRunMode, WorkflowRunState
 from api.errors.failure import failure_already_reported
 from api.errors.telephony_errors import TelephonyError
-from api.routes.admission_answers import carrier_error, http_response
+from api.routes.admission_answers import (
+    bind_failure_response,
+    carrier_error,
+    http_response,
+)
 from api.sdk_expose import sdk_expose
 from api.services.auth.depends import get_user
 from api.services.call_concurrency import (
@@ -232,11 +236,9 @@ async def initiate_call(
             workflow_run_name = workflow_run.name
 
         await call_concurrency.bind_workflow_run(concurrency_slot, workflow_run_id)
-    except WorkflowRunSlotAlreadyBoundError:
-        raise HTTPException(
-            status_code=409,
-            detail="Workflow run already has an active call",
-        )
+    except (WorkflowRunSlotAlreadyBoundError, CallConcurrencyLimitError) as e:
+        # Either way the bind already released the slot: a taken run, or a slot backend that did not answer.
+        return bind_failure_response(e)
     except Exception:
         await call_concurrency.release_slot(concurrency_slot)
         raise
@@ -1000,10 +1002,9 @@ async def handle_inbound_run(request: Request):
                 normalized_data=normalized_data,
                 backend_endpoint=backend_endpoint,
             )
-        except WorkflowRunSlotAlreadyBoundError:
-            return provider_class.generate_validation_error_response(
-                TelephonyError.CONCURRENT_CALL_LIMIT
-            )
+        except (WorkflowRunSlotAlreadyBoundError, CallConcurrencyLimitError) as e:
+            # Either way the bind already released the slot: a taken run, or a slot backend that did not answer.
+            return provider_class.generate_validation_error_response(carrier_error(e))
         except Exception as e:
             if workflow_run_id:
                 await mark_workflow_run_failed(
@@ -1171,10 +1172,9 @@ async def handle_inbound_telephony(
                 normalized_data=normalized_data,
                 backend_endpoint=backend_endpoint,
             )
-        except WorkflowRunSlotAlreadyBoundError:
-            return provider_class.generate_validation_error_response(
-                TelephonyError.CONCURRENT_CALL_LIMIT
-            )
+        except (WorkflowRunSlotAlreadyBoundError, CallConcurrencyLimitError) as e:
+            # Either way the bind already released the slot: a taken run, or a slot backend that did not answer.
+            return provider_class.generate_validation_error_response(carrier_error(e))
         except Exception as e:
             if workflow_run_id:
                 await mark_workflow_run_failed(

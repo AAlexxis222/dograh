@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, call
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from redis.exceptions import ConnectionError as RedisConnectionError
 
 from api.routes import organization_usage
 from api.services.auth import depends as auth_depends
@@ -82,12 +81,8 @@ def test_missing_or_invalid_key_cannot_read_concurrency(endpoint, key):
 
 @pytest.mark.parametrize(
     "error",
-    # The slot store raises SlotBackendError; the raw errors stay covered for any other reader.
-    [
-        SlotBackendError("redis down"),
-        RedisConnectionError("redis down"),
-        TimeoutError(),
-    ],
+    # The slot store wraps every Redis failure in SlotBackendError; TimeoutError is the route's own 5 s guard.
+    [SlotBackendError("redis down"), TimeoutError()],
 )
 def test_unavailable_count_returns_503_instead_of_zero(endpoint, error):
     client, count, _ = endpoint

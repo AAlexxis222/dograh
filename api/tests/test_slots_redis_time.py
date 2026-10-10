@@ -1052,8 +1052,9 @@ async def test_the_worker_release_by_lease_goes_through_the_logged_release(
     assert [m for m in warnings_log if "keeping mapping for retry" in m]
 
 
-async def test_a_bind_that_hits_a_backend_error_releases_the_slot_as_before():
-    """The bind keeps its answer (slot released, run reported as already bound); the backend error is logged."""
+async def test_a_bind_that_hits_a_backend_error_releases_the_slot_and_reports_the_backend():
+    """Redis failing during the bind is not a duplicate bind: the slot is released and the refusal is the backend one
+    (VOZ-AC-B3-65-bis), which every channel answers as an admission refused for a down backend."""
     from api.services.call_concurrency import (
         CallConcurrencySlot,
         WorkflowRunSlotAlreadyBoundError,
@@ -1067,6 +1068,28 @@ async def test_a_bind_that_hits_a_backend_error_releases_the_slot_as_before():
         store.store_workflow_slot_mapping_if_absent = AsyncMock(
             side_effect=SlotBackendError("redis down")
         )
+        store.release_slot = AsyncMock(return_value=True)
+        with pytest.raises(AdmissionBackendUnavailableError) as e:
+            await service.bind_workflow_run(slot, 7)
+    assert not isinstance(e.value, WorkflowRunSlotAlreadyBoundError)
+    assert (e.value.organization_id, e.value.source) == (1, "test")
+    store.release_slot.assert_awaited_once_with(
+        org_id=1, attempt_id="a", scope_key=None, workflow_run_id=None
+    )
+
+
+async def test_a_real_duplicate_bind_still_releases_the_slot_and_reports_already_bound():
+    from api.services.call_concurrency import (
+        CallConcurrencySlot,
+        WorkflowRunSlotAlreadyBoundError,
+    )
+
+    service = CallConcurrencyService()
+    slot = CallConcurrencySlot(
+        organization_id=1, slot_id="a", max_concurrent=5, source="test"
+    )
+    with patch("api.services.call_concurrency.service.slot_store") as store:
+        store.store_workflow_slot_mapping_if_absent = AsyncMock(return_value=False)
         store.release_slot = AsyncMock(return_value=True)
         with pytest.raises(WorkflowRunSlotAlreadyBoundError):
             await service.bind_workflow_run(slot, 7)

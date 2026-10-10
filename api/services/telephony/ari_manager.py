@@ -36,7 +36,6 @@ from api.errors.failure import (
     log_failure,
     redact_failure_message,
 )
-from api.routes.admission_answers import ari_hangup_note
 from api.services.call_concurrency import (
     CallConcurrencyLimitError,
     call_concurrency,
@@ -98,6 +97,17 @@ def _log_ari_failure(
         organization_id=organization_id,
         telephony_configuration_id=telephony_configuration_id,
         **context,
+    )
+
+
+def _refusal_hangup_note(
+    error: CallConcurrencyLimitError, organization_id: int, channel_id: str
+) -> str:
+    """The line logged when an inbound channel is hung up because admission refused it; it names the true
+    reason (a full org, or the slot backend down)."""
+    return (
+        f"[ARI org={organization_id}] Call admission refused "
+        f"({error.reason}); hanging up inbound channel {channel_id}"
     )
 
 
@@ -955,7 +965,9 @@ class ARIConnection:
                     timeout=0,
                 )
             except CallConcurrencyLimitError as e:
-                logger.warning(ari_hangup_note(e, self.organization_id, channel_id))
+                logger.warning(
+                    _refusal_hangup_note(e, self.organization_id, channel_id)
+                )
                 await self._delete_channel(channel_id)
                 return
 
