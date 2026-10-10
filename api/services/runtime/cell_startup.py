@@ -1,4 +1,4 @@
-"""Startup assertion of a cell role (VOZ-AC-B3-61, VOZ-AC-B6-52, VOZ-AC-B6-16). Fail closed, VOZ-AC-B0-28 output.
+"""Startup assertion of a cell role (VOZ-AC-B3-61, VOZ-AC-B6-52, VOZ-AC-B6-16, VOZ-AC-B5-91). Fail closed, VOZ-AC-B0-28 output.
 
 Light on purpose (no FastAPI import): the api lifespan calls it, and scripts/xpand/require_db_head.sh runs it as
 `python -m api.services.runtime.cell_startup <role>` for every role, so arq and coordinators are covered too.
@@ -58,6 +58,15 @@ def assert_cell_startup_config(where: str = "api.app") -> None:
         raise CellStartupError(
             e.code, where, f"{e.where}: {e.reason}", e.hint
         ) from None
+    # VOZ-AC-B5-91 / B0-30: a tool must never reach IMDS or the compose network. The guard runs only on the exact value
+    # "true" (api/services/workflow/tools/custom_tool.py), so anything else is a cell with the control off.
+    if os.environ.get("URL_GUARD_ENFORCE") != "true":
+        raise CellStartupError(
+            "url_guard_not_enforced",
+            where,
+            "URL_GUARD_ENFORCE is not exactly 'true', so custom tools could reach cloud metadata (IMDS) and the Docker network",
+            "set URL_GUARD_ENFORCE=true in the cell env (docker-compose.cell.yaml sets it for every role)",
+        )
     # Durations are not checked here: the gate in scripts/xpand/require_db_head.sh owns them for every role.
 
 

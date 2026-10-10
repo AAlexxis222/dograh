@@ -73,6 +73,7 @@ def cell_env(monkeypatch):
     monkeypatch.setenv("DOGRAH_DEVOPS_SECRET", SECRET)
     monkeypatch.setenv("LOG_LEVEL", "INFO")
     monkeypatch.setenv("CREDENTIALS_MASTER_KEY", MASTER_KEY)
+    monkeypatch.setenv("URL_GUARD_ENFORCE", "true")
     monkeypatch.delenv("CALL_K_P", raising=False)
 
 
@@ -146,10 +147,32 @@ def test_startup_refuses_a_missing_or_invalid_master_key_in_cell(
         assert key in message, message
 
 
+@pytest.mark.parametrize("value", [None, "", "false", "True", "1", "true "])
+def test_startup_refuses_a_cell_that_does_not_enforce_the_url_guard(
+    cell_env, monkeypatch, value
+):
+    # VOZ-AC-B5-91 / B0-30: only the exact value the guard honours passes.
+    if value is None:
+        monkeypatch.delenv("URL_GUARD_ENFORCE")
+    else:
+        monkeypatch.setenv("URL_GUARD_ENFORCE", value)
+    with pytest.raises(RuntimeError) as e:
+        assert_cell_startup_config("call")
+    message = str(e.value)
+    for key in (
+        "code=url_guard_not_enforced where=call ",
+        "URL_GUARD_ENFORCE",
+        "reason=",
+        "hint=set URL_GUARD_ENFORCE=true",
+    ):
+        assert key in message, message
+
+
 def test_startup_is_a_noop_outside_a_cell(monkeypatch):
     monkeypatch.delenv("CELL_ROLE", raising=False)
     monkeypatch.delenv("DOGRAH_DEVOPS_SECRET", raising=False)
     monkeypatch.delenv("CREDENTIALS_MASTER_KEY", raising=False)
+    monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
     assert_cell_startup_config()
 
@@ -169,6 +192,7 @@ def _run_module(role, **env):
         "DOGRAH_DEVOPS_SECRET",
         "CALL_K_P",
         "CREDENTIALS_MASTER_KEY",
+        "URL_GUARD_ENFORCE",
     }
     base = {k: v for k, v in os.environ.items() if k not in cell_vars}
     return subprocess.run(
@@ -199,9 +223,23 @@ def test_module_passes_in_a_valid_cell_and_outside_a_cell():
         DOGRAH_DEVOPS_SECRET=SECRET,
         LOG_LEVEL="INFO",
         CREDENTIALS_MASTER_KEY=MASTER_KEY,
+        URL_GUARD_ENFORCE="true",
     )
     assert (ok.returncode, ok.stderr) == (0, "")
     assert _run_module("arq").returncode == 0
+
+
+@pytest.mark.parametrize("role", ["api", "call", "arq", "coordinators"])
+def test_module_refuses_every_cell_role_without_the_url_guard(role):
+    r = _run_module(
+        role,
+        CELL_ROLE=role,
+        DOGRAH_DEVOPS_SECRET=SECRET,
+        LOG_LEVEL="INFO",
+        CREDENTIALS_MASTER_KEY=MASTER_KEY,
+    )
+    assert r.returncode == 1
+    assert f"code=url_guard_not_enforced where={role} " in r.stderr, r.stderr
 
 
 def test_module_refuses_a_cell_without_the_master_key():
