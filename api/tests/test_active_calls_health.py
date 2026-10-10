@@ -1,5 +1,6 @@
 """VOZ-N0-22: a cell refuses to start without the devops secret, and active-calls reports the drain fields."""
 
+import base64
 import os
 import re
 import subprocess
@@ -18,6 +19,7 @@ from api.services.observability import loop_lag
 from api.services.runtime import cell_state
 
 SECRET = "test-dograh-devops-secret"
+MASTER_KEY = "k1=" + base64.b64encode(os.urandom(32)).decode()
 
 
 @pytest.fixture
@@ -70,6 +72,7 @@ def cell_env(monkeypatch):
     monkeypatch.setenv("CELL_ROLE", "call")
     monkeypatch.setenv("DOGRAH_DEVOPS_SECRET", SECRET)
     monkeypatch.setenv("LOG_LEVEL", "INFO")
+    monkeypatch.setenv("CREDENTIALS_MASTER_KEY", MASTER_KEY)
     monkeypatch.delenv("CALL_K_P", raising=False)
 
 
@@ -120,9 +123,33 @@ def test_startup_refuses_bad_k_p_in_cell(cell_env, monkeypatch, value):
         assert_cell_startup_config()
 
 
+@pytest.mark.parametrize(
+    ("value", "reason"),
+    [
+        (None, "env: CREDENTIALS_MASTER_KEY is missing"),
+        ("k1=" + base64.b64encode(b"short").decode(), "bytes, need 32"),
+    ],
+    ids=["missing", "short"],
+)
+def test_startup_refuses_a_missing_or_invalid_master_key_in_cell(
+    cell_env, monkeypatch, value, reason
+):
+    # VOZ-AC-B6-16: a cell never starts unable to read its credentials.
+    if value is None:
+        monkeypatch.delenv("CREDENTIALS_MASTER_KEY")
+    else:
+        monkeypatch.setenv("CREDENTIALS_MASTER_KEY", value)
+    with pytest.raises(RuntimeError) as e:
+        assert_cell_startup_config("call")
+    message = str(e.value)
+    for key in ("code=credentials_master_key_invalid where=call ", reason, "hint="):
+        assert key in message, message
+
+
 def test_startup_is_a_noop_outside_a_cell(monkeypatch):
     monkeypatch.delenv("CELL_ROLE", raising=False)
     monkeypatch.delenv("DOGRAH_DEVOPS_SECRET", raising=False)
+    monkeypatch.delenv("CREDENTIALS_MASTER_KEY", raising=False)
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
     assert_cell_startup_config()
 
@@ -136,7 +163,13 @@ def test_p99_is_the_99th_percentile_and_the_route_returns_it(client, monkeypatch
 
 
 def _run_module(role, **env):
-    cell_vars = {"CELL_ROLE", "LOG_LEVEL", "DOGRAH_DEVOPS_SECRET", "CALL_K_P"}
+    cell_vars = {
+        "CELL_ROLE",
+        "LOG_LEVEL",
+        "DOGRAH_DEVOPS_SECRET",
+        "CALL_K_P",
+        "CREDENTIALS_MASTER_KEY",
+    }
     base = {k: v for k, v in os.environ.items() if k not in cell_vars}
     return subprocess.run(
         [sys.executable, "-m", "api.services.runtime.cell_startup", role],
@@ -161,10 +194,22 @@ def test_roles_without_lifespan_refuse_debug_logs_via_the_module(role):
 
 def test_module_passes_in_a_valid_cell_and_outside_a_cell():
     ok = _run_module(
-        "arq", CELL_ROLE="arq", DOGRAH_DEVOPS_SECRET=SECRET, LOG_LEVEL="INFO"
+        "arq",
+        CELL_ROLE="arq",
+        DOGRAH_DEVOPS_SECRET=SECRET,
+        LOG_LEVEL="INFO",
+        CREDENTIALS_MASTER_KEY=MASTER_KEY,
     )
     assert (ok.returncode, ok.stderr) == (0, "")
     assert _run_module("arq").returncode == 0
+
+
+def test_module_refuses_a_cell_without_the_master_key():
+    r = _run_module(
+        "arq", CELL_ROLE="arq", DOGRAH_DEVOPS_SECRET=SECRET, LOG_LEVEL="INFO"
+    )
+    assert r.returncode == 1
+    assert "code=credentials_master_key_invalid where=arq " in r.stderr, r.stderr
 
 
 def test_drain_flag_default_is_the_same_in_python_and_the_entrypoint():
@@ -198,7 +243,7 @@ def test_lifespan_runs_the_cell_startup_check(cell_env, monkeypatch):
 
 def test_the_start_gate_module_does_not_load_loguru():
     # require_db_head.sh runs it with whatever python is on PATH, in and out of a cell.
-    code = "import sys, api.services.runtime.cell_startup; sys.exit('loguru' in sys.modules)"
+    code = "import sys, api.services.runtime.cell_startup; sys.exit('loguru' in sys.modules or 'fastapi' in sys.modules)"
     r = subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True,

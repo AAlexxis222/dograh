@@ -21,6 +21,8 @@ x-cell-env: &cell-env
   TELEPHONY_WS_TOKEN_SECRET: "${TELEPHONY_WS_TOKEN_SECRET:?TELEPHONY_WS_TOKEN_SECRET must be set}"
   DOGRAH_DEVOPS_SECRET: "${DOGRAH_DEVOPS_SECRET:?DOGRAH_DEVOPS_SECRET must be set}"
   TURN_SECRET: "${TURN_SECRET:?TURN_SECRET must be set}"
+  # Credentials-at-rest key list (id=base64(32 bytes), active first); every role refuses to start without it.
+  CREDENTIALS_MASTER_KEY: "${CREDENTIALS_MASTER_KEY:?CREDENTIALS_MASTER_KEY must be set}"
   ENABLE_SIGNUP: "false"
   LOG_LEVEL: "INFO"
   SERIALIZE_LOG_OUTPUT: "true"

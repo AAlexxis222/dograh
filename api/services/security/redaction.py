@@ -13,6 +13,7 @@ import traceback
 from collections.abc import Iterable
 
 from api.errors.failure import fold_for_gate, redact_credentials
+from api.services.security import credential_box
 
 _PHONE = "<redacted:phone>"
 
@@ -30,6 +31,13 @@ _PATTERNS = [
         r"\1<redacted>@",
     ),
     (("sk-", "sk_"), re.compile(r"\bsk[-_][A-Za-z0-9_\-]{8,}"), "<redacted:key>"),
+    # A credential_box token (v1:<key_id>:<nonce_b64>:<ct_b64>): ciphertext, but
+    # it never belongs in a log line.
+    (
+        ("v1:",),
+        re.compile(r"\bv1:[A-Za-z0-9_.\-]+:[A-Za-z0-9+/]+=*:[A-Za-z0-9+/]*=*"),
+        "<redacted:credential_token>",
+    ),
     # sip:/tel: URIs: every digit of the user part is a phone (or extension).
     (
         ("sip",),
@@ -92,16 +100,23 @@ def _is_secret_env_name(name: str) -> bool:
 def active_secret_values() -> set[str]:
     """Secret values this process holds in memory right now, for log redaction.
 
-    Today: the values of secret-named environment variables. The log patcher
+    Today: the values of secret-named environment variables and each credential
+    master key (VOZ-AC-B6-16). The log patcher
     binds this set once, at ``setup_logging``, so a secret loaded later (the
     decrypted database credentials of VOZ-N0-23) is not redacted until the
     credential box rebuilds that binding with a refreshed set.
     """
-    return {
+    values = {
         value
         for name, value in os.environ.items()
         if _is_secret_env_name(name) and len(value) >= _MIN_SECRET_LENGTH
     }
+    # Each credential master key on its own, raw and as ``id=base64``: the whole
+    # variable is covered above, a single key of a rotation list is not.
+    for item in credential_box.master_key_items(os.environ.get(credential_box.ENV, "")):
+        key = item.partition("=")[2].strip()
+        values.update(v for v in (item, key) if len(v) >= _MIN_SECRET_LENGTH)
+    return values
 
 
 def known_secret_values() -> tuple[str, ...]:

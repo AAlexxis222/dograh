@@ -1,4 +1,4 @@
-"""Startup assertion of a cell role (VOZ-AC-B3-61, VOZ-AC-B6-52). Fail closed, VOZ-AC-B0-28 output.
+"""Startup assertion of a cell role (VOZ-AC-B3-61, VOZ-AC-B6-52, VOZ-AC-B6-16). Fail closed, VOZ-AC-B0-28 output.
 
 Light on purpose (no FastAPI import): the api lifespan calls it, and scripts/xpand/require_db_head.sh runs it as
 `python -m api.services.runtime.cell_startup <role>` for every role, so arq and coordinators are covered too.
@@ -8,6 +8,7 @@ import os
 import sys
 
 from api.services.runtime.cell_state import parse_call_k_p
+from api.services.security import credential_box
 
 # Levels at or above INFO. Anything else (DEBUG, TRACE, numbers, unknown names, unset) can log caller text.
 _SAFE_LOG_LEVELS = {"INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"}
@@ -48,6 +49,15 @@ def assert_cell_startup_config(where: str = "api.app") -> None:
             f"CALL_K_P is not an integer >= 1 ({e})",
             "set CALL_K_P to a positive integer, or unset it for the default of 4",
         ) from e
+    # VOZ-AC-B6-16: the credential master key, fail-fast in a cell only (nothing else loads it at start). Cleared first
+    # so the check reads the environment as it is now, not a key cached earlier in this process.
+    credential_box.load_keys.cache_clear()
+    try:
+        credential_box.load_keys()
+    except credential_box.MasterKeyInvalid as e:
+        raise CellStartupError(
+            e.code, where, f"{e.where}: {e.reason}", e.hint
+        ) from None
     # Durations are not checked here: the gate in scripts/xpand/require_db_head.sh owns them for every role.
 
 

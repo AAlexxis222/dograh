@@ -169,6 +169,38 @@ def test_active_secret_values_reads_secret_named_env(monkeypatch):
     assert "canary-not-secret-either" not in values
 
 
+def test_credential_box_tokens_are_redacted(monkeypatch):
+    import base64
+    import os
+
+    from api.services.security import credential_box
+
+    monkeypatch.setenv(
+        "CREDENTIALS_MASTER_KEY", "k1=" + base64.b64encode(os.urandom(32)).decode()
+    )
+    credential_box.load_keys.cache_clear()
+    try:
+        token = credential_box.encrypt(b"canary-plaintext", aad=b"t:1:c:$")
+    finally:
+        credential_box.load_keys.cache_clear()
+    out = redact(f"stored value={token} for row 1", secrets=())
+    assert token not in out and token.split(":")[3] not in out
+    assert out == "stored value=<redacted:credential_token> for row 1"
+
+
+def test_each_credential_master_key_is_redacted_alone(monkeypatch):
+    # Canary keys from a rotation list: the whole variable is a known secret, but a
+    # single key, raw or as id=base64, must be one too.
+    active, previous = (
+        "QUNUSVZFLUNBTkFSWS1LRVktMzItQllURVMtLS0tLS0=",
+        "UFJFVklPVVMtQ0FOQVJZLUtFWS0zMi1CWVRFUy0tLS0=",
+    )
+    monkeypatch.setenv("CREDENTIALS_MASTER_KEY", f"k2={active}, k1={previous}")
+    out = redact(f"a={active} b=k1={previous}")
+    assert active not in out and previous not in out
+    assert "k1=" not in out
+
+
 @pytest.fixture
 def real_logging(monkeypatch):
     """Run the real setup_logging (it returns early under ENVIRONMENT=test) and

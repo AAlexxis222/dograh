@@ -13,12 +13,12 @@ from typing import Any, Dict, Optional
 
 from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
 from api.services.configuration.registry import ServiceConfig
-from api.services.configuration.secrets_registry import (
+from api.services.configuration.secrets_registry import mask_secrets
+from api.services.integrations import get_node_secret_fields
+from api.services.security.secret_surfaces import (
     MODEL_OVERRIDE_SECTIONS,
     SECRET_LEAF_NAMES,
-    mask_secrets,
 )
-from api.services.integrations import get_node_secret_fields
 
 VISIBLE_CHARS = 4  # number of trailing characters to reveal
 MASK_CHAR = "*"
