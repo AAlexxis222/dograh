@@ -18,6 +18,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from api.db import db_client
 from api.enums import CallType, WorkflowRunState
+from api.routes.admission_answers import ws_close
 from api.services.call_concurrency import (
     CallConcurrencyLimitError,
     call_concurrency,
@@ -64,7 +65,7 @@ async def agent_stream_websocket(
             timeout=0,
         )
     except CallConcurrencyLimitError as e:
-        await websocket.close(**e.ws_close())
+        await websocket.close(**ws_close(e))
         return
 
     numeric_suffix = int(str(uuid.uuid4()).replace("-", "")[:8], 16) % 100000000

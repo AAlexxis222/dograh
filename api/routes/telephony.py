@@ -24,6 +24,7 @@ from api.db.models import UserModel
 from api.enums import CallType, WorkflowRunMode, WorkflowRunState
 from api.errors.failure import failure_already_reported
 from api.errors.telephony_errors import TelephonyError
+from api.routes.admission_answers import carrier_error, http_response
 from api.sdk_expose import sdk_expose
 from api.services.auth.depends import get_user
 from api.services.call_concurrency import (
@@ -80,13 +81,6 @@ def _get_execution_user_id(workflow) -> int:
             detail="Workflow has no execution owner",
         )
     return workflow.user_id
-
-
-def _admission_refused(error: CallConcurrencyLimitError) -> TelephonyError:
-    """The carrier answer for a refused admission: a full org, or (failing closed) a slot backend that is down."""
-    if error.backend_unavailable:
-        return TelephonyError.ADMISSION_BACKEND_UNAVAILABLE
-    return TelephonyError.CONCURRENT_CALL_LIMIT
 
 
 @router.post(
@@ -192,7 +186,7 @@ async def initiate_call(
             outbound_carrier=provider.PROVIDER_NAME,
         )
     except CallConcurrencyLimitError as e:
-        return e.http_response()
+        return http_response(e)
 
     try:
         if not workflow_run_id:
@@ -958,9 +952,7 @@ async def handle_inbound_run(request: Request):
                 timeout=0,
             )
         except CallConcurrencyLimitError as e:
-            return provider_class.generate_validation_error_response(
-                _admission_refused(e)
-            )
+            return provider_class.generate_validation_error_response(carrier_error(e))
 
         workflow_run_id = None
         try:
@@ -1131,9 +1123,7 @@ async def handle_inbound_telephony(
                 timeout=0,
             )
         except CallConcurrencyLimitError as e:
-            return provider_class.generate_validation_error_response(
-                _admission_refused(e)
-            )
+            return provider_class.generate_validation_error_response(carrier_error(e))
 
         workflow_run_id = None
         try:

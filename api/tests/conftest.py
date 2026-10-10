@@ -708,7 +708,7 @@ def mock_configuration_cascade(mock_db, organization_id: int = 11) -> None:
 
 class FakeRedisClock:
     """A test-only clock key the slot scripts read instead of Redis TIME
-    (``RateLimiter(test_clock=clock.key)``); starts at Redis's own TIME."""
+    (``SlotStore(test_clock=clock.key)``); starts at Redis's own TIME."""
 
     def __init__(self, client, key: str, now: float):
         self.client, self.key, self.now = client, key, now

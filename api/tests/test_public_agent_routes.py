@@ -11,13 +11,15 @@ from api.routes.public_agent import (
     _execute_resolved_target,
     router,
 )
-from api.services.call_concurrency import CallConcurrencyLimitError
-from api.services.call_concurrency.rate_limiter import AdmissionBackendUnavailable
+from api.services.call_concurrency import (
+    AdmissionBackendUnavailableError,
+    CallConcurrencyLimitError,
+)
 from api.services.runtime.durations import cell_durations
 from api.services.telephony.outbound_readiness import OutboundSetupIncompleteError
 from api.tests.conftest import mock_configuration_cascade
 
-DOWN = AdmissionBackendUnavailable
+DOWN = AdmissionBackendUnavailableError
 # The VOZ-AC-B0-28 record a refusal for a down slot backend must carry (code, what, where, hint).
 DOWN_RECORD = {
     "code": DOWN.reason,
@@ -27,11 +29,10 @@ DOWN_RECORD = {
 }
 
 
-def _refused(reason: str) -> dict:
-    """The fields acquire_org_slot puts on a CallConcurrencyLimitError for this reason."""
-    if reason != DOWN.reason:
-        return {"reason": reason}
-    return {"reason": reason, "what": DOWN.what, "where": DOWN.where, "hint": DOWN.hint}
+def _refusal(reason: str, **fields) -> CallConcurrencyLimitError:
+    """The refusal acquire_org_slot raises for this reason: a down backend is its own subclass."""
+    refusal = DOWN if reason == DOWN.reason else CallConcurrencyLimitError
+    return refusal(**fields)
 
 
 @pytest.fixture(autouse=True)
@@ -712,12 +713,12 @@ def test_trigger_route_rejects_when_concurrency_limit_reached(reason, status, de
         ),
     ):
         mock_concurrency.acquire_org_slot = AsyncMock(
-            side_effect=CallConcurrencyLimitError(
+            side_effect=_refusal(
+                reason,
                 organization_id=11,
                 source="public_agent",
                 wait_time=0,
                 max_concurrent=2,
-                **_refused(reason),
             )
         )
         mock_configuration_cascade(mock_db)

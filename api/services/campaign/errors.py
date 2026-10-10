@@ -2,6 +2,8 @@
 Campaign service exceptions.
 """
 
+from api.services.call_concurrency.errors import CONCURRENT_CALL_LIMIT
+
 
 class ConcurrentSlotAcquisitionError(Exception):
     """Raised when admission refuses a campaign call: no free slot within the timeout (``reason``
@@ -12,7 +14,7 @@ class ConcurrentSlotAcquisitionError(Exception):
         organization_id: int,
         campaign_id: int,
         wait_time: float,
-        reason: str = "concurrent_call_limit",
+        reason: str = CONCURRENT_CALL_LIMIT,
     ):
         self.organization_id = organization_id
         self.campaign_id = campaign_id

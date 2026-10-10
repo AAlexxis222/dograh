@@ -12,7 +12,7 @@ from loguru import logger
 from twilio.request_validator import RequestValidator
 
 from api.enums import TelephonyCallStatus, WorkflowRunMode
-from api.services.runtime.durations import cell_durations
+from api.services.runtime.durations import ring_timeout_for
 from api.services.telephony import ws_auth
 from api.services.telephony.base import (
     CallInitiationResult,
@@ -149,7 +149,7 @@ class TwilioProvider(TelephonyProvider):
             "From": from_number,
             "Url": webhook_url,
             # The carrier's default ring, sent explicitly: the bound the outbound pending lease is sized for.
-            "Timeout": cell_durations().ring_timeout_for("twilio"),
+            "Timeout": ring_timeout_for(self.PROVIDER_NAME),
         }
 
         # Add status callback if workflow_run_id provided

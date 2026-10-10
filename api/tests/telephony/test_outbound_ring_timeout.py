@@ -7,7 +7,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from api.services.runtime.durations import CARRIER_RING_TIMEOUT_S, cell_durations
+from api.enums import WorkflowRunMode
+from api.services.runtime.durations import (
+    CARRIER_RING_TIMEOUT_S,
+    cell_durations,
+    ring_timeout_for,
+)
 from api.services.telephony import (  # noqa: F401  -- providers registers every carrier
     providers,
     registry,
@@ -79,19 +84,23 @@ async def test_outbound_call_rings_the_carrier_default(
     body = session.post.call_args.kwargs[body_kwarg]
     assert body.get(field) == ring
     carrier = provider.PROVIDER_NAME
-    assert cell_durations().ring_timeout_for(carrier) == (ring or 120)
+    assert ring_timeout_for(carrier) == (ring or 120)
     assert (
         cell_durations().outbound_pending_ttl_s(carrier)
-        == cell_durations().ring_timeout_for(carrier) + cell_durations().pending_ttl_s
+        == ring_timeout_for(carrier) + cell_durations().pending_ttl_s
     )
 
 
 def test_every_registered_provider_names_its_ring_for_the_outbound_lease():
     """An outbound admission looks its lease up by PROVIDER_NAME; a provider that leaves it empty would silently
-    get the inbound lease on outbound calls."""
+    get the inbound lease on outbound calls. The ring table is keyed by WorkflowRunMode value, so every
+    PROVIDER_NAME must be one: the ringing callback looks the same table up by the run's mode."""
+    modes = {mode.value for mode in WorkflowRunMode}
+    assert set(CARRIER_RING_TIMEOUT_S) <= modes
     for spec in registry.all_specs():
         name = spec.provider_cls.PROVIDER_NAME
         assert name, f"{spec.name}: PROVIDER_NAME is empty"
+        assert name in modes, f"{spec.name}: {name!r} is not a WorkflowRunMode value"
         assert name in CARRIER_RING_TIMEOUT_S or name in NO_RING_FIELD, (
             f"{spec.name}: {name!r} is neither in CARRIER_RING_TIMEOUT_S nor a no-ring-field carrier"
         )

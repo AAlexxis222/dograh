@@ -20,7 +20,10 @@ from api.db.models import (
     WorkflowModel,
     WorkflowRunModel,
 )
-from api.services.call_concurrency import CallConcurrencyLimitError, CallConcurrencySlot
+from api.services.call_concurrency import (
+    AdmissionBackendUnavailableError,
+    CallConcurrencySlot,
+)
 from api.services.campaign.campaign_call_dispatcher import CampaignCallDispatcher
 from api.services.campaign.campaign_retry import schedule_campaign_retry
 from api.services.campaign.errors import ConcurrentSlotAcquisitionError
@@ -269,12 +272,11 @@ async def test_campaign_slot_keeps_org_and_campaign_limits():
 async def test_campaign_slot_refusal_keeps_the_backend_reason():
     """A down slot backend still refuses the campaign call (fail closed), under its own reason, not as a wait."""
     campaign = SimpleNamespace(id=48, orchestrator_metadata=None)
-    refusal = CallConcurrencyLimitError(
+    refusal = AdmissionBackendUnavailableError(
         organization_id=206,
         source="campaign:48",
         wait_time=0,
         max_concurrent=250,
-        reason="admission_backend_unavailable",
     )
     with patch(
         "api.services.campaign.campaign_call_dispatcher.call_concurrency"

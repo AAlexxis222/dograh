@@ -10,9 +10,10 @@ Score of every slot member = its expiry in Redis's clock (``TIME + ttl``): ``TIM
 writers purge it, readers do not count it.
 
 The slot sets live under the ``v2`` namespace. The previous code scored members with the acquisition time on a process
-clock in the un-versioned keys; while both versions run (a rolling deploy) these LEGACY keys are still counted with
-the old rule (live while score > TIME - slot_ttl), read-only, inside the same scripts, and the release funnel also
-removes a legacy call it ends. They die on their own EXPIRE.
+clock in the un-versioned keys. Calls the previous code admitted are still counted here with the old rule (live while
+score > TIME - slot_ttl), read-only, inside the same scripts, and the release funnel also removes a legacy call it
+ends; the legacy keys die on their own EXPIRE. This covers one direction only: the previous code reads only the legacy
+keys, so it never sees a call this code admitted and over-admits by every one of them. Hence the precondition below.
 Follow-up VOZ-N0-21-F1: drop every ``legacy_*`` read one release after this one.
 
 Assumption: one single-node Redis per cell. The scripts touch several keys at once (v2 and legacy sets of an org,
@@ -20,11 +21,12 @@ the fleet set, the mapping and the ``sem:`` keys named inside it), which Redis C
 hash slot; the existing keys carry no hash tags, so none are added here. Moving to a cluster means tagging every key
 of an org (both versions) with the same ``{org}`` tag and rethinking the fleet set.
 
-Precondition: this change must not be rolled onto a running deployment whose call workers run pre-v2 code; drain/replace
-the call role first. A pre-v2 worker never claims a slot this code admits, so a live call drops out of every count
-when its pending lease ends.
+Precondition: no mixed-version deploy of ANY role that admits calls (api, campaign dispatcher, ARI connection, call
+workers). A pre-v2 admitter counts only the legacy keys, so it admits past the limit by every call this code admitted;
+a pre-v2 call worker never claims a slot this code admits, so a live call drops out of every count when its pending
+lease ends. Replace every such role at once, with no calls in flight on the old version.
 
-Keys, and every reader / writer of them (all in ``rate_limiter.py``):
+Keys, and every reader / writer of them (all in ``slots.py``):
 
 - ``org_key(org_id)``: ZSET ``concurrent_calls:v2:<org_id>``.
   Writers: ``acquire_slot`` (purge + add pending), ``claim_slot`` / ``renew_slot`` (re-add claimed),
@@ -35,13 +37,13 @@ Keys, and every reader / writer of them (all in ``rate_limiter.py``):
 - ``fleet_key()``: ZSET ``concurrent_calls_fleet:v2``, the fleet-wide mirror of every org slot (autoscaling
   signal). Writers: ``acquire_slot`` (purge + add), ``claim_slot`` / ``renew_slot``, ``release_slot``.
   Reader: ``get_fleet_concurrent_count`` (count of members with score > ``TIME``, no write).
-- ``legacy_org_key`` / ``legacy_scope_key`` / ``rate_limiter.FLEET_CONCURRENT_KEY`` (fleet member
-  ``legacy_fleet_member``): the pre-v2 sets. Read by every count above; written only by ``release_slot`` (remove).
+- ``legacy_org_key`` / ``legacy_scope_key`` / ``legacy_fleet_key`` (fleet member ``legacy_fleet_member``): the
+  pre-v2 sets. Read by every count above; written only by ``release_slot`` (remove).
 - ``mapping_key(workflow_run_id)``: HASH ``workflow_slot_mapping:<run>`` (shared by both versions) with ``org_id``,
   ``slot_id`` (the attempt_id), optional ``scope_key``, the admission limits ``max_concurrent`` /
   ``scope_max_concurrent`` (for a late claim), and one ``sem:<zset key>`` field per provider semaphore member of
   the attempt (none are written yet: the semaphores arrive with the B1 capacity rows; ``release_slot`` already
-  removes them). Writers: ``store_workflow_slot_mapping[_if_absent]`` (bind), ``claim_slot`` / ``renew_slot``
+  removes them). Writers: ``store_workflow_slot_mapping_if_absent`` (bind), ``claim_slot`` / ``renew_slot``
   (refresh TTL, re-create after a Redis restart), ``release_slot`` (delete with its slot). Readers:
   ``get_workflow_slot_mapping``, ``claim_slot``, ``reconcile_workflow_slot_mapping``.
 """
@@ -75,6 +77,10 @@ def legacy_org_key(organization_id: int) -> str:
 
 def legacy_scope_key(scope: str | None) -> str:
     return f"concurrent_calls:{scope}" if scope else ""
+
+
+def legacy_fleet_key() -> str:
+    return "concurrent_calls_fleet"
 
 
 def legacy_fleet_member(organization_id: int, attempt_id: str) -> str:

@@ -108,6 +108,12 @@ class StatusCallbackRequest(BaseModel):
     extra: dict = {}
 
 
+async def _keep_ringing_lease(workflow_run_id: int, workflow_run) -> None:
+    """Not answered yet: an outbound slot's pending lease stays alive while it rings."""
+    # The run's mode is a WorkflowRunMode value, the key space of the ring table (durations.py).
+    await call_concurrency.extend_ringing_slot(workflow_run_id, workflow_run.mode)
+
+
 async def _process_status_update(workflow_run_id: int, status: StatusCallbackRequest):
     """Process status updates from telephony providers.
 
@@ -233,8 +239,7 @@ async def _process_status_update(workflow_run_id: int, status: StatusCallbackReq
                 workflow_run_id, normalized_status.value
             )
     elif normalized_status in RINGING_STATUSES:
-        # Not answered yet: keep the outbound slot's pending lease alive while it rings.
-        await call_concurrency.extend_ringing_slot(workflow_run_id, workflow_run.mode)
+        await _keep_ringing_lease(workflow_run_id, workflow_run)
     elif normalized_status in IN_FLIGHT_STATUSES:
         # No-op while the call is in flight.
         pass

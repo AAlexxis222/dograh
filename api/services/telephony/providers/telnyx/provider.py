@@ -25,7 +25,7 @@ TELNYX_PUBLIC_KEY_BYTES = 32
 TELNYX_SIGNATURE_BYTES = 64
 
 from api.enums import TelephonyCallStatus, WorkflowRunMode
-from api.services.runtime.durations import cell_durations
+from api.services.runtime.durations import ring_timeout_for
 from api.services.telephony import ws_auth
 from api.services.telephony.base import (
     CallInitiationResult,
@@ -134,7 +134,7 @@ class TelnyxProvider(TelephonyProvider):
             "webhook_url": events_url,
             "webhook_url_method": "POST",
             # The carrier's default ring, sent explicitly: the bound the outbound pending lease is sized for.
-            "timeout_secs": cell_durations().ring_timeout_for("telnyx"),
+            "timeout_secs": ring_timeout_for(self.PROVIDER_NAME),
         }
 
         # Redacted: stream_url carries a bearer capability token.

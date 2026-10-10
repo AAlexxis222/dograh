@@ -17,7 +17,7 @@ from pipecat.utils.enums import EndTaskReason
 
 from api.db import db_client
 from api.enums import TelephonyCallStatus, WorkflowRunMode
-from api.services.runtime.durations import cell_durations
+from api.services.runtime.durations import ring_timeout_for
 from api.services.telephony.base import (
     CallInitiationResult,
     NormalizedInboundData,
@@ -120,7 +120,7 @@ class ARIProvider(TelephonyProvider):
             "endpoint": dial_string,
             "app": self.stasis_app_name,
             # The carrier's default ring, sent explicitly: the bound the outbound pending lease is sized for.
-            "timeout": cell_durations().ring_timeout_for("ari"),
+            "timeout": ring_timeout_for(self.PROVIDER_NAME),
             "appArgs": ",".join(
                 filter(
                     None,

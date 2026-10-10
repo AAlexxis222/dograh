@@ -9,12 +9,14 @@ from api.enums import WorkflowRunMode, WorkflowRunState
 from api.errors.telephony_errors import TelephonyError
 from api.routes.telephony import _handle_telephony_websocket, handle_inbound_run, router
 from api.services.auth.depends import get_user
-from api.services.call_concurrency import CallConcurrencyLimitError
-from api.services.call_concurrency.rate_limiter import AdmissionBackendUnavailable
+from api.services.call_concurrency import (
+    AdmissionBackendUnavailableError,
+    CallConcurrencyLimitError,
+)
 from api.services.runtime.durations import cell_durations
 from api.tests.conftest import mock_configuration_cascade
 
-DOWN = AdmissionBackendUnavailable
+DOWN = AdmissionBackendUnavailableError
 # The VOZ-AC-B0-28 record a refusal for a down slot backend must carry (code, what, where, hint).
 DOWN_RECORD = {
     "code": DOWN.reason,
@@ -24,11 +26,10 @@ DOWN_RECORD = {
 }
 
 
-def _refused(reason: str) -> dict:
-    """The fields acquire_org_slot puts on a CallConcurrencyLimitError for this reason."""
-    if reason != DOWN.reason:
-        return {"reason": reason}
-    return {"reason": reason, "what": DOWN.what, "where": DOWN.where, "hint": DOWN.hint}
+def _refusal(reason: str, **fields) -> CallConcurrencyLimitError:
+    """The refusal acquire_org_slot raises for this reason: a down backend is its own subclass."""
+    refusal = DOWN if reason == DOWN.reason else CallConcurrencyLimitError
+    return refusal(**fields)
 
 
 def _make_test_app() -> FastAPI:
@@ -460,12 +461,12 @@ def test_initiate_call_rejects_when_concurrency_limit_reached(reason, status, de
         ),
     ):
         mock_concurrency.acquire_org_slot = AsyncMock(
-            side_effect=CallConcurrencyLimitError(
+            side_effect=_refusal(
+                reason,
                 organization_id=workflow.organization_id,
                 source="telephony_outbound",
                 wait_time=0,
                 max_concurrent=1,
-                **_refused(reason),
             )
         )
         mock_configuration_cascade(mock_db)
@@ -654,12 +655,12 @@ async def test_inbound_run_rejects_when_concurrency_limit_reached(reason, expect
         mock_db.get_workflow = AsyncMock(return_value=workflow)
         mock_db.create_workflow_run = AsyncMock()
         mock_concurrency.acquire_org_slot = AsyncMock(
-            side_effect=CallConcurrencyLimitError(
+            side_effect=_refusal(
+                reason,
                 organization_id=config.organization_id,
                 source="inbound:twilio",
                 wait_time=0,
                 max_concurrent=1,
-                reason=reason,
             )
         )
 

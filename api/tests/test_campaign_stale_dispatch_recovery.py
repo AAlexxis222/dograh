@@ -8,7 +8,7 @@ from sqlalchemy import update
 
 from api.db import db_client
 from api.db.models import QueuedRunModel, WorkflowRunModel
-from api.services.call_concurrency import keys
+from api.services.call_concurrency import SlotBackendError, keys
 from api.services.call_concurrency.rate_limiter import RateLimiter
 from api.services.campaign.campaign_call_dispatcher import CampaignCallDispatcher
 from api.services.campaign.campaign_orchestrator import CampaignOrchestrator
@@ -188,7 +188,11 @@ async def test_monitor_recovers_without_callback_and_retries_redis_cleanup(
         ):
             monitor = CampaignOrchestrator(AsyncMock())
             monitor.publisher.publish_campaign_completed = AsyncMock()
-            with patch.object(limiter, "release_slot", AsyncMock(return_value=None)):
+            with patch.object(
+                limiter.slots,
+                "release_slot",
+                AsyncMock(side_effect=SlotBackendError("redis down")),
+            ):
                 await monitor._check_stale_campaigns()
             monitor.publisher.publish_campaign_completed.assert_awaited_once()
             assert await redis.zscore(keys.scope_key(scope), slot.slot_id) is not None

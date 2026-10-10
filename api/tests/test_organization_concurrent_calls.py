@@ -10,6 +10,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 
 from api.routes import organization_usage
 from api.services.auth import depends as auth_depends
+from api.services.call_concurrency import SlotBackendError
 from api.services.call_concurrency import service as concurrency_service
 
 PATH = "/api/v1/organizations/concurrent-calls"
@@ -40,7 +41,7 @@ def endpoint(monkeypatch):
         ),
     )
     count = AsyncMock(return_value=0)
-    monkeypatch.setattr(concurrency_service.rate_limiter, "get_concurrent_count", count)
+    monkeypatch.setattr(concurrency_service.slot_store, "get_concurrent_count", count)
     app = FastAPI()
     app.include_router(organization_usage.router, prefix="/api/v1")
     with TestClient(app) as client:
@@ -49,9 +50,7 @@ def endpoint(monkeypatch):
 
 def test_api_key_org_wins_over_owner_selection_and_caller_supplied_org(endpoint):
     client, count, _ = endpoint
-    count.side_effect = lambda organization_id, **kwargs: {42: 3, 43: 7}[
-        organization_id
-    ]
+    count.side_effect = lambda organization_id: {42: 3, 43: 7}[organization_id]
 
     first = client.get(
         PATH + "?organization_id=43",
@@ -63,10 +62,7 @@ def test_api_key_org_wins_over_owner_selection_and_caller_supplied_org(endpoint)
     assert first.json() == {"organization_id": 42, "active_calls": 3}
     assert second.json() == {"organization_id": 43, "active_calls": 7}
     assert first.headers["Cache-Control"] == "no-store"
-    assert count.await_args_list == [
-        call(42, raise_on_error=True),
-        call(43, raise_on_error=True),
-    ]
+    assert count.await_args_list == [call(42), call(43)]
 
 
 def test_empty_org_reports_zero(endpoint):
@@ -84,7 +80,15 @@ def test_missing_or_invalid_key_cannot_read_concurrency(endpoint, key):
     count.assert_not_awaited()
 
 
-@pytest.mark.parametrize("error", [RedisConnectionError("redis down"), TimeoutError()])
+@pytest.mark.parametrize(
+    "error",
+    # The slot store raises SlotBackendError; the raw errors stay covered for any other reader.
+    [
+        SlotBackendError("redis down"),
+        RedisConnectionError("redis down"),
+        TimeoutError(),
+    ],
+)
 def test_unavailable_count_returns_503_instead_of_zero(endpoint, error):
     client, count, _ = endpoint
     count.side_effect = error

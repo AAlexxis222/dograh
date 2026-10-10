@@ -1,4 +1,4 @@
-"""Unit tests for RateLimiter.get_fleet_concurrent_count — the fleet-wide
+"""Unit tests for SlotStore.get_fleet_concurrent_count — the fleet-wide
 autoscaling signal.
 
 The count is a single read over the fleet zset (keys.fleet_key()) that the
@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from api.services.call_concurrency import keys
-from api.services.call_concurrency.rate_limiter import RateLimiter
+from api.services.call_concurrency.slots import SlotBackendError, SlotStore
 
 _FAR_FUTURE_S = 10 * 365 * 86400
 
@@ -45,7 +45,7 @@ async def test_counts_unexpired_slots_and_excludes_expired_ones_without_writing(
     members |= {f"expired-{tag}-{i}": now - 5000 for i in range(3)}
     members[f"expires-now-{tag}"] = now
     await redis_client.zadd(keys.fleet_key(), members)
-    rl = RateLimiter(test_clock=future_clock.key)
+    rl = SlotStore(test_clock=future_clock.key)
     try:
         assert await rl.get_fleet_concurrent_count() == 2
         assert await redis_client.zmscore(keys.fleet_key(), list(members)) == [
@@ -58,7 +58,7 @@ async def test_counts_unexpired_slots_and_excludes_expired_ones_without_writing(
 
 @pytest.mark.asyncio
 async def test_empty_fleet_is_zero(future_clock):
-    rl = RateLimiter(test_clock=future_clock.key)
+    rl = SlotStore(test_clock=future_clock.key)
     try:
         assert await rl.get_fleet_concurrent_count() == 0
     finally:
@@ -71,10 +71,10 @@ async def test_redis_error_propagates():
         async def eval(self, *args):
             raise ConnectionError("redis down")
 
-    rl = RateLimiter()
+    rl = SlotStore()
     rl._get_redis = AsyncMock(return_value=_Boom())  # type: ignore[method-assign]
     # A failed read must NOT report 0 (an idle fleet scales to minimum); it
     # propagates so the autoscale-metric endpoint can respond 503 and KEDA's
     # HPA holds the current replica count.
-    with pytest.raises(ConnectionError):
+    with pytest.raises(SlotBackendError):
         await rl.get_fleet_concurrent_count()

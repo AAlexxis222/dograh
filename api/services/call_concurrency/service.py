@@ -4,18 +4,17 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from fastapi.responses import JSONResponse
 from loguru import logger
 
 from api.constants import DEFAULT_ORG_CONCURRENCY_LIMIT
 from api.db import db_client
 from api.enums import OrganizationConfigurationKey, PostHogEvent
 from api.services.call_concurrency import keys
-from api.services.call_concurrency.rate_limiter import (
-    AdmissionBackendUnavailable,
-    SlotLease,
-    rate_limiter,
+from api.services.call_concurrency.errors import (
+    AdmissionBackendUnavailableError,
+    CallConcurrencyLimitError,
 )
+from api.services.call_concurrency.slots import SlotBackendError, SlotLease, slot_store
 from api.services.posthog_client import capture_event
 
 
@@ -27,92 +26,6 @@ class CallConcurrencySlot:
     source: str
     scope_key: str | None = None
     scope_max_concurrent: int | None = None
-
-
-class CallConcurrencyLimitError(Exception):
-    """Raised when admission refuses a call: no free slot (``reason`` "concurrent_call_limit") or, failing
-    closed, no answer from the slot backend (``reason`` "admission_backend_unavailable", VOZ-AC-B3-65-bis)."""
-
-    def __init__(
-        self,
-        *,
-        organization_id: int,
-        source: str,
-        wait_time: float,
-        max_concurrent: int,
-        reason: str = "concurrent_call_limit",
-        what: str | None = None,
-        where: str | None = None,
-        hint: str | None = None,
-    ):
-        self.organization_id = organization_id
-        self.source = source
-        self.wait_time = wait_time
-        self.max_concurrent = max_concurrent
-        # ``reason`` is the stable code; ``what`` / ``where`` / ``hint`` complete the VOZ-AC-B0-28 record.
-        self.reason = reason
-        self.what = what
-        self.where = where
-        self.hint = hint
-        # Callers answer this case differently (carrier code, HTTP 503): the org is not full, Redis is down.
-        self.backend_unavailable = reason == AdmissionBackendUnavailable.reason
-        super().__init__(
-            f"Call admission refused for org {organization_id}: {reason} "
-            f"(source={source}, limit={max_concurrent}, waited={wait_time:.1f}s)"
-            + (f" (hint: {hint})" if hint else "")
-        )
-
-    # One place maps the refusal's true reason to each channel's answer (VOZ-AC-B3-65-bis); the audible wording
-    # of the carrier answer is VOZ-N0-29's.
-    def failure(self) -> dict:
-        """The VOZ-AC-B0-28 record of the refusal: stable code, what happened, where, and what to do."""
-        return {
-            "code": self.reason,
-            "reason": self.what,
-            "where": self.where,
-            "hint": self.hint,
-        }
-
-    def http_response(self) -> JSONResponse:
-        """429 for a full org; 503 with Retry-After (RFC 9110 §10.2.3) when Redis is down. ``detail`` stays a
-        string, because clients render it as text; the B0-28 record rides as top-level fields of the same body."""
-        if self.backend_unavailable:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "detail": f"{self.reason}: {self.what} (where: {self.where}; hint: {self.hint})",
-                    **self.failure(),
-                },
-                headers={
-                    "Retry-After": str(rate_limiter.durations.admission_retry_after_s)
-                },
-            )
-        return JSONResponse(
-            status_code=429, content={"detail": "Concurrent call limit reached"}
-        )
-
-    def ws_close(self) -> dict:
-        """WebSocket close kwargs: 1008 for a full org, 1013 (try again later) when Redis is down. A close reason
-        holds at most 123 bytes (RFC 6455 §5.5), so it carries code, where and hint, not the whole record."""
-        if self.backend_unavailable:
-            return {
-                "code": 1013,
-                "reason": f"{self.reason} at {self.where}: {self.hint}",
-            }
-        return {"code": 1008, "reason": "Concurrent call limit reached"}
-
-    def client_error(self) -> dict:
-        """Error payload sent to a browser client over the signaling socket."""
-        if self.backend_unavailable:
-            return {
-                "error_type": self.reason,
-                "message": "Service temporarily unavailable",
-                **self.failure(),
-            }
-        return {
-            "error_type": "concurrency_limit_exceeded",
-            "message": "Concurrent call limit reached",
-        }
 
 
 class WorkflowRunSlotAlreadyBoundError(Exception):
@@ -150,19 +63,17 @@ class CallConcurrencyService:
         """Total active calls across every org — the fleet-wide autoscaling
         signal scraped by /health/autoscale-metric. Thin passthrough so routes
         stay behind this facade; the Redis projection lives with the key schema
-        in rate_limiter. Redis errors propagate (they must not read as an idle
+        in slots. ``SlotBackendError`` propagates (it must not read as an idle
         fleet — see get_fleet_concurrent_count)."""
-        return await rate_limiter.get_fleet_concurrent_count()
+        return await slot_store.get_fleet_concurrent_count()
 
     async def get_org_active_calls(self, organization_id: int) -> int:
-        """Occupied org slots across workers, with storage failures propagated.
+        """Occupied org slots across workers; ``SlotBackendError`` propagates.
 
         Includes reservations made before a voice pipeline starts. Uses the
         same stale-slot expiry as concurrency enforcement.
         """
-        return await rate_limiter.get_concurrent_count(
-            organization_id, raise_on_error=True
-        )
+        return await slot_store.get_concurrent_count(organization_id)
 
     async def acquire_org_slot(
         self,
@@ -192,7 +103,7 @@ class CallConcurrencyService:
         wait_start = time.time()
         while True:
             try:
-                acquisition = await rate_limiter.acquire_slot(
+                acquisition = await slot_store.acquire_slot(
                     org_id=organization_id,
                     attempt_id=attempt_id,
                     max_concurrent=max_concurrent,
@@ -200,20 +111,17 @@ class CallConcurrencyService:
                     scope_max_concurrent=scope_max_concurrent,
                     outbound_carrier=outbound_carrier,
                 )
-            except AdmissionBackendUnavailable as e:
+            except SlotBackendError as e:
+                # Admission fails closed, under its own reason (VOZ-AC-B3-65-bis).
                 logger.error(
                     f"Call admission failing closed for org {organization_id}: "
                     f"source={source}, {e}"
                 )
-                raise CallConcurrencyLimitError(
+                raise AdmissionBackendUnavailableError(
                     organization_id=organization_id,
                     source=source,
                     wait_time=time.time() - wait_start,
                     max_concurrent=max_concurrent,
-                    reason=e.reason,
-                    what=e.what,
-                    where=e.where,
-                    hint=e.hint,
                 ) from e
             if acquisition:
                 logger.info(
@@ -233,7 +141,7 @@ class CallConcurrencyService:
 
             wait_time = time.time() - wait_start
             if wait_time >= timeout:
-                current_count = await rate_limiter.get_concurrent_count(organization_id)
+                current_count = await self._count_for_refusal_log(organization_id)
                 scope_note = (
                     f", scope={scope_key} (limit={scope_max_concurrent})"
                     if scope_key
@@ -268,6 +176,15 @@ class CallConcurrencyService:
                 f"source={source}, waited {wait_time:.1f}s"
             )
             await asyncio.sleep(min(retry_interval, max(0, timeout - wait_time)))
+
+    async def _count_for_refusal_log(self, organization_id: int) -> int:
+        """The count logged with a "limit reached" refusal. The refusal stands
+        even if Redis cannot count: the failure is logged and the count reads 0."""
+        try:
+            return await slot_store.get_concurrent_count(organization_id)
+        except SlotBackendError as e:
+            logger.error(f"Error getting concurrent count: {e}")
+            return 0
 
     async def _notify_limit_reached(
         self, organization_id: int, properties: dict
@@ -304,14 +221,21 @@ class CallConcurrencyService:
     async def bind_workflow_run(
         self, slot: CallConcurrencySlot, workflow_run_id: int
     ) -> None:
-        stored = await rate_limiter.store_workflow_slot_mapping_if_absent(
-            workflow_run_id,
-            slot.organization_id,
-            slot.slot_id,
-            scope_key=slot.scope_key,
-            max_concurrent=slot.max_concurrent,
-            scope_max_concurrent=slot.scope_max_concurrent,
-        )
+        try:
+            stored = await slot_store.store_workflow_slot_mapping_if_absent(
+                workflow_run_id,
+                slot.organization_id,
+                slot.slot_id,
+                scope_key=slot.scope_key,
+                max_concurrent=slot.max_concurrent,
+                scope_max_concurrent=slot.scope_max_concurrent,
+            )
+        except SlotBackendError as e:
+            # The run cannot be bound, so it must not keep the slot: answered as before (released, already bound).
+            logger.error(
+                f"Could not bind workflow run {workflow_run_id} to its slot: {e}"
+            )
+            stored = False
         if stored:
             return
 
@@ -362,62 +286,87 @@ class CallConcurrencyService:
     async def release_slot(self, slot: CallConcurrencySlot | None) -> bool:
         if slot is None:
             return False
-        released = await rate_limiter.release_slot(
+        return await self._release(
             org_id=slot.organization_id,
             attempt_id=slot.slot_id,
             scope_key=slot.scope_key,
         )
-        return bool(released)
 
     async def release_workflow_run_slot(self, workflow_run_id: int) -> bool:
         """Release the org/campaign slot held by a workflow run, and its
         mapping, in one call to the release funnel. Every exit point of a run
         (worker end, carrier terminal callback, pre-pipeline failures, ARI
-        teardown) lands here."""
-        mapping = await rate_limiter.get_workflow_slot_mapping(workflow_run_id)
+        teardown) lands here. Never raises on a backend error: the mapping is
+        kept for a later cleanup path."""
+        try:
+            mapping = await slot_store.get_workflow_slot_mapping(workflow_run_id)
+        except SlotBackendError as e:
+            logger.warning(
+                f"Could not read the concurrent slot mapping of workflow run "
+                f"{workflow_run_id}; keeping it for retry: {e}"
+            )
+            return False
         if not mapping:
             return False
 
         org_id, slot_id, scope_key = mapping
-        released = await rate_limiter.release_slot(
+        return await self._release(
             org_id=org_id,
             attempt_id=slot_id,
             scope_key=scope_key,
             workflow_run_id=workflow_run_id,
         )
-        if released is None:
-            # Redis error while releasing: the script did nothing, so the
-            # mapping is still there for a later cleanup path to retry
-            # instead of orphaning a live slot until it expires.
+
+    async def _release(
+        self,
+        *,
+        org_id: int,
+        attempt_id: str,
+        scope_key: str | None,
+        workflow_run_id: int | None = None,
+    ) -> bool:
+        """The service's one way into the release funnel, with the teardown
+        policy: a backend error is logged and reads False. The script changed
+        nothing then, so the mapping is still there for a later cleanup path
+        to retry instead of orphaning a live slot until it expires."""
+        try:
+            released = await slot_store.release_slot(
+                org_id=org_id,
+                attempt_id=attempt_id,
+                scope_key=scope_key,
+                workflow_run_id=workflow_run_id,
+            )
+        except SlotBackendError as e:
             logger.warning(
-                f"Failed to release concurrent slot for workflow run "
-                f"{workflow_run_id}; keeping mapping for retry"
+                f"Failed to release concurrent slot {attempt_id} of org {org_id} "
+                f"(workflow run {workflow_run_id}); keeping mapping for retry: {e}"
             )
             return False
-        if released:
-            logger.info(f"Released concurrent slot for workflow run {workflow_run_id}")
-        else:
+        if workflow_run_id is not None:
             logger.info(
-                f"Concurrent slot mapping for workflow run {workflow_run_id} "
+                f"Released concurrent slot for workflow run {workflow_run_id}"
+                if released
+                else f"Concurrent slot mapping for workflow run {workflow_run_id} "
                 "had no live slot; deleted stale mapping"
             )
         return released
 
     async def extend_ringing_slot(self, workflow_run_id: int, carrier: str) -> None:
-        """``carrier``'s initiated/ringing callback: the outbound call is still on its way to an answer, so its
-        pending lease restarts (a CPS queue can outlast the lease sized at dial). Never raises: the late claim
-        on answer still re-checks the limit if this is missed."""
+        """``carrier`` (the run's ``WorkflowRunMode`` value)'s initiated/ringing callback: the outbound call is
+        still on its way to an answer, so its pending lease restarts (a CPS queue can outlast the lease sized at
+        dial). Never raises on a backend error: the late claim on answer still re-checks the limit if this is
+        missed."""
         try:
-            mapping = await rate_limiter.get_workflow_slot_mapping(workflow_run_id)
+            mapping = await slot_store.get_workflow_slot_mapping(workflow_run_id)
             if mapping:
                 org_id, slot_id, scope_key = mapping
-                await rate_limiter.extend_pending_slot(
+                await slot_store.extend_pending_slot(
                     org_id=org_id,
                     attempt_id=slot_id,
                     carrier=carrier,
                     scope_key=scope_key,
                 )
-        except Exception as e:
+        except SlotBackendError as e:
             logger.warning(
                 f"Pending slot extension failed for workflow run {workflow_run_id}: {e}"
             )
@@ -432,19 +381,24 @@ class CallConcurrencyService:
         this call renews it every ``renew_interval_s`` (default
         ``heartbeat_renew_s``), independent of any worker heartbeat
         (VOZ-AC-B3-66); leaving cancels the renewal and releases through the
-        funnel, by the claimed lease when there is one. Never raises on Redis
-        errors: a failed claim is retried on a short bounded backoff.
+        funnel, by the claimed lease when there is one. Never raises on a
+        backend error: a failed claim is retried on a short bounded backoff.
         """
         hold = _SlotHold()
         renewal = None
         try:
-            claimed = await self._claim(workflow_run_id, hold)
-            if hold.lease is not None or not claimed:
+            try:
+                hold.lease = await self._try_claim(workflow_run_id)
+                # No lease: the run holds no slot (released meanwhile), nothing to renew.
+                keep = hold.lease is not None
+            except SlotBackendError:
+                keep = True  # the renewal task retries the claim first
+            if keep:
                 renewal = asyncio.create_task(
                     self._keep_run_slot(
                         workflow_run_id,
                         hold,
-                        renew_interval_s or rate_limiter.durations.heartbeat_renew_s,
+                        renew_interval_s or slot_store.durations.heartbeat_renew_s,
                     )
                 )
             yield
@@ -456,37 +410,41 @@ class CallConcurrencyService:
             finally:
                 await self._release_held(workflow_run_id, hold.lease)
 
-    async def _claim(self, workflow_run_id: int, hold: "_SlotHold") -> bool:
-        """True when Redis answered (``hold.lease`` is None if the run holds no slot), False on an error."""
+    async def _try_claim(self, workflow_run_id: int) -> SlotLease | None:
+        """Phase 2 of the lease: the claimed lease, or None when the run holds
+        no slot. A backend error is logged and raised (the caller retries)."""
         try:
-            hold.lease = await rate_limiter.claim_slot(workflow_run_id)
-            return True
-        except Exception as e:
+            return await slot_store.claim_slot(workflow_run_id)
+        except SlotBackendError as e:
             logger.warning(f"Slot claim failed for workflow run {workflow_run_id}: {e}")
-            return False
+            raise
 
     async def _keep_run_slot(
         self, workflow_run_id: int, hold: "_SlotHold", interval: float
     ) -> None:
-        durations = rate_limiter.durations
+        durations = slot_store.durations
         retry = durations.claim_retry_base_s
         while hold.lease is None:
             # The claim failed: retry well inside the pending lease, not one renewal interval later.
             await asyncio.sleep(min(retry, interval))
             retry = min(retry * 2, durations.claim_retry_cap_s)
-            if await self._claim(workflow_run_id, hold) and hold.lease is None:
+            try:
+                hold.lease = await self._try_claim(workflow_run_id)
+            except SlotBackendError:
+                continue
+            if hold.lease is None:
                 return  # released meanwhile: nothing left to hold
         lease = hold.lease
         while True:
             await asyncio.sleep(interval)
             try:
-                await rate_limiter.renew_slot(
+                await slot_store.renew_slot(
                     org_id=lease.org_id,
                     attempt_id=lease.attempt_id,
                     scope_key=lease.scope_key,
                     workflow_run_id=workflow_run_id,
                 )
-            except Exception as e:
+            except SlotBackendError as e:
                 logger.warning(
                     f"Slot renewal failed for workflow run {workflow_run_id}: {e}"
                 )
@@ -498,7 +456,7 @@ class CallConcurrencyService:
             await self.unregister_active_call(workflow_run_id)
             return
         # By the lease, so the release does not depend on the mapping still being there.
-        await rate_limiter.release_slot(
+        await self._release(
             org_id=lease.org_id,
             attempt_id=lease.attempt_id,
             scope_key=lease.scope_key,
@@ -508,7 +466,8 @@ class CallConcurrencyService:
 
 @dataclass
 class _SlotHold:
-    """The lease one call holds, shared by its claim, its renewal task and its release."""
+    """The lease one call holds, shared by its claim, its renewal task and its release: a claim the task retried
+    after a backend error must still reach the release."""
 
     lease: SlotLease | None = None
 
