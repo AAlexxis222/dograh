@@ -33,6 +33,7 @@ from api.routes.workflow_embed import router as workflow_embed_router
 from api.routes.workflow_recording import router as workflow_recording_router
 from api.routes.workflow_text_chat import router as workflow_text_chat_router
 from api.services.integrations import all_routers
+from api.services.runtime import cell_state
 
 router = APIRouter(
     tags=["main"],
@@ -142,6 +143,12 @@ class ActiveCallsResponse(BaseModel):
     # for autoscaling load tests; see api/services/observability/loop_lag.py.
     loop_lag_p95_ms: float = 0.0
     loop_lag_max_ms: float = 0.0
+    # Drain fields the deploy runbook reads (VOZ-AC-B3-61).
+    lag_p99_ms: float = 0.0
+    # True once the call entrypoint received SIGTERM (it writes DRAIN_FLAG_FILE).
+    draining: bool = False
+    # Calls per pod the autoscaler targets (env CALL_K_P).
+    k_p: int = cell_state.DEFAULT_CALL_K_P
 
 
 class AutoscaleMetricResponse(BaseModel):
@@ -197,6 +204,9 @@ async def active_calls(
         active_calls=active_call_count(),
         loop_lag_p95_ms=lag["p95_ms"],
         loop_lag_max_ms=lag["max_ms"],
+        lag_p99_ms=lag["p99_ms"],
+        draining=cell_state.is_draining(),
+        k_p=cell_state.call_k_p(),
     )
 
 

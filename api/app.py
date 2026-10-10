@@ -45,6 +45,7 @@ from api.services.pipecat.tracing_config import (
     load_all_org_langfuse_credentials,
 )
 from api.services.pipecat.tts_cache.runtime import close_speech_cache
+from api.services.runtime.cell_startup import assert_cell_startup_config
 from api.services.telephony.providers.twilio.region import RegionError
 from api.services.worker_sync.manager import (
     WorkerSyncManager,
@@ -60,6 +61,7 @@ mcp_app = mcp.http_app(path="/", stateless_http=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    assert_cell_startup_config()
     async with mcp_app.lifespan(app):
         # warmup arq pool
         await get_arq_redis()

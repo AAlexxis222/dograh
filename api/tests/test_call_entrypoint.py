@@ -309,3 +309,35 @@ def test_drain_never_reading_the_counter_fails_closed():
 @posix_only
 def test_drain_default_proceeds_when_the_counter_is_unreadable():
     assert _drain(1, fail_closed=False).returncode == 0
+
+
+@posix_only
+def test_drain_flag_is_cleared_at_start_and_set_on_term(tmp_path, alembic_env):
+    # active-calls reports draining = this file exists: stale at start would report draining forever.
+    flag = tmp_path / "draining"
+    flag.touch()
+    seen = tmp_path / "seen.log"
+    env = {
+        **alembic_env(),
+        "DRAIN_FLAG_FILE": str(flag),
+        "DRAIN_CMD": f"test -e {flag} && echo flag_set_before_drain > {seen}",
+        "CALL_CMD": "sleep 60",
+    }
+    p = subprocess.Popen(["bash", str(SCRIPT)], env=env)
+    time.sleep(0.5)
+    assert not flag.exists()
+    p.send_signal(signal.SIGTERM)
+    p.wait(timeout=10)
+    assert seen.read_text().strip() == "flag_set_before_drain"
+    assert flag.exists()
+
+
+@posix_only
+def test_require_db_head_runs_the_cell_startup_check_before_alembic(alembic_env):
+    # arq and coordinators never run the api lifespan: this gate is where they refuse DEBUG logs (VOZ-AC-B6-52).
+    env = {**alembic_env(), "CELL_ROLE": "arq", "DOGRAH_DEVOPS_SECRET": "s", "LOG_LEVEL": "DEBUG"}
+    r = subprocess.run(["bash", str(REQUIRE_HEAD), "arq"], env=env, capture_output=True, text=True)
+    assert r.returncode == 1
+    for key in ("code=log_level_debug_in_cell", "where=arq", "reason=", "hint="):
+        assert key in r.stderr, r.stderr
+    assert not alembic_env.log.exists()
