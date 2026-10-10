@@ -4,7 +4,26 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from api.routes.webrtc_signaling import SignalingManager
-from api.services.call_concurrency import CallConcurrencyLimitError
+from api.services.call_concurrency import (
+    AdmissionBackendUnavailableError,
+    CallConcurrencyLimitError,
+    WorkflowRunSlotAlreadyBoundError,
+)
+
+DOWN = AdmissionBackendUnavailableError
+# The VOZ-AC-B0-28 record a refusal for a down slot backend must carry (code, what, where, hint).
+DOWN_RECORD = {
+    "code": DOWN.reason,
+    "reason": DOWN.what,
+    "where": DOWN.where,
+    "hint": DOWN.hint,
+}
+
+
+def _refusal(reason: str, **fields) -> CallConcurrencyLimitError:
+    """The refusal acquire_org_slot raises for this reason: a down backend is its own subclass."""
+    refusal = DOWN if reason == DOWN.reason else CallConcurrencyLimitError
+    return refusal(**fields)
 
 
 class _FakeWebSocket:
@@ -28,8 +47,30 @@ def _offer_payload(pc_id: str = "pc-1") -> dict:
     }
 
 
+@pytest.mark.parametrize(
+    ("reason", "payload"),
+    [
+        (
+            "concurrent_call_limit",
+            {
+                "error_type": "concurrency_limit_exceeded",
+                "message": "Concurrent call limit reached",
+            },
+        ),
+        (
+            DOWN.reason,
+            {
+                "error_type": DOWN.reason,
+                "message": "Service temporarily unavailable",
+                **DOWN_RECORD,
+            },
+        ),
+    ],
+)
 @pytest.mark.asyncio
-async def test_public_embed_offer_rejects_when_org_concurrency_limit_reached():
+async def test_public_embed_offer_rejects_when_org_concurrency_limit_reached(
+    reason, payload
+):
     manager = SignalingManager()
     ws = _FakeWebSocket()
     user = SimpleNamespace(id=7)
@@ -51,7 +92,8 @@ async def test_public_embed_offer_rejects_when_org_concurrency_limit_reached():
             return_value=SimpleNamespace(id=501, is_completed=False)
         )
         mock_concurrency.acquire_org_slot = AsyncMock(
-            side_effect=CallConcurrencyLimitError(
+            side_effect=_refusal(
+                reason,
                 organization_id=11,
                 source="public_embed",
                 wait_time=0,
@@ -72,16 +114,69 @@ async def test_public_embed_offer_rejects_when_org_concurrency_limit_reached():
             call_concurrency_source="public_embed",
         )
 
-    ws.send_json.assert_awaited_once_with(
-        {
-            "type": "error",
-            "payload": {
-                "error_type": "concurrency_limit_exceeded",
-                "message": "Concurrent call limit reached",
-            },
-        }
-    )
+    ws.send_json.assert_awaited_once_with({"type": "error", "payload": payload})
     mock_concurrency.bind_workflow_run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("bind_error", "payload"),
+    [
+        (
+            DOWN(
+                organization_id=11, source="public_embed", wait_time=0, max_concurrent=2
+            ),
+            {
+                "error_type": DOWN.reason,
+                "message": "Service temporarily unavailable",
+                **DOWN_RECORD,
+            },
+        ),
+        (
+            WorkflowRunSlotAlreadyBoundError(501),
+            {
+                "error_type": "workflow_run_already_active",
+                "message": "Workflow run already has an active call",
+            },
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_public_embed_offer_answers_a_bind_failure_with_its_true_reason(
+    bind_error, payload
+):
+    manager = SignalingManager()
+    ws = _FakeWebSocket()
+
+    with (
+        patch("api.routes.webrtc_signaling.db_client") as mock_db,
+        patch(
+            "api.routes.webrtc_signaling.authorize_workflow_run_start",
+            new=AsyncMock(
+                return_value=SimpleNamespace(has_quota=True, error_message="")
+            ),
+        ),
+        patch("api.routes.webrtc_signaling.call_concurrency") as mock_concurrency,
+    ):
+        mock_db.get_workflow_organization_id = AsyncMock(return_value=11)
+        mock_db.get_workflow_run = AsyncMock(
+            return_value=SimpleNamespace(id=501, is_completed=False)
+        )
+        mock_concurrency.acquire_org_slot = AsyncMock(return_value=object())
+        mock_concurrency.bind_workflow_run = AsyncMock(side_effect=bind_error)
+
+        await manager._handle_offer(
+            ws,
+            _offer_payload(),
+            workflow_id=33,
+            workflow_run_id=501,
+            user=SimpleNamespace(id=7),
+            organization_id=11,
+            connection_key="conn-1",
+            enforce_call_concurrency=True,
+            call_concurrency_source="public_embed",
+        )
+
+    ws.send_json.assert_awaited_once_with({"type": "error", "payload": payload})
 
 
 @pytest.mark.asyncio
