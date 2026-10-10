@@ -212,6 +212,22 @@ def test_module_refuses_a_cell_without_the_master_key():
     assert "code=credentials_master_key_invalid where=arq " in r.stderr, r.stderr
 
 
+def test_module_refuses_a_master_key_with_a_non_ascii_char_without_a_traceback():
+    # A zero-width space pasted with the key: the B0-28 line, never a raw traceback, never the key text.
+    key = MASTER_KEY.partition("=")[2]
+    r = _run_module(
+        "arq",
+        CELL_ROLE="arq",
+        DOGRAH_DEVOPS_SECRET=SECRET,
+        LOG_LEVEL="INFO",
+        CREDENTIALS_MASTER_KEY=f"{MASTER_KEY}\u200b",
+    )
+    assert r.returncode == 1
+    assert "code=credentials_master_key_invalid where=arq " in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+    assert key not in r.stderr
+
+
 def test_drain_flag_default_is_the_same_in_python_and_the_entrypoint():
     # A drift would make the endpoint report draining=false forever, with no error.
     script = (

@@ -64,6 +64,21 @@ NODE_SECRET_FIELDS: tuple[str, ...] = (
     "tuner_api_key",
 )
 
+# Secret leaves of a workflow graph (lists are transparent in the walk, so ``nodes`` and ``custom_headers`` need no
+# ``*``): each node secret field, and every value of the webhook node's custom headers (``[{key, value}]``, sent and
+# copied to webhook_deliveries verbatim by api/tasks/run_integrations.py).
+WORKFLOW_GRAPH_SECRET_PATHS: tuple[tuple[str, ...], ...] = tuple(
+    [("nodes", "data", field) for field in NODE_SECRET_FIELDS]
+    + [("nodes", "data", "custom_headers", "value")]
+)
+
+# Columns holding a workflow graph: a definition, the copy on the workflow row, and a template.
+WORKFLOW_GRAPH_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("workflow_definitions", "workflow_json"),
+    ("workflows", "workflow_definition"),
+    ("workflow_templates", "template_json"),
+)
+
 
 @dataclass(frozen=True)
 class SecretSurface:
@@ -103,11 +118,11 @@ SURFACES: tuple[SecretSurface, ...] = (
         for path in WORKFLOW_CONFIGURATION_SECRET_PATHS
     ),
     *(
-        SecretSurface(table, column, ("nodes", "data", field))
-        for table, column in (
-            ("workflow_definitions", "workflow_json"),
-            ("workflows", "workflow_definition"),
-        )
-        for field in NODE_SECRET_FIELDS
+        SecretSurface(table, column, path)
+        for table, column in WORKFLOW_GRAPH_COLUMNS
+        for path in WORKFLOW_GRAPH_SECRET_PATHS
     ),
+    # Static headers of an HTTP API tool and of a transfer tool's resolver (dict[str, str], api/schemas/tool.py).
+    SecretSurface("tools", "definition", ("config", "headers", "*")),
+    SecretSurface("tools", "definition", ("config", "resolver", "headers", "*")),
 )

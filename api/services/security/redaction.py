@@ -7,6 +7,7 @@ that is the privacy-first choice, since the raw exception values would
 otherwise reach Sentry unredacted.
 """
 
+import base64
 import os
 import re
 import traceback
@@ -32,10 +33,13 @@ _PATTERNS = [
     ),
     (("sk-", "sk_"), re.compile(r"\bsk[-_][A-Za-z0-9_\-]{8,}"), "<redacted:key>"),
     # A credential_box token (v1:<key_id>:<nonce_b64>:<ct_b64>): ciphertext, but
-    # it never belongs in a log line.
+    # it never belongs in a log line. No left anchor, so a token glued to any
+    # character ("xv1:", "_v1:", "/v1:") is matched. A match cannot start inside
+    # another token: the scan is leftmost-first, and a "v1:" inside one (a key id
+    # or nonce ending in "v1") has too few ":" left after it to match.
     (
         ("v1:",),
-        re.compile(r"\bv1:[A-Za-z0-9_.\-]+:[A-Za-z0-9+/]+=*:[A-Za-z0-9+/]*=*"),
+        re.compile(r"v1:[A-Za-z0-9_.\-]+:[A-Za-z0-9+/]+=*:[A-Za-z0-9+/]*=*"),
         "<redacted:credential_token>",
     ),
     # sip:/tel: URIs: every digit of the user part is a phone (or extension).
@@ -101,7 +105,7 @@ def active_secret_values() -> set[str]:
     """Secret values this process holds in memory right now, for log redaction.
 
     Today: the values of secret-named environment variables and each credential
-    master key (VOZ-AC-B6-16). The log patcher
+    master key with its derived forms (VOZ-AC-B6-16). The log patcher
     binds this set once, at ``setup_logging``, so a secret loaded later (the
     decrypted database credentials of VOZ-N0-23) is not redacted until the
     credential box rebuilds that binding with a refreshed set.
@@ -115,8 +119,24 @@ def active_secret_values() -> set[str]:
     # variable is covered above, a single key of a rotation list is not.
     for item in credential_box.master_key_items(os.environ.get(credential_box.ENV, "")):
         key = item.partition("=")[2].strip()
-        values.update(v for v in (item, key) if len(v) >= _MIN_SECRET_LENGTH)
+        values.update(
+            v
+            for v in (item, key, *_derived_key_forms(key))
+            if len(v) >= _MIN_SECRET_LENGTH
+        )
     return values
+
+
+def _derived_key_forms(key: str) -> tuple[str, ...]:
+    """Re-encodings of a master key a log line could carry: unpadded base64,
+    URL-safe base64 (padded or not) and hex (either case). Nothing for a key
+    that is not valid base64: the cell start check refuses it anyway."""
+    try:
+        raw = base64.b64decode(key, validate=True)
+    except ValueError:
+        return ()
+    urlsafe = base64.urlsafe_b64encode(raw).decode()
+    return (key.rstrip("="), urlsafe, urlsafe.rstrip("="), raw.hex(), raw.hex().upper())
 
 
 def known_secret_values() -> tuple[str, ...]:

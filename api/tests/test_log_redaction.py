@@ -201,6 +201,65 @@ def test_each_credential_master_key_is_redacted_alone(monkeypatch):
     assert "k1=" not in out
 
 
+@pytest.mark.parametrize(
+    ("key_id", "glue"),
+    [
+        ("k1", "x"),
+        ("k1", "_"),
+        ("k1", "1"),
+        ("k1", "key"),
+        ("k1", "/"),
+        ("k1", "+"),
+        # A key id ending in "v1": one whole match, never a second one starting inside the token.
+        ("kv1", ""),
+        ("kv1", "x"),
+    ],
+)
+def test_credential_box_tokens_are_redacted_whatever_precedes_them(
+    monkeypatch, key_id, glue
+):
+    import base64
+    import os
+
+    from api.services.security import credential_box
+
+    monkeypatch.setenv(
+        "CREDENTIALS_MASTER_KEY",
+        f"{key_id}=" + base64.b64encode(os.urandom(32)).decode(),
+    )
+    credential_box.load_keys.cache_clear()
+    try:
+        token = credential_box.encrypt(b"canary-plaintext", aad=b"t:1:c:$")
+    finally:
+        credential_box.load_keys.cache_clear()
+    out = redact(f"stored {glue}{token} end", secrets=())
+    assert out == f"stored {glue}<redacted:credential_token> end"
+
+
+def test_derived_forms_of_a_credential_master_key_are_redacted(monkeypatch):
+    import base64
+    import os
+
+    raw = os.urandom(32)
+    # The URL-safe form differs from the standard one only where "+" or "/" appear.
+    while not {"+", "/"} <= set(base64.b64encode(raw).decode()):
+        raw = os.urandom(32)
+    standard = base64.b64encode(raw).decode()
+    monkeypatch.setenv("CREDENTIALS_MASTER_KEY", f"k1={standard}")
+    secrets = known_secret_values()
+    forms = {
+        "unpadded": standard.rstrip("="),
+        "urlsafe": base64.urlsafe_b64encode(raw).decode(),
+        "urlsafe-unpadded": base64.urlsafe_b64encode(raw).decode().rstrip("="),
+        "hex": raw.hex(),
+        "hex-upper": raw.hex().upper(),
+    }
+    for name, form in forms.items():
+        out = redact(f"leaked {form} end", secrets)
+        assert form not in out, name
+        assert out == "leaked <redacted:secret> end", (name, out)
+
+
 @pytest.fixture
 def real_logging(monkeypatch):
     """Run the real setup_logging (it returns early under ENVIRONMENT=test) and

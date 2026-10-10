@@ -1,8 +1,9 @@
 """App-level AEAD envelope for credentials at rest (VOZ-AC-B6-15/16).
 
 Token: ``v1:<key_id>:<nonce_b64>:<ct_b64>`` (AES-256-GCM, 96-bit random nonce, the tag at the end of ``ct``).
-AAD = ``f"{table}:{pk}:{column}:{json_path}"`` so a token copied to another row does not decrypt; the surfaces a
-token may live in are listed in ``secret_surfaces.SURFACES``.
+AAD = ``aad_for(table, pk, column, path)`` (``f"{table}:{pk}:{column}:{json_path}"``, the concrete path as compact
+JSON) so a token copied to another row or leaf does not decrypt; the surfaces a token may live in are listed in
+``secret_surfaces.SURFACES``.
 
 ``CREDENTIALS_MASTER_KEY`` is ``key_id=base64(32 bytes)``, comma-separated, the active key first; older keys only
 decrypt. A cell validates it at start (``cell_startup``); anywhere else a missing key fails on first use.
@@ -11,10 +12,11 @@ Light on purpose (stdlib + cryptography): the cell start gate imports it in ever
 """
 
 import base64
-import binascii
 import functools
+import json
 import os
 import re
+from collections.abc import Sequence
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -79,7 +81,7 @@ def _parse_key(where: str, item: str, seen: set[str]) -> tuple[str, bytes]:
         )
     try:
         key = base64.b64decode(b64, validate=True)
-    except binascii.Error:
+    except ValueError:  # binascii.Error, or a plain ValueError on a non-ASCII character
         raise MasterKeyInvalid(
             where,
             "key is not valid base64",
@@ -108,11 +110,23 @@ def load_keys() -> tuple[tuple[str, bytes], ...]:
     return tuple(keys)
 
 
+def aad_for(table: str, pk, column: str, path: Sequence[str | int]) -> bytes:
+    """The AAD of the leaf at ``path`` (concrete: list indexes as ints, no ``*``/``**``) of ``table.column`` in row
+    ``pk``. The path is compact JSON, so a ``.`` or ``:`` inside a key cannot make two leaves share an AAD."""
+    if any(part in ("*", "**") for part in path):
+        raise ValueError(
+            "code=credential_aad_wildcard where=credential_box.aad_for reason=path holds a registry wildcard "
+            "hint=pass the concrete path of one leaf"
+        )
+    rendered = json.dumps(list(path), separators=(",", ":"))
+    return f"{table}:{pk}:{column}:{rendered}".encode()
+
+
 def encrypt(plaintext: bytes, aad: bytes) -> str:
     if not aad:
         raise ValueError(
             "code=credential_aad_missing where=credential_box.encrypt reason=empty aad binds the token "
-            "to no row hint=pass aad=f'{table}:{pk}:{column}:{json_path}'"
+            "to no row hint=build it with aad_for(table, pk, column, path)"
         )
     key_id, key = load_keys()[0]
     nonce = os.urandom(_NONCE_BYTES)
@@ -139,7 +153,7 @@ def decrypt(token: str, aad: bytes) -> bytes:
             base64.b64decode(nonce_b64, validate=True),
             base64.b64decode(ct_b64, validate=True),
         )
-    except binascii.Error:
+    except ValueError:  # binascii.Error, or a plain ValueError on a non-ASCII character
         raise CredentialUnreadable(where, "token part is not valid base64") from None
     if len(nonce) != _NONCE_BYTES:
         raise CredentialUnreadable(

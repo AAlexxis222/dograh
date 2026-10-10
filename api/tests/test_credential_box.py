@@ -71,6 +71,8 @@ def test_missing_or_short_master_key_fails_fast(monkeypatch):
         (f"k1={KEY},k1={OTHER_KEY}", "key id appears twice"),
         # A lenient decoder would drop the "!" and accept the key; the boundary must not.
         (f"k1={KEY[:20]}!{KEY[20:]}", "key is not valid base64"),
+        # A zero-width space pasted with the key: str.strip keeps it, and b64decode raises a plain ValueError.
+        (f"k1={KEY}\u200b", "key is not valid base64"),
         ("k1=" + base64.b64encode(b"x" * 31).decode(), "key is 31 bytes, need 32"),
         ("k1=" + base64.b64encode(b"x" * 33).decode(), "key is 33 bytes, need 32"),
     ],
@@ -82,6 +84,7 @@ def test_missing_or_short_master_key_fails_fast(monkeypatch):
         "colon-in-id",
         "duplicate-id",
         "bad-base64",
+        "non-ascii",
         "31-bytes",
         "33-bytes",
     ],
@@ -144,6 +147,11 @@ def _with_part(token, index, value):
         (lambda t: _with_part(t, 2, "@@@@"), "not valid base64"),
         (lambda t: _with_part(t, 3, "@@@@"), "not valid base64"),
         (
+            lambda t: _with_part(t, 2, "\u00e9" + t.split(":")[2][1:]),
+            "not valid base64",
+        ),
+        (lambda t: _with_part(t, 3, t.split(":")[3] + "\u00e9"), "not valid base64"),
+        (
             lambda t: _with_part(t, 2, base64.b64encode(os.urandom(16)).decode()),
             "nonce is 16 bytes, need 12",
         ),
@@ -158,6 +166,8 @@ def _with_part(token, index, value):
         "unknown-key-id",
         "bad-nonce-b64",
         "bad-ct-b64",
+        "non-ascii-nonce",
+        "non-ascii-ct",
         "long-nonce",
         "tampered",
         "empty-ct",
@@ -171,6 +181,34 @@ def test_every_unreadable_token_raises_credential_unreadable(make_token, reason)
     assert reason in e.value.reason
     assert e.value.where == AAD.decode()
     assert "sk-plaintext-value" not in str(e.value)
+
+
+def test_aad_for_renders_the_concrete_path_as_compact_json():
+    aad = cb.aad_for(
+        "workflow_definitions",
+        7,
+        "workflow_json",
+        ("nodes", 0, "data", "custom_headers", 1, "value"),
+    )
+    assert (
+        aad
+        == b'workflow_definitions:7:workflow_json:["nodes",0,"data","custom_headers",1,"value"]'
+    )
+    token = cb.encrypt(b"sk-secret", aad=aad)
+    assert cb.decrypt(token, aad=aad) == b"sk-secret"
+
+
+def test_aad_for_keeps_paths_that_collide_as_joined_strings_apart():
+    # Dotted or colon-joined, ("a.b",), ("a:b",) and ("a", "b") would be the same string.
+    aads = {cb.aad_for("t", 1, "c", path) for path in (("a.b",), ("a:b",), ("a", "b"))}
+    assert len(aads) == 3
+
+
+@pytest.mark.parametrize("path", [("nodes", "*", "value"), ("model", "**", "api_key")])
+def test_aad_for_refuses_a_wildcard_path(path):
+    # A token binds to one concrete leaf; a registry pattern is not a row address.
+    with pytest.raises(ValueError, match="code=credential_aad_wildcard"):
+        cb.aad_for("t", 1, "c", path)
 
 
 # --- Registry ---------------------------------------------------------------------------------------------------
@@ -255,6 +293,13 @@ def test_org_masking_reads_the_registry_leaf_names():
     ]
 
 
+WORKFLOW_GRAPH_COLUMNS = {
+    ("workflow_definitions", "workflow_json"),
+    ("workflows", "workflow_definition"),
+    ("workflow_templates", "template_json"),
+}
+
+
 def test_every_node_secret_field_is_registered():
     # Not derived: integration packages declare their own sensitive_fields at load time, so this guard is the link.
     from api.services.configuration.masking import _NODE_SECRET_FIELDS
@@ -273,13 +318,55 @@ def test_every_node_secret_field_is_registered():
         "paygent_api_key",
         "tuner_api_key",
     } <= declared
-    for table, column in (
-        ("workflow_definitions", "workflow_json"),
-        ("workflows", "workflow_definition"),
-    ):
+    for table, column in WORKFLOW_GRAPH_COLUMNS:
         assert {("nodes", "data", field) for field in declared} <= set(
             _paths(table, column)
         )
+
+
+def test_webhook_node_custom_header_values_are_registered_in_every_graph_column():
+    # The source of webhook_deliveries.custom_headers: run_integrations.py copies these values verbatim.
+    from api.services.configuration.secrets_registry import _iter_leaves
+
+    graph = {
+        "nodes": [
+            {
+                "data": {
+                    "custom_headers": [
+                        {"key": "Authorization", "value": "Bearer canary"}
+                    ]
+                }
+            },
+            {"data": {"custom_headers": [{"key": "X-Api-Key", "value": "canary-2"}]}},
+        ]
+    }
+    for table, column in WORKFLOW_GRAPH_COLUMNS:
+        paths = [p for p in _paths(table, column) if "custom_headers" in p]
+        assert paths, (table, column)
+        # Lists are transparent in the registry walk: the path must reach every header value, never a header name.
+        leaves = {c[k] for p in paths for _, c, k in _iter_leaves(graph, p, ())}
+        assert leaves == {"Bearer canary", "canary-2"}, (table, column)
+    # The delivery-row copy stays registered too.
+    assert () in _paths("webhook_deliveries", "custom_headers")
+
+
+def test_tool_static_header_values_are_registered():
+    # HttpApiConfig.headers and HttpTransferResolverConfig.headers (api/schemas/tool.py): dict[str, str] sent on
+    # every request.
+    from api.services.configuration.secrets_registry import _iter_leaves
+
+    definitions = [
+        {"type": "http_api", "config": {"headers": {"Authorization": "Bearer canary"}}},
+        {
+            "type": "transfer_call",
+            "config": {"resolver": {"headers": {"X-Api-Key": "canary-2"}}},
+        },
+    ]
+    paths = _paths("tools", "definition")
+    leaves = {
+        c[k] for d in definitions for p in paths for _, c, k in _iter_leaves(d, p, ())
+    }
+    assert leaves == {"Bearer canary", "canary-2"}
 
 
 def test_every_call_event_sink_secret_is_registered():

@@ -18,6 +18,8 @@ Importer count is NOT the only axis. In this repo the deciding question is: **is
 | `docker-compose*.yaml`, `deploy/`, `nginx/`, `api/Dockerfile` | deploy and capacity (`max_conns`, grace periods) |
 | `.github/workflows/` | CI, release automation |
 | `scripts/xpand/call_entrypoint.sh`, `scripts/xpand/require_db_head.sh` | PID 1 of the `call` role, and the start gate of every cell role |
+| `api/services/runtime/cell_startup.py` | the start check of every cell role (api lifespan, and `python -m` from `require_db_head.sh`); a wrong refusal stops every role of the cell |
+| `api/services/security/redaction.py`, `api/logging_config.py` | every process, every log line: a regression either leaks a secret or phone number to the sinks or slows the call loop |
 
 ## Leaf (while additive and gated)
 
