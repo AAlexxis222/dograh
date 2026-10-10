@@ -9,7 +9,9 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from loguru import logger
 
+import api.app as api_app
 from api.app import assert_cell_startup_config
 from api.routes import main as main_routes
 from api.services.observability import loop_lag
@@ -19,8 +21,11 @@ SECRET = "test-dograh-devops-secret"
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
     monkeypatch.setattr("api.constants.DOGRAH_DEVOPS_SECRET", SECRET)
+    # Never read the real default flag path: a box that ran the entrypoint leaves it behind.
+    monkeypatch.setenv("DRAIN_FLAG_FILE", str(tmp_path / "default_flag"))
+    monkeypatch.delenv("CALL_K_P", raising=False)
     app = FastAPI()
     app.add_api_route(
         "/api/v1/health/active-calls",
@@ -86,7 +91,9 @@ def test_startup_fails_closed_on_empty_devops_secret_in_cell(cell_env, monkeypat
         assert_cell_startup_config()
 
 
-@pytest.mark.parametrize("level", ["DEBUG", "debug", "TRACE", "trace", "VERBOSE", "10", ""])
+@pytest.mark.parametrize(
+    "level", ["DEBUG", "debug", "TRACE", "trace", "VERBOSE", "10", ""]
+)
 def test_startup_refuses_any_level_below_info_in_cell(cell_env, monkeypatch, level):
     monkeypatch.setenv("LOG_LEVEL", level)
     with pytest.raises(RuntimeError, match="code=log_level_debug_in_cell"):
@@ -129,34 +136,42 @@ def test_p99_is_the_99th_percentile_and_the_route_returns_it(client, monkeypatch
 
 
 def _run_module(role, **env):
-    base = {k: v for k, v in os.environ.items() if k not in {"CELL_ROLE", "LOG_LEVEL", "DOGRAH_DEVOPS_SECRET"}}
+    cell_vars = {"CELL_ROLE", "LOG_LEVEL", "DOGRAH_DEVOPS_SECRET", "CALL_K_P"}
+    base = {k: v for k, v in os.environ.items() if k not in cell_vars}
     return subprocess.run(
         [sys.executable, "-m", "api.services.runtime.cell_startup", role],
         env={**base, **env},
         capture_output=True,
         text=True,
         timeout=60,
+        check=False,
     )
 
 
 @pytest.mark.parametrize("role", ["arq", "coordinators"])
 def test_roles_without_lifespan_refuse_debug_logs_via_the_module(role):
     # arq and coordinators never run the FastAPI lifespan; require_db_head.sh runs this module for every role.
-    r = _run_module(role, CELL_ROLE=role, DOGRAH_DEVOPS_SECRET=SECRET, LOG_LEVEL="TRACE")
+    r = _run_module(
+        role, CELL_ROLE=role, DOGRAH_DEVOPS_SECRET=SECRET, LOG_LEVEL="TRACE"
+    )
     assert r.returncode == 1
     for key in (f"code=log_level_debug_in_cell where={role} ", "reason=", "hint="):
         assert key in r.stderr, r.stderr
 
 
 def test_module_passes_in_a_valid_cell_and_outside_a_cell():
-    ok = _run_module("arq", CELL_ROLE="arq", DOGRAH_DEVOPS_SECRET=SECRET, LOG_LEVEL="INFO")
+    ok = _run_module(
+        "arq", CELL_ROLE="arq", DOGRAH_DEVOPS_SECRET=SECRET, LOG_LEVEL="INFO"
+    )
     assert (ok.returncode, ok.stderr) == (0, "")
     assert _run_module("arq").returncode == 0
 
 
 def test_drain_flag_default_is_the_same_in_python_and_the_entrypoint():
     # A drift would make the endpoint report draining=false forever, with no error.
-    script = (Path(__file__).resolve().parents[2] / "scripts/xpand/call_entrypoint.sh").read_text()
+    script = (
+        Path(__file__).resolve().parents[2] / "scripts/xpand/call_entrypoint.sh"
+    ).read_text()
     match = re.search(r'DRAIN_FLAG_FILE="\$\{DRAIN_FLAG_FILE:-([^}]+)\}"', script)
     assert match, "call_entrypoint.sh no longer sets the DRAIN_FLAG_FILE default"
     assert match.group(1) == cell_state.DEFAULT_DRAIN_FLAG_FILE
@@ -164,8 +179,31 @@ def test_drain_flag_default_is_the_same_in_python_and_the_entrypoint():
 
 def test_invalid_k_p_outside_a_cell_warns_once_not_per_poll(monkeypatch):
     warnings = []
-    monkeypatch.setattr(cell_state.logger, "warning", warnings.append)
+    monkeypatch.setattr(logger, "warning", warnings.append)
     cell_state._resolve_call_k_p.cache_clear()
     monkeypatch.setenv("CALL_K_P", "zero")
     assert [cell_state.call_k_p() for _ in range(3)] == [4, 4, 4]
     assert len(warnings) == 1
+
+
+def test_lifespan_runs_the_cell_startup_check(cell_env, monkeypatch):
+    # Defence in depth behind the shell gate: the api lifespan refuses to start by itself.
+    monkeypatch.delenv("DOGRAH_DEVOPS_SECRET")
+    with (
+        pytest.raises(RuntimeError, match="code=devops_secret_missing"),
+        TestClient(api_app.app),
+    ):
+        pass
+
+
+def test_the_start_gate_module_does_not_load_loguru():
+    # require_db_head.sh runs it with whatever python is on PATH, in and out of a cell.
+    code = "import sys, api.services.runtime.cell_startup; sys.exit('loguru' in sys.modules)"
+    r = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert r.returncode == 0, r.stderr

@@ -229,7 +229,9 @@ def test_active_calls_route_rejects_wrong_secret(monkeypatch):
     assert response.status_code == 403
 
 
-def test_active_calls_route_returns_count_with_secret(monkeypatch):
+def test_active_calls_route_returns_count_with_secret(monkeypatch, tmp_path):
+    monkeypatch.setenv("DRAIN_FLAG_FILE", str(tmp_path / "default_flag"))
+    monkeypatch.delenv("CALL_K_P", raising=False)
     active_calls.register_active_call(42)
     client = _make_active_calls_client(monkeypatch)
 

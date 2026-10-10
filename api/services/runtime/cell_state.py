@@ -6,8 +6,6 @@ One source for "is this worker draining" and "calls per pod". The API route and 
 import os
 from functools import cache
 
-from loguru import logger
-
 DEFAULT_CALL_K_P = 4
 # Must equal the default in scripts/xpand/call_entrypoint.sh, which writes the flag (a test pins both).
 DEFAULT_DRAIN_FLAG_FILE = "/tmp/xpand_draining"
@@ -29,6 +27,9 @@ def _resolve_call_k_p(raw: str | None) -> int:
     try:
         return parse_call_k_p(raw)
     except ValueError:
+        # Imported here so the start gate (cell_startup) stays stdlib-only, like durations.py.
+        from loguru import logger
+
         logger.warning(f"invalid CALL_K_P, using {DEFAULT_CALL_K_P}")
         return DEFAULT_CALL_K_P
 
