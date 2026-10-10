@@ -1,3 +1,4 @@
+import os
 import secrets
 from typing import Annotated
 
@@ -33,6 +34,9 @@ from api.routes.workflow_embed import router as workflow_embed_router
 from api.routes.workflow_recording import router as workflow_recording_router
 from api.routes.workflow_text_chat import router as workflow_text_chat_router
 from api.services.integrations import all_routers
+
+DEFAULT_CALL_K_P = 4
+DEFAULT_DRAIN_FLAG_FILE = "/tmp/xpand_draining"
 
 router = APIRouter(
     tags=["main"],
@@ -142,6 +146,12 @@ class ActiveCallsResponse(BaseModel):
     # for autoscaling load tests; see api/services/observability/loop_lag.py.
     loop_lag_p95_ms: float = 0.0
     loop_lag_max_ms: float = 0.0
+    # Drain fields the deploy runbook reads (VOZ-AC-B3-61).
+    lag_p99_ms: float = 0.0
+    # True once the call entrypoint received SIGTERM (it writes DRAIN_FLAG_FILE).
+    draining: bool = False
+    # Calls per pod the autoscaler targets (env CALL_K_P).
+    k_p: int = DEFAULT_CALL_K_P
 
 
 class AutoscaleMetricResponse(BaseModel):
@@ -151,6 +161,30 @@ class AutoscaleMetricResponse(BaseModel):
 
 
 DOGRAH_DEVOPS_SECRET_HEADER = "X-Dograh-Devops-Secret"
+
+
+def parse_call_k_p(raw: str | None) -> int:
+    """CALL_K_P as an int >= 1; unset means the default. Raises ValueError otherwise."""
+    if raw is None or raw == "":
+        return DEFAULT_CALL_K_P
+    value = int(raw)
+    if value < 1:
+        raise ValueError(f"CALL_K_P must be >= 1, got {value}")
+    return value
+
+
+def _call_k_p() -> int:
+    # In a cell api.app.assert_cell_startup_config already refused a bad value (fail closed).
+    try:
+        return parse_call_k_p(os.environ.get("CALL_K_P"))
+    except ValueError:
+        logger.warning(f"invalid CALL_K_P, using {DEFAULT_CALL_K_P}")
+        return DEFAULT_CALL_K_P
+
+
+def _is_draining() -> bool:
+    # The call entrypoint creates this file on SIGTERM and removes it at start.
+    return os.path.exists(os.environ.get("DRAIN_FLAG_FILE", DEFAULT_DRAIN_FLAG_FILE))
 
 
 def _verify_devops_secret(
@@ -197,6 +231,9 @@ async def active_calls(
         active_calls=active_call_count(),
         loop_lag_p95_ms=lag["p95_ms"],
         loop_lag_max_ms=lag["max_ms"],
+        lag_p99_ms=lag["p99_ms"],
+        draining=_is_draining(),
+        k_p=_call_k_p(),
     )
 
 

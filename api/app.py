@@ -25,6 +25,7 @@ if SENTRY_DSN and (
     print(f"Sentry initialized in environment: {ENVIRONMENT}")
 
 
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI, Request
@@ -35,6 +36,7 @@ from loguru import logger
 from api.constants import REDIS_URL
 from api.errors.mps import MPS_UNAVAILABLE_PUBLIC_MESSAGE, MPSUnavailableError
 from api.mcp_server import mcp
+from api.routes.main import parse_call_k_p
 from api.routes.main import router as main_router
 from api.services.configuration.cascade import (
     WorkflowDefinitionMissingError,
@@ -45,6 +47,7 @@ from api.services.pipecat.tracing_config import (
     load_all_org_langfuse_credentials,
 )
 from api.services.pipecat.tts_cache.runtime import close_speech_cache
+from api.services.runtime.durations import Durations, DurationsError
 from api.services.telephony.providers.twilio.region import RegionError
 from api.services.worker_sync.manager import (
     WorkerSyncManager,
@@ -58,8 +61,45 @@ API_PREFIX = "/api/v1"
 mcp_app = mcp.http_app(path="/", stateless_http=True)
 
 
+def _cell_failure(code: str, reason: str, hint: str) -> RuntimeError:
+    # VOZ-AC-B0-28 shape: stable code, where, non-empty reason and hint.
+    return RuntimeError(f"code={code} where=api.app reason={reason} hint={hint}")
+
+
+def assert_cell_startup_config() -> None:
+    """Fail closed at startup in a cell (CELL_ROLE set); a no-op anywhere else (VOZ-AC-B3-61, B6-52)."""
+    if not os.environ.get("CELL_ROLE"):
+        return
+    if not os.environ.get("DOGRAH_DEVOPS_SECRET"):
+        raise _cell_failure(
+            "devops_secret_missing",
+            "DOGRAH_DEVOPS_SECRET is empty, so /api/v1/health/active-calls answers 503 and a deploy cannot drain",
+            "set DOGRAH_DEVOPS_SECRET from the secrets store in the cell env",
+        )
+    if os.environ.get("LOG_LEVEL", "DEBUG").upper() == "DEBUG":
+        raise _cell_failure(
+            "log_level_debug_in_cell",
+            "LOG_LEVEL is DEBUG (also the default when unset), which logs caller text and phone numbers",
+            "set LOG_LEVEL=INFO in the cell env",
+        )
+    try:
+        parse_call_k_p(os.environ.get("CALL_K_P"))
+    except ValueError as e:
+        raise _cell_failure(
+            "call_k_p_invalid",
+            f"CALL_K_P is not an integer >= 1 ({e})",
+            "set CALL_K_P to a positive integer, or unset it for the default of 4",
+        ) from e
+    try:
+        # Same validation as `python -m api.services.runtime.durations` (scripts/xpand/require_db_head.sh).
+        Durations.from_env().check_deployed(os.environ)
+    except DurationsError as e:
+        raise _cell_failure(e.code, e.reason, e.hint) from e
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    assert_cell_startup_config()
     async with mcp_app.lifespan(app):
         # warmup arq pool
         await get_arq_redis()

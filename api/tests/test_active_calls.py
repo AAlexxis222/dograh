@@ -245,4 +245,7 @@ def test_active_calls_route_returns_count_with_secret(monkeypatch):
         "active_calls": 1,
         "loop_lag_p95_ms": 0.0,
         "loop_lag_max_ms": 0.0,
+        "lag_p99_ms": 0.0,
+        "draining": False,
+        "k_p": 4,
     }

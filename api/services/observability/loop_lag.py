@@ -78,6 +78,7 @@ def stats() -> dict[str, float]:
     snapshot = list(_samples)
     return {
         "p95_ms": round(_percentile(snapshot, 95), 2),
+        "p99_ms": round(_percentile(snapshot, 99), 2),
         "max_ms": round(max(snapshot), 2) if snapshot else 0.0,
         "samples": len(snapshot),
     }

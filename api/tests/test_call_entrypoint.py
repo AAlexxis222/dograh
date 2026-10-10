@@ -309,3 +309,24 @@ def test_drain_never_reading_the_counter_fails_closed():
 @posix_only
 def test_drain_default_proceeds_when_the_counter_is_unreadable():
     assert _drain(1, fail_closed=False).returncode == 0
+
+
+@posix_only
+def test_drain_flag_is_cleared_at_start_and_set_on_term(tmp_path, alembic_env):
+    # active-calls reports draining = this file exists: stale at start would report draining forever.
+    flag = tmp_path / "draining"
+    flag.touch()
+    seen = tmp_path / "seen.log"
+    env = {
+        **alembic_env(),
+        "DRAIN_FLAG_FILE": str(flag),
+        "DRAIN_CMD": f"test -e {flag} && echo flag_set_before_drain > {seen}",
+        "CALL_CMD": "sleep 60",
+    }
+    p = subprocess.Popen(["bash", str(SCRIPT)], env=env)
+    time.sleep(0.5)
+    assert not flag.exists()
+    p.send_signal(signal.SIGTERM)
+    p.wait(timeout=10)
+    assert seen.read_text().strip() == "flag_set_before_drain"
+    assert flag.exists()
