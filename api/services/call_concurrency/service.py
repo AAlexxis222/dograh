@@ -236,7 +236,14 @@ class CallConcurrencyService:
             logger.error(
                 f"Could not bind workflow run {workflow_run_id} to its slot: {e}"
             )
-            await self.release_slot(slot)
+            # With the run id: the script may have written the mapping before the reply was lost; the release
+            # only removes a mapping that is this slot's own.
+            await self._release(
+                org_id=slot.organization_id,
+                attempt_id=slot.slot_id,
+                scope_key=slot.scope_key,
+                workflow_run_id=workflow_run_id,
+            )
             raise AdmissionBackendUnavailableError(
                 organization_id=slot.organization_id,
                 source=slot.source,

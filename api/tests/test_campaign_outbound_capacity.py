@@ -18,7 +18,10 @@ from api.routes.campaign import (
     _validate_max_concurrency,
     update_campaign,
 )
-from api.services.call_concurrency import CallConcurrencySlot
+from api.services.call_concurrency import (
+    AdmissionBackendUnavailableError,
+    CallConcurrencySlot,
+)
 from api.services.call_concurrency.rate_limiter import RateLimiter
 from api.services.campaign.campaign_call_dispatcher import CampaignCallDispatcher
 from api.services.campaign.errors import (
@@ -226,6 +229,23 @@ async def test_full_concurrency_is_not_a_failed_contact(setup_call):
     assert await s.dispatcher.process_batch(48) == 0
     s.db.update_queued_run.assert_not_awaited()
     s.db.return_processing_queued_runs_without_workflow.assert_awaited_once_with([1])
+
+
+@pytest.mark.asyncio
+async def test_slot_backend_error_at_bind_requeues_the_contact_instead_of_failing_it(
+    setup_call,
+):
+    """A Redis error between the slot being acquired and the run being bound is temporary, like a full org:
+    the contact goes back to the queue (never marked failed) and the slot is released."""
+    s = setup_call
+    s.concurrency.bind_workflow_run.side_effect = AdmissionBackendUnavailableError(
+        organization_id=206, source="campaign:48", wait_time=0, max_concurrent=200
+    )
+    assert await s.dispatcher.process_batch(48) == 0
+    states = [c.kwargs["state"] for c in s.db.update_queued_run.await_args_list]
+    assert states == ["queued"]
+    s.concurrency.release_slot.assert_awaited_once_with(s.slot)
+    s.provider.initiate_call.assert_not_awaited()
 
 
 @pytest.mark.asyncio

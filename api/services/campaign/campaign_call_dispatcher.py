@@ -10,6 +10,7 @@ from api.db import db_client
 from api.db.models import QueuedRunModel, WorkflowRunModel
 from api.enums import WorkflowRunState
 from api.services.call_concurrency import (
+    AdmissionBackendUnavailableError,
     CallConcurrencyLimitError,
     CallConcurrencySlot,
     call_concurrency,
@@ -116,8 +117,13 @@ class CampaignCallDispatcher:
                         )
                     )
                     processed_run_ids.add(queued_run.id)
-                except (ConcurrentSlotAcquisitionError, CampaignRateLimitTimeout):
-                    # Capacity contention is temporary, not a failed contact.
+                except (
+                    ConcurrentSlotAcquisitionError,
+                    CampaignRateLimitTimeout,
+                    AdmissionBackendUnavailableError,
+                ):
+                    # Capacity contention, or the slot backend failing between acquire and bind, is
+                    # temporary, not a failed contact.
                     return
                 except asyncio.CancelledError:
                     raise
@@ -405,7 +411,12 @@ class CampaignCallDispatcher:
                     },
                 )
                 if isinstance(
-                    error, (asyncio.CancelledError, CampaignRateLimitTimeout)
+                    error,
+                    (
+                        asyncio.CancelledError,
+                        CampaignRateLimitTimeout,
+                        AdmissionBackendUnavailableError,
+                    ),
                 ):
                     # This task owns the row and has not contacted the provider.
                     await db_client.update_queued_run(

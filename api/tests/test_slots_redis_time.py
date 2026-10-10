@@ -695,6 +695,11 @@ async def test_the_per_call_renewal_task_keeps_a_long_call_counted(
                 assert score >= expected, "the renewal task did not renew"
             assert await rl.get_concurrent_count(org_id) == 1
         assert await rl.get_concurrent_count(org_id) == 0
+        # The renewal task is gone with the call: it must not re-create the slot (the renewal re-adds a
+        # missing member by design), so a ghost would show up a few ticks later.
+        await asyncio.sleep(0.2)
+        assert await rl.get_concurrent_count(org_id) == 0
+        assert await redis_client.hgetall(keys.mapping_key(run_id)) == {}
     finally:
         await _close(rl)
 
@@ -1073,9 +1078,88 @@ async def test_a_bind_that_hits_a_backend_error_releases_the_slot_and_reports_th
             await service.bind_workflow_run(slot, 7)
     assert not isinstance(e.value, WorkflowRunSlotAlreadyBoundError)
     assert (e.value.organization_id, e.value.source) == (1, "test")
+    # With the run id: the bind may have written its mapping before the reply was lost.
     store.release_slot.assert_awaited_once_with(
-        org_id=1, attempt_id="a", scope_key=None, workflow_run_id=None
+        org_id=1, attempt_id="a", scope_key=None, workflow_run_id=7
     )
+
+
+async def test_a_bind_whose_reply_is_lost_leaves_no_mapping_and_the_run_can_bind_again(
+    monkeypatch, redis_client, org_id, cleanup
+):
+    """The bind script ran on Redis but its reply was lost: the refusal must also remove the mapping it wrote,
+    or a client retrying the same run is refused as already active until the mapping expires."""
+    from api.services.call_concurrency import CallConcurrencySlot
+    from api.services.call_concurrency import service as service_module
+
+    rl = SlotStore()
+    monkeypatch.setattr(service_module, "slot_store", rl)
+    run_id = org_id
+    cleanup.attempts += ["lost", "retry"]
+    cleanup.runs.append(run_id)
+    real_bind = rl.store_workflow_slot_mapping_if_absent
+
+    async def bind_then_lose_the_reply(*args, **kwargs):
+        await real_bind(*args, **kwargs)
+        raise SlotBackendError("reply lost")
+
+    service = CallConcurrencyService()
+    try:
+        assert await rl.acquire_slot(org_id=org_id, attempt_id="lost", max_concurrent=5)
+        slot = CallConcurrencySlot(
+            organization_id=org_id, slot_id="lost", max_concurrent=5, source="test"
+        )
+        monkeypatch.setattr(
+            rl, "store_workflow_slot_mapping_if_absent", bind_then_lose_the_reply
+        )
+        with pytest.raises(AdmissionBackendUnavailableError):
+            await service.bind_workflow_run(slot, run_id)
+        assert await redis_client.hgetall(keys.mapping_key(run_id)) == {}
+        assert await rl.get_concurrent_count(org_id) == 0
+
+        monkeypatch.setattr(rl, "store_workflow_slot_mapping_if_absent", real_bind)
+        assert await rl.acquire_slot(
+            org_id=org_id, attempt_id="retry", max_concurrent=5
+        )
+        retry = CallConcurrencySlot(
+            organization_id=org_id, slot_id="retry", max_concurrent=5, source="test"
+        )
+        await service.bind_workflow_run(retry, run_id)
+    finally:
+        await _close(rl)
+
+
+async def test_a_failed_bind_does_not_remove_a_mapping_owned_by_another_attempt(
+    monkeypatch, redis_client, org_id, cleanup
+):
+    from api.services.call_concurrency import CallConcurrencySlot
+    from api.services.call_concurrency import service as service_module
+
+    rl = SlotStore()
+    monkeypatch.setattr(service_module, "slot_store", rl)
+    run_id = org_id
+    cleanup.attempts += ["owner", "loser"]
+    cleanup.runs.append(run_id)
+    try:
+        await _admit_and_bind(rl, org_id, "owner", run_id, 5)
+        assert await rl.acquire_slot(
+            org_id=org_id, attempt_id="loser", max_concurrent=5
+        )
+        monkeypatch.setattr(
+            rl,
+            "store_workflow_slot_mapping_if_absent",
+            AsyncMock(side_effect=SlotBackendError("redis down")),
+        )
+        loser = CallConcurrencySlot(
+            organization_id=org_id, slot_id="loser", max_concurrent=5, source="test"
+        )
+        with pytest.raises(AdmissionBackendUnavailableError):
+            await CallConcurrencyService().bind_workflow_run(loser, run_id)
+        mapping = await redis_client.hgetall(keys.mapping_key(run_id))
+        assert mapping["slot_id"] == "owner"
+        assert await rl.get_concurrent_count(org_id) == 1
+    finally:
+        await _close(rl)
 
 
 async def test_a_real_duplicate_bind_still_releases_the_slot_and_reports_already_bound():
