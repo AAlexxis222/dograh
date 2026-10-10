@@ -330,3 +330,14 @@ def test_drain_flag_is_cleared_at_start_and_set_on_term(tmp_path, alembic_env):
     p.wait(timeout=10)
     assert seen.read_text().strip() == "flag_set_before_drain"
     assert flag.exists()
+
+
+@posix_only
+def test_require_db_head_runs_the_cell_startup_check_before_alembic(alembic_env):
+    # arq and coordinators never run the api lifespan: this gate is where they refuse DEBUG logs (VOZ-AC-B6-52).
+    env = {**alembic_env(), "CELL_ROLE": "arq", "DOGRAH_DEVOPS_SECRET": "s", "LOG_LEVEL": "DEBUG"}
+    r = subprocess.run(["bash", str(REQUIRE_HEAD), "arq"], env=env, capture_output=True, text=True)
+    assert r.returncode == 1
+    for key in ("code=log_level_debug_in_cell", "where=arq", "reason=", "hint="):
+        assert key in r.stderr, r.stderr
+    assert not alembic_env.log.exists()

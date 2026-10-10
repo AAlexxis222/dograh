@@ -1,11 +1,16 @@
 """VOZ-N0-22: a cell refuses to start without the devops secret, and active-calls reports the drain fields."""
 
+import os
+import subprocess
+import sys
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api.app import assert_cell_startup_config
 from api.routes import main as main_routes
+from api.services.observability import loop_lag
 
 SECRET = "test-dograh-devops-secret"
 
@@ -78,11 +83,17 @@ def test_startup_fails_closed_on_empty_devops_secret_in_cell(cell_env, monkeypat
         assert_cell_startup_config()
 
 
-@pytest.mark.parametrize("level", ["DEBUG", "debug"])
-def test_startup_refuses_debug_logs_in_cell(cell_env, monkeypatch, level):
+@pytest.mark.parametrize("level", ["DEBUG", "debug", "TRACE", "trace", "VERBOSE", "10", ""])
+def test_startup_refuses_any_level_below_info_in_cell(cell_env, monkeypatch, level):
     monkeypatch.setenv("LOG_LEVEL", level)
     with pytest.raises(RuntimeError, match="code=log_level_debug_in_cell"):
         assert_cell_startup_config()
+
+
+@pytest.mark.parametrize("level", ["INFO", "success", "Warning", "ERROR", "critical"])
+def test_startup_allows_info_and_above_in_cell(cell_env, monkeypatch, level):
+    monkeypatch.setenv("LOG_LEVEL", level)
+    assert_cell_startup_config()
 
 
 def test_startup_refuses_unset_log_level_in_cell(cell_env, monkeypatch):
@@ -110,3 +121,37 @@ def test_startup_is_a_noop_outside_a_cell(monkeypatch):
     monkeypatch.delenv("DOGRAH_DEVOPS_SECRET", raising=False)
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
     assert_cell_startup_config()
+
+
+def test_p99_is_the_99th_percentile_and_the_route_returns_it(client, monkeypatch):
+    monkeypatch.setattr(loop_lag, "_samples", [float(i) for i in range(1, 101)])
+    lag = loop_lag.stats()
+    assert (lag["p95_ms"], lag["p99_ms"]) == (95.0, 99.0)
+    body = _get(client).json()
+    assert (body["loop_lag_p95_ms"], body["lag_p99_ms"]) == (95.0, 99.0)
+
+
+def _run_module(role, **env):
+    base = {k: v for k, v in os.environ.items() if k not in {"CELL_ROLE", "LOG_LEVEL", "DOGRAH_DEVOPS_SECRET"}}
+    return subprocess.run(
+        [sys.executable, "-m", "api.services.runtime.cell_startup", role],
+        env={**base, **env},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+@pytest.mark.parametrize("role", ["arq", "coordinators"])
+def test_roles_without_lifespan_refuse_debug_logs_via_the_module(role):
+    # arq and coordinators never run the FastAPI lifespan; require_db_head.sh runs this module for every role.
+    r = _run_module(role, CELL_ROLE=role, DOGRAH_DEVOPS_SECRET=SECRET, LOG_LEVEL="TRACE")
+    assert r.returncode == 1
+    for key in (f"code=log_level_debug_in_cell where={role} ", "reason=", "hint="):
+        assert key in r.stderr, r.stderr
+
+
+def test_module_passes_in_a_valid_cell_and_outside_a_cell():
+    ok = _run_module("arq", CELL_ROLE="arq", DOGRAH_DEVOPS_SECRET=SECRET, LOG_LEVEL="INFO")
+    assert (ok.returncode, ok.stderr) == (0, "")
+    assert _run_module("arq").returncode == 0

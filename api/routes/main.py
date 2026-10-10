@@ -34,8 +34,8 @@ from api.routes.workflow_embed import router as workflow_embed_router
 from api.routes.workflow_recording import router as workflow_recording_router
 from api.routes.workflow_text_chat import router as workflow_text_chat_router
 from api.services.integrations import all_routers
+from api.services.runtime.cell_startup import DEFAULT_CALL_K_P, parse_call_k_p
 
-DEFAULT_CALL_K_P = 4
 DEFAULT_DRAIN_FLAG_FILE = "/tmp/xpand_draining"
 
 router = APIRouter(
@@ -161,16 +161,6 @@ class AutoscaleMetricResponse(BaseModel):
 
 
 DOGRAH_DEVOPS_SECRET_HEADER = "X-Dograh-Devops-Secret"
-
-
-def parse_call_k_p(raw: str | None) -> int:
-    """CALL_K_P as an int >= 1; unset means the default. Raises ValueError otherwise."""
-    if raw is None or raw == "":
-        return DEFAULT_CALL_K_P
-    value = int(raw)
-    if value < 1:
-        raise ValueError(f"CALL_K_P must be >= 1, got {value}")
-    return value
 
 
 def _call_k_p() -> int:
