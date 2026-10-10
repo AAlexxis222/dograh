@@ -46,6 +46,8 @@ CARRIER_RING_TIMEOUT_S = {
     WorkflowRunMode.PLIVO.value: 120,
 }
 DEFAULT_RING_TIMEOUT_S = 60
+# The claim retry cap is pending_ttl_s // 3: below 3 s it would be 0 and a failed claim would retry without pausing.
+MIN_PENDING_TTL_S = 3
 # Upper bound of the renewal period of a claimed slot (VOZ-AC-B3-66: heartbeat_renew_s <= slot_ttl / 3, default 300).
 HEARTBEAT_RENEW_DEFAULT_S = 300
 
@@ -101,6 +103,14 @@ class Durations:
                 "knob_out_of_range",
                 f"call duration ceiling {self.ceiling}s is below the default max_call_duration {DEFAULT_MAX_CALL_DURATION_S}s",
                 _CEILING_HINT,
+            )
+        if self.pending_ttl_s < MIN_PENDING_TTL_S:
+            raise DurationsError(
+                "knob_out_of_range",
+                f"pending_ttl_s {self.pending_ttl_s}s is below {MIN_PENDING_TTL_S}s: the claim retry cap "
+                "(pending_ttl_s // 3) would be 0 and a failed claim would retry without pausing",
+                f"keep pending_ttl_s >= {MIN_PENDING_TTL_S} (admission.pending_ttl_s, "
+                "api/services/runtime/durations.py)",
             )
         if not (self.ceiling < self.slot_ttl <= self.drain_max < self.grace):
             raise DurationsError(

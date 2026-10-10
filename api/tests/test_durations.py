@@ -392,3 +392,12 @@ def test_each_carrier_rings_its_own_default_and_the_lease_covers_it():
         e.value.code == "knob_out_of_range" and "16 CFR 310.4(b)(4)" in e.value.reason
     )
 
+
+def test_a_pending_lease_below_three_seconds_is_a_named_error():
+    """Final review finding 2: pending_ttl_s < 3 makes the claim retry cap 0, and a failed claim would spin on
+    sleep(0) while Redis is down."""
+    assert Durations(ceiling=1200, pending_ttl_s=3).claim_retry_cap_s == 1
+    with pytest.raises(DurationsError) as e:
+        Durations(ceiling=1200, pending_ttl_s=2)
+    assert e.value.code == "knob_out_of_range" and "pending_ttl_s" in e.value.reason
+    assert e.value.hint

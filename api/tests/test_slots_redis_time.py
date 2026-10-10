@@ -896,6 +896,45 @@ async def test_ringing_callback_restarts_the_pending_lease_of_an_outbound_call(
         await _close(rl)
 
 
+async def test_a_ringing_callback_for_an_inbound_run_does_not_extend_its_lease(
+    monkeypatch, redis_client, fake_redis_clock, org_id, cleanup
+):
+    """Final review finding 3: an inbound run keeps the inbound lease (pending_ttl_s) even if its carrier posts a
+    ringing event to the run's status URL; only outbound runs get ring + pending_ttl_s."""
+    from api.services.call_concurrency import service as service_module
+    from api.services.telephony.status_processor import (
+        StatusCallbackRequest,
+        _process_status_update,
+    )
+
+    rl = SlotStore(test_clock=fake_redis_clock.key)
+    monkeypatch.setattr(service_module, "slot_store", rl)
+    run_id = org_id
+    cleanup.attempts.append("inbound")
+    cleanup.runs.append(run_id)
+    db = AsyncMock()
+    db.get_workflow_run_by_id.return_value = SimpleNamespace(
+        logs={},
+        campaign_id=None,
+        state="initialized",
+        mode="twilio",
+        call_type="inbound",
+    )
+    try:
+        await _admit_and_bind(rl, org_id, "inbound", run_id, 5)
+        pending = await redis_client.zscore(keys.org_key(org_id), "inbound")
+        await fake_redis_clock.advance(10)
+        with patch("api.services.telephony.status_processor.db_client", db):
+            await _process_status_update(
+                run_id, StatusCallbackRequest(call_id="c-1", status="ringing")
+            )
+        assert await redis_client.zscore(keys.org_key(org_id), "inbound") == pending
+        await fake_redis_clock.advance(rl.durations.pending_ttl_s - 10 + 1)
+        assert await rl.get_concurrent_count(org_id) == 0
+    finally:
+        await _close(rl)
+
+
 # ---------------------------------------------------------------------------
 # Fix round 4: one error policy at the Redis boundary (SlotBackendError).
 # ---------------------------------------------------------------------------

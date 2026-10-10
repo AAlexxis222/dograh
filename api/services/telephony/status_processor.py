@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from api.db import db_client
 from api.db.workflow_run_client import append_unique_tags
-from api.enums import TelephonyCallStatus, WorkflowRunState
+from api.enums import CallType, TelephonyCallStatus, WorkflowRunState
 from api.services.call_concurrency import call_concurrency
 from api.services.campaign.campaign_call_dispatcher import campaign_call_dispatcher
 from api.services.campaign.campaign_event_publisher import (
@@ -109,7 +109,10 @@ class StatusCallbackRequest(BaseModel):
 
 
 async def _keep_ringing_lease(workflow_run_id: int, workflow_run) -> None:
-    """Not answered yet: an outbound slot's pending lease stays alive while it rings."""
+    """Not answered yet: an outbound slot's pending lease stays alive while it rings. An inbound run keeps the
+    inbound lease (pending_ttl_s): a ringing event posted for it extends nothing."""
+    if workflow_run.call_type == CallType.INBOUND.value:
+        return
     # The run's mode is a WorkflowRunMode value, the key space of the ring table (durations.py).
     await call_concurrency.extend_ringing_slot(workflow_run_id, workflow_run.mode)
 
