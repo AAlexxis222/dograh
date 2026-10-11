@@ -30,13 +30,12 @@ from api.schemas.tool import (
 )
 from api.sdk_expose import sdk_expose
 from api.services.auth.depends import get_user
-from api.services.configuration.masking import merge_tool_headers
 from api.services.tool_management import (
     ToolManagementError,
     build_tool_response,
     create_tool_for_user,
+    prepare_tool_definition_update,
     refresh_mcp_tool_for_user,
-    validate_tool_references,
 )
 from api.services.tool_management import (
     populate_discovered_tools as _populate_discovered_tools,
@@ -378,20 +377,10 @@ async def update_tool(
 
     definition = None
     if request.definition:
-        # Responses mask header values; a masked one sent back keeps the stored value.
-        stored = await db_client.get_tool_by_uuid(
-            tool_uuid, user.selected_organization_id
-        )
-        definition = merge_tool_headers(
-            request.definition.model_dump(), stored.definition if stored else None
-        )
         try:
-            await validate_tool_references(
-                definition,
-                organization_id=user.selected_organization_id,
-            )
-            definition = await _populate_discovered_tools(
-                definition,
+            definition = await prepare_tool_definition_update(
+                request.definition.model_dump(),
+                tool_uuid=tool_uuid,
                 organization_id=user.selected_organization_id,
             )
         except ToolManagementError as e:

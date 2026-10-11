@@ -5,13 +5,16 @@ registered paths, ``WORKFLOW_CONFIGURATION_SECRET_PATHS``) becomes a reference t
 run pins, or ``REDACTED`` when that definition does not hold the same value there. The organization layer refuses
 secrets (422), so the pinned definition is the only legitimate source of one.
 
-A run's configuration is read through two seams. ``cascade.run_settings_for`` and
-``WorkflowRunClient.get_workflow_run_settings`` hand out the document as stored, references included, for readers
-that need no credential (timeouts, PBX field mappings): a reference that no longer resolves cannot break them.
-``cascade.run_configurations_for`` resolves every credential against the pinned definition and fails closed with
-``CredentialRefUnresolved`` (VOZ-AC-B0-28 shape) on a reference that no longer resolves or a ``REDACTED`` leaf, rather
-than handing a provider a placeholder. A plain value (a run frozen before the redaction migration) passes through
-until the contraction.
+A run's configuration is read through two seams. ``cascade.run_config_without_credentials`` and
+``WorkflowRunClient.get_workflow_run_config_without_credentials`` hand out the document as stored, references
+included, for readers that need no credential (timeouts, PBX field mappings): a reference that no longer resolves
+cannot break them. ``cascade.run_config_with_credentials`` resolves every credential against the pinned definition and
+fails closed (VOZ-AC-B0-28 shape): ``CredentialRefUnresolved`` on a reference that no longer resolves,
+``CredentialRedacted`` on a ``REDACTED`` leaf, rather than handing a provider a placeholder. A plain value (a run
+frozen before the redaction migration) passes through until the contraction.
+
+``check_no_credential_values`` is the invariant of a new run snapshot (``CredentialValueRefused``): run creation
+enforces it, and the store repeats it for a creator that bypasses run creation.
 
 The reference names its target table and row, so the credential object (VOZ-AC-B1-77) can become the target without
 changing the shape. Alembic revision c5e8a2d7f914 keeps a frozen copy of ``to_credential_refs`` for historic runs.
@@ -43,23 +46,54 @@ def is_credential_marker(value: Any) -> bool:
     )
 
 
+# The three classes below share the VOZ-AC-B0-28 fields; one NamedError base is follow-up VOZ-FU-B028-base.
 class CredentialRefUnresolved(Exception):
-    """VOZ-AC-B0-28 shape. Never carries a credential value."""
+    """A run's credential reference no longer resolves. Never carries a credential value."""
 
-    def __init__(
-        self,
-        where: str,
-        reason: str,
-        *,
-        code: str = "credential_ref_unresolved",
-        hint: str = (
-            "the workflow version this run pins no longer holds the credential: "
-            "re-enter it in the workflow and start a new run"
-        ),
-    ):
-        self.code, self.where, self.reason, self.hint = code, where, reason, hint
+    code = "credential_ref_unresolved"
+    hint = (
+        "the workflow version this run pins no longer holds the credential: "
+        "re-enter it in the workflow and start a new run"
+    )
+
+    def __init__(self, where: str, reason: str):
+        self.where, self.reason = where, reason
         super().__init__(
             f"code={self.code} where={where} reason={reason} hint={self.hint}"
+        )
+
+
+class CredentialRedacted(Exception):
+    """A run's credential was redacted when references replaced stored values; the value is gone."""
+
+    code = "credential_redacted"
+    reason = "the run's credential was redacted when references replaced stored values"
+    hint = (
+        "the value is not recoverable from the run: start a new run, "
+        "which takes the credential from the workflow"
+    )
+
+    def __init__(self, where: str):
+        self.where = where
+        super().__init__(
+            f"code={self.code} where={where} reason={self.reason} hint={self.hint}"
+        )
+
+
+class CredentialValueRefused(Exception):
+    """A new run snapshot would carry a credential value. Names the paths, never the values."""
+
+    code = "run_credential_value_refused"
+    reason = "a credential value would be stored on the run"
+    hint = (
+        "build the snapshot with prepare_workflow_run_inputs, which replaces "
+        "credential values with references"
+    )
+
+    def __init__(self, paths: list[str]):
+        self.where = f"workflow_runs.effective_configurations:{','.join(paths)}"
+        super().__init__(
+            f"code={self.code} where={self.where} reason={self.reason} hint={self.hint}"
         )
 
 
@@ -112,6 +146,13 @@ def stored_secret_paths(document: Any) -> list[str]:
     ]
 
 
+def check_no_credential_values(document: Any) -> None:
+    """Raise ``CredentialValueRefused`` if a run snapshot holds a credential value."""
+    paths = stored_secret_paths(document)
+    if paths:
+        raise CredentialValueRefused(paths)
+
+
 def resolve_credential_refs(
     frozen: Any,
     pinned: Callable[[], Any],
@@ -131,13 +172,7 @@ def resolve_credential_refs(
     for path, container, key, value in _live_secret_leaves(resolved):
         where = f"workflow_runs:{run_id}:effective_configurations:{'.'.join(map(str, path))}"
         if value == REDACTED:
-            raise CredentialRefUnresolved(
-                where,
-                "the run's credential was redacted when references replaced stored values",
-                code="credential_redacted",
-                hint="the value is not recoverable from the run: start a new run, "
-                "which takes the credential from the workflow",
-            )
+            raise CredentialRedacted(where)
         match = _REF.fullmatch(value) if isinstance(value, str) else None
         if match is None:
             continue

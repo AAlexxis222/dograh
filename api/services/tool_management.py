@@ -21,7 +21,11 @@ from api.schemas.tool import (
     McpRefreshResponse,
     ToolResponse,
 )
-from api.services.configuration.masking import mask_tool_definition, merge_tool_headers
+from api.services.configuration.masking import (
+    mask_tool_definition,
+    merge_tool_headers,
+    refuse_masked_tool_headers,
+)
 from api.services.posthog_client import capture_event
 from api.services.workflow.mcp_tool_session import discover_mcp_tools
 from api.services.workflow.tools.mcp_tool import (
@@ -191,8 +195,7 @@ async def create_tool_for_user(
             status_code=400,
         )
 
-    # A masked header copied from another tool's response has nothing to keep.
-    definition = merge_tool_headers(request.definition.model_dump(), None)
+    definition = refuse_masked_tool_headers(request.definition.model_dump())
     await validate_tool_references(
         definition, organization_id=user.selected_organization_id
     )
@@ -224,6 +227,18 @@ async def create_tool_for_user(
     )
 
     return build_tool_response(tool)
+
+
+async def prepare_tool_definition_update(
+    definition: dict[str, Any], *, tool_uuid: str, organization_id: int
+) -> dict[str, Any]:
+    """The definition a tool update stores: masked secrets restored from the stored
+    tool (responses mask them), references checked, MCP catalog discovered. The
+    update twin of what ``create_tool_for_user`` does before storing."""
+    stored = await db_client.get_tool_by_uuid(tool_uuid, organization_id)
+    definition = merge_tool_headers(definition, stored.definition if stored else None)
+    await validate_tool_references(definition, organization_id=organization_id)
+    return await populate_discovered_tools(definition, organization_id=organization_id)
 
 
 async def refresh_mcp_tool_for_user(

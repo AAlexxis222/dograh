@@ -12,6 +12,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.db.models import OrganizationModel, TelephonyPhoneNumberModel
+from api.services.telephony.inbound_routing import (
+    InboundRoutingConflictError,
+    assert_no_inbound_routing_conflict,
+)
 
 # provider -> (credentials as the UI saves them, expected account_id). Secrets sit next to the
 # account field on purpose: Telnyx and Exotel call a secret `api_key`, Vonage's `api_key` is
@@ -538,3 +542,30 @@ async def test_the_heal_uses_the_session_of_the_read(
 
     assert await _stored(async_session, row) == "AC-s"
     assert len(opened) == 1
+
+
+@pytest.mark.asyncio
+async def test_one_configuration_owning_two_checked_numbers_still_conflicts(
+    async_session, db_session
+):
+    """A heal is pending and the same configuration owns two of the numbers being saved:
+    the check must answer with the conflict, not fail on the shared configuration."""
+    organization = await _org(async_session)
+    row = await db_session.create_telephony_configuration(
+        organization.id, "cfg", "twilio", {"account_sid": "AC-two"}
+    )
+    await _number(async_session, organization, row, "+15551230030")
+    await _number(async_session, organization, row, "+15551230031")
+    await _null_out(async_session, row)
+
+    with pytest.raises(InboundRoutingConflictError) as raised:
+        await assert_no_inbound_routing_conflict(
+            provider="twilio",
+            credentials={"account_sid": "AC-two"},
+            addresses=["+15551230030", "+15551230031"],
+            organization_id=organization.id,
+            db=db_session,
+        )
+
+    assert raised.value.address in {"+15551230030", "+15551230031"}
+    assert await _stored(async_session, row) == "AC-two"

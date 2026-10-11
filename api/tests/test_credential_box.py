@@ -375,10 +375,10 @@ WORKFLOW_GRAPH_COLUMNS = {
 
 def test_every_node_secret_field_is_registered():
     # Not derived: integration packages declare their own sensitive_fields at load time, so this guard is the link.
-    from api.services.configuration.masking import _NODE_SECRET_FIELDS
+    # Masking reads the registry (masking.mask_workflow_definition), so a field outside it would be served in clear.
     from api.services.integrations import all_packages
 
-    declared = {f for fields in _NODE_SECRET_FIELDS.values() for f in fields}
+    declared = {"qa_api_key"}  # the core QA node
     declared |= {
         f
         for package in all_packages()

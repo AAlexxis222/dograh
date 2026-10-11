@@ -23,6 +23,8 @@ from api.services.configuration.masking import (
     mask_workflow_definition,
     merge_tool_headers,
     merge_workflow_api_keys,
+    refuse_masked_secrets,
+    refuse_masked_tool_headers,
 )
 from api.services.configuration.secrets_registry import mask_secrets
 from api.services.tool_management import build_tool_response
@@ -351,7 +353,7 @@ async def test_the_workflow_routes_mask_headers_and_refuse_an_orphan_mask(
     assert error["code"] == "masked_secret_unmatched"
     assert (
         error["where"]
-        == "workflow_definition:nodes[hook].data.custom_headers[X-Renamed]"
+        == "workflow_definition:nodes[hook].data.custom_headers[X-Renamed].value"
     )
     assert error["reason"] and error["hint"]
 
@@ -462,3 +464,57 @@ async def test_the_templates_list_masks_secrets(monkeypatch):
         template.template_json["nodes"][2]["data"]["custom_headers"][0]["value"]
         == f"Bearer {CANARY}"
     )
+
+
+# --- fix r2: one registry-driven mask/merge pair; named refusal on create ------------------------------------------
+
+
+def test_a_newly_registered_path_is_masked_and_merged_without_code_changes(monkeypatch):
+    from api.services.security import secret_surfaces
+
+    monkeypatch.setattr(
+        secret_surfaces,
+        "WORKFLOW_GRAPH_SECRET_PATHS",
+        secret_surfaces.WORKFLOW_GRAPH_SECRET_PATHS
+        + (("nodes", "data", "signing_secret"),),
+    )
+    monkeypatch.setattr(
+        secret_surfaces,
+        "SURFACES",
+        secret_surfaces.SURFACES
+        + (
+            secret_surfaces.SecretSurface(
+                "tools", "definition", ("config", "auth", "token")
+            ),
+        ),
+    )
+    graph = _graph(
+        {"id": "n1", "type": "agentNode", "data": {"signing_secret": f"{CANARY}-sig"}}
+    )
+    masked = mask_workflow_definition(graph)
+    assert CANARY not in json.dumps(masked)
+    assert merge_workflow_api_keys(copy.deepcopy(masked), graph) == graph
+    with pytest.raises(MaskedSecretUnmatched):
+        merge_workflow_api_keys(copy.deepcopy(masked), None)
+
+    tool = {"type": "http_api", "config": {"auth": {"token": f"{CANARY}-tok"}}}
+    masked_tool = mask_tool_definition(tool)
+    assert CANARY not in json.dumps(masked_tool)
+    assert merge_tool_headers(copy.deepcopy(masked_tool), tool) == tool
+
+
+def test_refusing_masked_secrets_names_the_create_guard():
+    with pytest.raises(MaskedSecretUnmatched):
+        refuse_masked_secrets(mask_workflow_definition(STORED))
+    plain = copy.deepcopy(STORED)
+    assert refuse_masked_secrets(plain) == STORED
+    with pytest.raises(MaskedSecretUnmatched):
+        refuse_masked_tool_headers(mask_tool_definition(TOOL_STORED))
+    assert refuse_masked_tool_headers(copy.deepcopy(TOOL_STORED)) == TOOL_STORED
+
+
+def test_an_unmatched_node_secret_field_mask_is_kept_as_before():
+    # Pre-existing behaviour, preserved by the registry-driven merge: only header paths refuse.
+    incoming = _graph({"id": "qa-1", "type": "qa", "data": {"qa_api_key": "****abcd"}})
+    assert merge_workflow_api_keys(copy.deepcopy(incoming), None) == incoming
+    assert refuse_masked_secrets(copy.deepcopy(incoming)) == incoming

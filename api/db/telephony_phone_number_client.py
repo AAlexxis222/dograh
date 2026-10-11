@@ -183,10 +183,10 @@ class TelephonyPhoneNumberClient(BaseDBClient):
         """
         if not fixes:
             return
-        for config, phone in rows:
-            session.expunge(config)
-            session.expunge(phone)
         try:
+            # One config can own several of the numbers asked for: detach each object once.
+            for detached in {id(o): o for row in rows for o in row}.values():
+                session.expunge(detached)
             for config_id, (_, read, value) in fixes.items():
                 await session.execute(
                     update(TelephonyConfigurationModel)
@@ -227,7 +227,8 @@ class TelephonyPhoneNumberClient(BaseDBClient):
 
         One SQL roundtrip that joins ``telephony_configurations`` and
         ``telephony_phone_numbers`` and matches all of:
-        provider, ``account_id`` column == account_id,
+        provider, ``account_id`` column == account_id (each hit is verified
+        against the row's credentials; see ``_configurations_for_account``),
         ``phone.address_normalized == canonical(to_number)``, and
         ``phone.is_active``, and a non-parked configuration. Replaces the
         previous pattern of resolving the config and the phone number in two
@@ -236,6 +237,10 @@ class TelephonyPhoneNumberClient(BaseDBClient):
         Returns ``(config, phone_number)`` or None when the primary path
         misses (e.g. legacy non-E.164 stored addresses); the caller should
         fall back to the fuzzy ``numbers_match`` path in that case.
+
+        A lookup can write: rows whose ``account_id`` disagrees with their
+        credentials are re-keyed through the same session, best effort (a
+        failing write is logged and the match is still returned).
         """
         if not (provider and account_id and to_number):
             return None
@@ -357,14 +362,19 @@ class TelephonyPhoneNumberClient(BaseDBClient):
         """Rows that already hold one of these inbound routing keys.
 
         Inbound dispatch keys on (provider, account_id, address_normalized) —
-        see ``find_inbound_route_by_account``. That tuple must be globally unique or two orgs race for the same call. The rule and
-        the decision of when to apply it live in
-        ``api.services.telephony.inbound_routing``; this is only its query.
+        see ``find_inbound_route_by_account``. That tuple must be globally unique
+        or two orgs race for the same call. The rule and the decision of when to
+        apply it live in ``api.services.telephony.inbound_routing``; this is its
+        query.
 
         Returns every conflicting (config, phone_number) pair, possibly owned by
         other organizations. ``exclude_configuration_id`` drops the configuration
         being updated so it cannot conflict with itself. Addresses are matched as
         already-canonical ``address_normalized`` values — callers normalize.
+
+        Like ``find_inbound_route_by_account``, it re-keys rows whose ``account_id``
+        disagrees with their credentials (best effort, same session) before it
+        answers.
         """
         if not (provider and account_id and addresses_normalized):
             return []

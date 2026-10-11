@@ -351,11 +351,11 @@ def _pinned_configurations(workflow_run) -> Any:
     return getattr(definition, "workflow_configurations", None) if definition else None
 
 
-def run_settings_for(workflow_run) -> dict[str, Any]:
+def run_config_without_credentials(workflow_run) -> dict[str, Any]:
     """Configuration a loaded run executes with, credentials left as stored
     (references or redactions); the in-memory twin of
-    ``get_workflow_run_settings``. For readers that need no credential, which a
-    reference that no longer resolves must not break.
+    ``get_workflow_run_config_without_credentials``. For readers that need no
+    credential, which a reference that no longer resolves must not break.
 
     The result is a copy: both sources are columns of a loaded ORM row, and a
     consumer that edited the returned document in place would dirty the row and
@@ -367,11 +367,12 @@ def run_settings_for(workflow_run) -> dict[str, Any]:
     return copy.deepcopy(_pinned_configurations(workflow_run) or {})
 
 
-def run_configurations_for(workflow_run) -> dict[str, Any]:
-    """``run_settings_for`` with every credential resolved from the pinned
+def run_config_with_credentials(workflow_run) -> dict[str, Any]:
+    """The run's configuration with every credential resolved from the pinned
     definition, for readers that use one (pipeline start, QA, text chat, quota).
-    Fails closed with ``CredentialRefUnresolved``. The definition is only
-    touched when the snapshot holds a reference (every caller loads it eagerly).
+    Fails closed with ``CredentialRefUnresolved`` or ``CredentialRedacted``. The
+    definition is only touched when the snapshot holds a reference (every
+    caller loads it eagerly).
     """
     frozen = getattr(workflow_run, "effective_configurations", None)
     if frozen is not None:
@@ -381,4 +382,4 @@ def run_configurations_for(workflow_run) -> dict[str, Any]:
             definition_id=getattr(workflow_run, "definition_id", None),
             run_id=getattr(workflow_run, "id", None),
         )
-    return run_settings_for(workflow_run)
+    return run_config_without_credentials(workflow_run)

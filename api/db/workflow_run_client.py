@@ -17,7 +17,7 @@ from api.db.models import (
 )
 from api.enums import CallType, StorageBackend, WorkflowRunMode
 from api.schemas.workflow import WorkflowRunResponseSchema
-from api.services.configuration.credential_refs import stored_secret_paths
+from api.services.configuration.credential_refs import check_no_credential_values
 from api.services.workflow.run_usage_response import format_public_cost_info
 from api.utils.recording_artifacts import get_recording_storage_key
 
@@ -86,17 +86,8 @@ class WorkflowRunClient(BaseDBClient):
                         f"workflow {workflow.id}"
                     )
 
-            # A run stores credential references, never values (VOZ-AC-B1-07):
-            # prepare_workflow_run_inputs builds the document every creator passes.
-            leaked = stored_secret_paths(effective_configurations)
-            if leaked:
-                raise RuntimeError(
-                    "code=run_credential_value_refused "
-                    "where=workflow_runs.effective_configurations:"
-                    f"{','.join(leaked)} reason=a credential value would be stored "
-                    "on the run hint=pass prepare_workflow_run_inputs(...)"
-                    ".effective_configurations, which holds references"
-                )
+            # Run creation enforces this; repeated for a creator that bypasses it.
+            check_no_credential_values(effective_configurations)
 
             # Get the current storage backend based on ENABLE_AWS_S3 flag
             current_backend = StorageBackend.get_current_backend()
@@ -269,14 +260,14 @@ class WorkflowRunClient(BaseDBClient):
             )
             return result.scalars().first()
 
-    async def get_workflow_run_settings(
+    async def get_workflow_run_config_without_credentials(
         self, run_id: int, organization_id: int
     ) -> dict:
         """Configuration the run executes with, credentials left as stored
         (references or redactions): the snapshot frozen at creation, or the
         pinned definition for runs created before the snapshot existed. For
         readers that need no credential; credential readers use
-        ``cascade.run_configurations_for``."""
+        ``cascade.run_config_with_credentials``."""
 
         async with self.async_session() as session:
             result = await session.execute(

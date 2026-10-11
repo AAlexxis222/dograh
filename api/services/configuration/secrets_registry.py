@@ -18,11 +18,9 @@ and lists of strings.
 
 from __future__ import annotations
 
-import copy
 from collections.abc import Iterator
 from typing import Any
 
-from api.services.configuration.credential_refs import is_credential_marker
 from api.services.security.secret_surfaces import (
     SECRET_LEAF_NAMES,
     WORKFLOW_CONFIGURATION_SECRET_PATHS,
@@ -138,20 +136,6 @@ def mask_secrets(document: dict[str, Any] | None) -> dict[str, Any] | None:
     credential reference or redaction a run stores instead of a value
     (credential_refs.py). An empty or ``None`` document is returned unchanged
     rather than copied."""
-    from api.services.configuration.masking import mask_key  # circular at import time
+    from api.services.configuration.masking import mask_paths  # circular at import time
 
-    if not document:
-        return document
-    masked = copy.deepcopy(document)
-    for pattern in SECRET_PATHS:
-        for _path, container, key in iter_leaves(masked, pattern, ()):
-            value = container[key]
-            if is_credential_marker(value):
-                continue
-            if isinstance(value, str):
-                container[key] = mask_key(value)
-            elif isinstance(value, list) and all(
-                isinstance(item, str) for item in value
-            ):
-                container[key] = [mask_key(item) for item in value]
-    return masked
+    return mask_paths(document, SECRET_PATHS)
