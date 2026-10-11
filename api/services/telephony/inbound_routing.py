@@ -74,24 +74,9 @@ def canonical_address(address: str, country_hint: Optional[str] = None) -> str:
 def routing_account_id(
     provider: str, credentials: Optional[Mapping[str, Any]]
 ) -> Optional[str]:
-    """The credential value inbound dispatch matches this provider's calls on.
-
-    This is the value the db client stores in ``telephony_configurations.account_id``
-    on every save. ``None`` when the provider has no account concept (ARI, whose
-    inbound path is keyed differently), when the credential has not been filled
-    in yet, or when it is not a non-empty string or a number.
-    """
-    spec = registry.get_optional(provider)
-    if spec is None or not spec.account_id_credential_field:
-        return None
-    if not isinstance(credentials, Mapping):
-        return None  # a legacy document stored double-encoded is a string
-    value = credentials.get(spec.account_id_credential_field)
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return str(
-            value
-        )  # a JSON number, as the text ``->>`` rendered for the old lookup
-    return value if isinstance(value, str) and value else None
+    """The credential value inbound dispatch matches this provider's calls on
+    (see ``ProviderSpec.account_id_from``, which defines it)."""
+    return registry.account_id_for(provider, credentials)
 
 
 async def assert_no_inbound_routing_conflict(
