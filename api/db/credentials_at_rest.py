@@ -15,7 +15,7 @@ lists those sites and fails on a new one.
 Dual reader until the contraction (``VOZ-FU-N0-24-contract``): a token is decrypted, a plaintext leaf passes as it
 is. A token that cannot be read raises ``CredentialUnreadable`` (fail closed, never an empty value). Without
 ``CREDENTIALS_MASTER_KEY`` values are written in clear, which only happens outside a cell (the cell start check
-refuses to start without the key); ``warn_if_plaintext_at_rest`` says so once at start. Alembic revision
+refuses to start without the key); the start gate of every role (``cell_startup``) says so. Alembic revision
 e2b7c4d9a613 encrypts the rows written before this seam with a frozen copy of these rules.
 """
 
@@ -27,8 +27,8 @@ from collections.abc import Callable
 from functools import partial
 from typing import Any
 
-from loguru import logger
 from sqlalchemy import event, inspect, text
+from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import (
     InstrumentedAttribute,
     get_history,
@@ -174,8 +174,15 @@ def _table_column(column: InstrumentedAttribute) -> tuple[str, str]:
 def seal(
     column: InstrumentedAttribute, pk: int, document: Any, row_key: str | None = None
 ) -> Any:
-    """What to store in ``column`` of row ``pk`` for ``document``: for SQL that bypasses the ORM events."""
+    """What to store in ``column`` of row ``pk`` for ``document``: for SQL that bypasses the ORM events. A keyed
+    store (organization/user configurations) encrypts by row key, so leaving it out is a programming error."""
     table, name = _table_column(column)
+    if row_key is None and any(s.row_key for s in _surfaces(table, name)):
+        raise ValueError(
+            f"code=credential_seal_row_key_missing where={table}.{name} reason=this store encrypts by row key "
+            f"and none was given, so the document would be stored in clear hint=pass row_key (the row's "
+            f"{ROW_KEY_COLUMN} column)"
+        )
     return _seal(table, pk, name, document, row_key)
 
 
@@ -183,16 +190,6 @@ def unseal(column: InstrumentedAttribute, pk: int, document: Any) -> Any:
     """The plaintext of a ``column`` value of row ``pk`` read by SQL that bypasses the ORM events."""
     table, name = _table_column(column)
     return _unseal(table, pk, name, document)
-
-
-def warn_if_plaintext_at_rest() -> None:
-    """Called once at start. A cell never gets here without the key: its start check refuses."""
-    if not encryption_enabled():
-        logger.warning(
-            "code=credentials_at_rest_plaintext where=api.db.credentials_at_rest "
-            f"reason={credential_box.ENV} is not set, so credentials are stored in clear "
-            f"hint=set {credential_box.ENV} (key_id=base64 of 32 bytes) and run alembic upgrade head"
-        )
 
 
 # --- ORM events ---------------------------------------------------------------------------------------------------
@@ -258,10 +255,24 @@ def _after_write(_mapper, _connection, target) -> None:
         set_committed_value(target, key, plain)
 
 
+def _give_back_plaintext(_session, target) -> None:
+    """A rolled-back INSERT expunges the object: it leaves holding its plaintext again, not the tokens."""
+    _after_write(None, None, target)
+
+
+def _drop_stale_plaintext(session, _previous_transaction) -> None:
+    """A rolled-back UPDATE expires the row, which reloads from the database: the plaintext kept for it is stale."""
+    for state in session.identity_map.all_states():
+        state.info.pop(_STASH, None)
+
+
 def register() -> None:
     """Attach the events to every mapped class with a registered secret column (api/db/__init__.py, once)."""
     if _ATTRIBUTES:
         return
+    event.listen(Session, "pending_to_transient", _give_back_plaintext)
+    event.listen(Session, "persistent_to_transient", _give_back_plaintext)
+    event.listen(Session, "after_soft_rollback", _drop_stale_plaintext)
     columns_by_table: dict[str, set[str]] = {}
     for surface in SURFACES:
         columns_by_table.setdefault(surface.table, set()).add(surface.column)

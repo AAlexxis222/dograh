@@ -414,6 +414,17 @@ async def test_core_updates_of_workflow_configurations_are_encrypted(
         raw = await _raw(async_session, table, "workflow_configurations", row_id)
         assert CANARY not in raw and TOKEN.search(raw), (table, raw)
 
+    # Each token decrypts for its own row: a seal with the wrong id fails here.
+    async_session.expunge_all()
+    for model, row_id in (
+        (m.WorkflowDefinitionModel, draft.id),
+        (m.WorkflowDefinitionModel, published),
+        (m.WorkflowModel, workflow.id),
+    ):
+        assert (
+            await async_session.get(model, row_id)
+        ).workflow_configurations == CONFIG
+
 
 @pytest.mark.asyncio
 async def test_column_selects_return_plaintext(
@@ -449,8 +460,18 @@ async def test_column_selects_return_plaintext(
         after_id=draft.id - 1, limit=1
     )
     assert listed == [(draft.id, workflow.id, org.id, CONFIG)]
-    assert await db_session.get_workflow_run_config_without_credentials(legacy_run.id, org.id) == CONFIG
-    assert await db_session.get_workflow_run_config_without_credentials(pinned_run.id, org.id) == CONFIG
+    assert (
+        await db_session.get_workflow_run_config_without_credentials(
+            legacy_run.id, org.id
+        )
+        == CONFIG
+    )
+    assert (
+        await db_session.get_workflow_run_config_without_credentials(
+            pinned_run.id, org.id
+        )
+        == CONFIG
+    )
 
 
 @pytest.mark.asyncio
@@ -512,14 +533,26 @@ async def test_org_rows_of_other_keys_are_not_encrypted(
 # --- no key, unreadable tokens, inbound routing -------------------------------------------------------------------
 
 
+def _start_gate_messages(monkeypatch, capsys, key, cell_role=None):
+    """Run the start gate of every role; return what it wrote to stderr."""
+    from api.services.runtime.cell_startup import assert_cell_startup_config
+
+    monkeypatch.delenv("CELL_ROLE", raising=False)
+    if cell_role:
+        monkeypatch.setenv("CELL_ROLE", cell_role)
+    if key is None:
+        monkeypatch.delenv(credential_box.ENV, raising=False)
+    else:
+        monkeypatch.setenv(credential_box.ENV, key)
+    capsys.readouterr()
+    assert_cell_startup_config("test")
+    return capsys.readouterr().err
+
+
 @pytest.mark.asyncio
-async def test_without_a_key_values_are_stored_in_clear_and_a_warning_says_so(
-    no_key, ctx, async_session
+async def test_without_a_key_values_are_stored_in_clear_and_the_start_gate_says_so(
+    no_key, monkeypatch, capsys, ctx, async_session
 ):
-    from loguru import logger
-
-    from api.db.credentials_at_rest import warn_if_plaintext_at_rest
-
     row = build_row(
         ctx, "tools", "definition", {"config": {"headers": {"X-Key": CANARY}}}, None
     )
@@ -527,30 +560,148 @@ async def test_without_a_key_values_are_stored_in_clear_and_a_warning_says_so(
     await async_session.flush()
     assert CANARY in await _raw(async_session, "tools", "definition", row.id)
 
-    messages = []
-    sink = logger.add(messages.append, level="WARNING", format="{message}")
-    try:
-        warn_if_plaintext_at_rest()
-    finally:
-        logger.remove(sink)
-    assert any(
-        "code=credentials_at_rest_plaintext" in message for message in messages
-    ), messages
+    err = _start_gate_messages(monkeypatch, capsys, None)
+    assert "code=credentials_at_rest_plaintext" in err and "hint=" in err, err
+
+
+def test_with_a_valid_key_the_start_gate_is_silent(monkeypatch, capsys):
+    assert not _start_gate_messages(monkeypatch, capsys, f"k1={KEY}")
+
+
+@pytest.mark.parametrize("cell_role", [None, "arq"])
+def test_a_malformed_key_stops_every_role_at_start(monkeypatch, capsys, cell_role):
+    from api.services.runtime.cell_startup import CellStartupError
+
+    if cell_role:  # the other cell checks pass, so the key is what stops it
+        monkeypatch.setenv("DOGRAH_DEVOPS_SECRET", "devops-secret-for-the-test")
+        monkeypatch.setenv("LOG_LEVEL", "INFO")
+    short = base64.b64encode(b"short").decode()
+    with pytest.raises(
+        CellStartupError, match="code=credentials_master_key_invalid"
+    ) as caught:
+        _start_gate_messages(monkeypatch, capsys, f"k1={short}", cell_role)
+    assert short not in str(caught.value)
+
+
+def test_seal_refuses_a_keyed_store_without_its_row_key(master_key):
+    from api.db.credentials_at_rest import seal
+
+    for column in (
+        m.OrganizationConfigurationModel.value,
+        m.UserConfigurationModel.configuration,
+    ):
+        with pytest.raises(ValueError, match="code=credential_seal_row_key_missing"):
+            seal(column, 1, {"api_key": CANARY})
 
 
 @pytest.mark.asyncio
-async def test_with_a_key_no_warning_is_logged(master_key):
-    from loguru import logger
+async def test_a_failed_insert_gives_the_plaintext_back(master_key, ctx, async_session):
+    from sqlalchemy.exc import IntegrityError
 
-    from api.db.credentials_at_rest import warn_if_plaintext_at_rest
+    headers = {"X-Key": CANARY}
+    row = m.WebhookDeliveryModel(
+        workflow_run_id=ctx["run"].id,
+        organization_id=ctx["org"].id,
+        endpoint_url=None,  # NOT NULL: the INSERT fails after the row was sealed
+        webhook_node_id="n",
+        custom_headers=headers,
+    )
+    with pytest.raises(IntegrityError):
+        async with (
+            async_session.begin_nested()
+        ):  # rolled back on the error, as a request's session would be
+            async_session.add(row)
+            await async_session.flush()
+    assert row.custom_headers == headers
+    assert not inspect(row).info
 
-    messages = []
-    sink = logger.add(messages.append, level="WARNING", format="{message}")
-    try:
-        warn_if_plaintext_at_rest()
-    finally:
-        logger.remove(sink)
-    assert not messages
+
+@pytest.mark.asyncio
+async def test_a_failed_update_leaves_no_stale_plaintext_behind(
+    master_key, ctx, db_session, async_session
+):
+    from sqlalchemy.exc import IntegrityError
+
+    stored = {"config": {"headers": {"X-Key": CANARY}}}
+    tool = await db_session.create_tool(
+        organization_id=ctx["org"].id,
+        user_id=ctx["user"].id,
+        name="t",
+        definition=stored,
+    )
+    row = await async_session.get(m.ToolModel, tool.id)
+    with pytest.raises(IntegrityError):
+        async with async_session.begin_nested():
+            row.definition = {"config": {"headers": {"X-Key": "attempted"}}}
+            row.name = (
+                None  # NOT NULL: the UPDATE fails after the definition was sealed
+            )
+            await async_session.flush()
+    await async_session.refresh(row)
+    row.description = "an unrelated change"
+    await async_session.flush()
+    assert row.definition == stored
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_credential_reaches_the_client_as_a_named_error(
+    master_key, ctx, db_session, async_session, test_client_factory
+):
+    org, user = ctx["org"], ctx["user"]
+    first, second = [
+        await db_session.create_tool(
+            organization_id=org.id,
+            user_id=user.id,
+            name=name,
+            definition={"config": {"headers": {"X-Key": CANARY}}},
+        )
+        for name in ("a", "b")
+    ]
+    await async_session.execute(
+        text(
+            "UPDATE tools SET definition = (SELECT definition FROM tools WHERE id = :a) "
+            "WHERE id = :b"
+        ),
+        {"a": first.id, "b": second.id},
+    )
+    async_session.expunge_all()
+    async with test_client_factory(user) as client:
+        response = await client.get(f"/api/v1/tools/{second.tool_uuid}")
+    assert response.status_code == 500
+    error = response.json()["error"]
+    assert error["code"] == "credential_unreadable"
+    assert error["where"].startswith(f"tools:{second.id}:definition:")
+    assert error["reason"] and error["hint"]
+    assert CANARY not in response.text and "v1:" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_the_workflow_summary_does_not_read_credentials(
+    master_key, ctx, db_session, async_session, test_client_factory
+):
+    org, user = ctx["org"], ctx["user"]
+    good, broken = [
+        await db_session.create_workflow(
+            name=name,
+            workflow_definition={},
+            user_id=user.id,
+            organization_id=org.id,
+            workflow_configurations=CONFIG,
+        )
+        for name in ("good", "broken")
+    ]
+    await async_session.execute(
+        text(
+            "UPDATE workflows SET workflow_configurations = "
+            "(SELECT workflow_configurations FROM workflows WHERE id = :a) WHERE id = :b"
+        ),
+        {"a": good.id, "b": broken.id},
+    )
+    async_session.expunge_all()
+    async with test_client_factory(user) as client:
+        response = await client.get("/api/v1/workflow/summary")
+    assert response.status_code == 200, response.text
+    assert {w["name"] for w in response.json()} >= {"good", "broken"}
 
 
 @pytest.mark.asyncio

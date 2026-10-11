@@ -210,3 +210,67 @@ def test_script_runs_from_repo_root_without_pythonpath():
     r = subprocess.run([sys.executable, "scripts/xpand/deprecation_sweep.py"], cwd=REPO_ROOT, env=env,
                        capture_output=True, text=True, timeout=120)
     assert r.returncode == 2 and "deprecation_sweep_no_database" in r.stdout, r.stderr
+
+
+# --- documents encrypted at rest (VOZ-N0-24c) ---------------------------------------------------------------------
+
+
+def _key(monkeypatch, value):
+    from api.services.security import credential_box
+
+    if value is None:
+        monkeypatch.delenv(credential_box.ENV, raising=False)
+    else:
+        monkeypatch.setenv(credential_box.ENV, value)
+    credential_box.load_keys.cache_clear()
+
+
+def _whole_token(monkeypatch, table, row_id, column, document):
+    """A document stored whole as one token, as the encryption at rest writes it."""
+    import base64
+
+    from api.services.security import credential_box
+
+    key = "k1=" + base64.b64encode(os.urandom(32)).decode()
+    _key(monkeypatch, key)
+    plaintext = json.dumps(document, separators=(",", ":")).encode()
+    token = credential_box.encrypt(plaintext, credential_box.aad_for(table, row_id, column, ()))
+    return key, token
+
+
+def test_an_encrypted_org_configuration_is_opened_and_swept(monkeypatch, capsys):
+    document = {"byok": {"pipeline": {"tts": {"provider": "cartesia", "model": "sonic-2", "api_key": "x" * 20}}}}
+    _key_value, token = _whole_token(monkeypatch, "organization_configurations", 5, "value", document)
+    code, out = _run_main(monkeypatch, capsys, [("org", 5, token)])
+    assert code == 1
+    assert "where=org#5:byok.pipeline.tts state=shutdown" in out
+
+
+def test_an_encrypted_user_configuration_goes_through_the_text_regex(monkeypatch, capsys):
+    _key_value, token = _whole_token(
+        monkeypatch, "user_configurations", 8, "configuration", {"model_overrides": {"tts": "sonic-2"}}
+    )
+    code, out = _run_main(monkeypatch, capsys, [("user_config", 8, token)])
+    assert code == 1 and "unstructured_hit where=user_config#8" in out
+
+
+@pytest.mark.parametrize("key", [None, "wrong"])
+def test_a_token_the_sweep_cannot_open_exits_non_zero(monkeypatch, capsys, key):
+    import base64
+
+    _key_value, token = _whole_token(
+        monkeypatch, "organization_configurations", 5, "value", {"tts": {"provider": "cartesia", "model": "sonic-3.6"}}
+    )
+    _key(monkeypatch, None if key is None else "k1=" + base64.b64encode(os.urandom(32)).decode())
+    code, out = _run_main(monkeypatch, capsys, [("org", 5, token), ("workflow", 1, {"x": 1})])
+    assert code == 3
+    (line,) = [line for line in out.splitlines() if line.startswith("deprecation_sweep_encrypted_unreadable")]
+    assert "where=org#5" in line and "reason=" in line and "hint=" in line
+    assert token not in out
+
+
+def test_a_double_encoded_token_text_is_opened_too(monkeypatch, capsys):
+    document = {"tts": {"provider": "cartesia", "model": "sonic-2"}}
+    _key_value, token = _whole_token(monkeypatch, "organization_configurations", 6, "value", document)
+    code, out = _run_main(monkeypatch, capsys, [("org", 6, json.dumps(token))])
+    assert code == 1 and "where=org#6:tts state=shutdown" in out

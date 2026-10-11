@@ -1,4 +1,4 @@
-"""Startup assertion of a cell role (VOZ-AC-B3-61, VOZ-AC-B6-52, VOZ-AC-B6-16). Fail closed, VOZ-AC-B0-28 output.
+"""Startup assertion of a cell role (VOZ-AC-B3-61, VOZ-AC-B6-52, VOZ-AC-B6-16), and of the credential master key in every role. Fail closed, VOZ-AC-B0-28 output.
 
 Light on purpose (no FastAPI import): the api lifespan calls it, and scripts/xpand/require_db_head.sh runs it as
 `python -m api.services.runtime.cell_startup <role>` for every role, so arq and coordinators are covered too.
@@ -21,9 +21,34 @@ class CellStartupError(RuntimeError):
         super().__init__(f"code={code} where={where} reason={reason} hint={hint}")
 
 
+def _assert_credentials_master_key(where: str, *, in_cell: bool) -> None:
+    """VOZ-AC-B6-16. A key that is set must be valid in every role, cell or not: a malformed one would otherwise
+    surface as a generic error at the first credential write. Outside a cell a missing key is allowed and said out
+    loud (VOZ-N0-24c: credentials are then stored in clear); in a cell it stops the role. Validated uncached, so the
+    check reads the environment as it is now, not a key cached earlier in this process."""
+    if not in_cell and not credential_box.master_key_items(
+        os.environ.get(credential_box.ENV, "")
+    ):
+        # stderr, not loguru: this module stays light (require_db_head.sh runs it with any python on PATH).
+        print(
+            f"code=credentials_at_rest_plaintext where={where} reason={credential_box.ENV} is not set, so "
+            f"credentials are stored in clear hint=set {credential_box.ENV} (key_id=base64 of 32 bytes) and run "
+            "alembic upgrade head",
+            file=sys.stderr,
+        )
+        return
+    try:
+        credential_box.validate_master_key()
+    except credential_box.MasterKeyInvalid as e:
+        raise CellStartupError(
+            e.code, where, f"{e.where}: {e.reason}", e.hint
+        ) from None
+
+
 def assert_cell_startup_config(where: str = "api.app") -> None:
-    """Fail closed in a cell (CELL_ROLE set); a no-op anywhere else."""
+    """Fail closed in a cell (CELL_ROLE set). Outside a cell only the credential master key is checked."""
     if not os.environ.get("CELL_ROLE"):
+        _assert_credentials_master_key(where, in_cell=False)
         return
     if not os.environ.get("DOGRAH_DEVOPS_SECRET"):
         raise CellStartupError(
@@ -49,14 +74,7 @@ def assert_cell_startup_config(where: str = "api.app") -> None:
             f"CALL_K_P is not an integer >= 1 ({e})",
             "set CALL_K_P to a positive integer, or unset it for the default of 4",
         ) from e
-    # VOZ-AC-B6-16: the credential master key, fail-fast in a cell only (nothing else loads it at start). Validated
-    # uncached, so the check reads the environment as it is now, not a key cached earlier in this process.
-    try:
-        credential_box.validate_master_key()
-    except credential_box.MasterKeyInvalid as e:
-        raise CellStartupError(
-            e.code, where, f"{e.where}: {e.reason}", e.hint
-        ) from None
+    _assert_credentials_master_key(where, in_cell=True)
     # Durations are not checked here: the gate in scripts/xpand/require_db_head.sh owns them for every role.
 
 

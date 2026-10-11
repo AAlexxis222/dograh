@@ -34,7 +34,6 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from api.constants import REDIS_URL
-from api.db.credentials_at_rest import warn_if_plaintext_at_rest
 from api.errors.mps import MPS_UNAVAILABLE_PUBLIC_MESSAGE, MPSUnavailableError
 from api.mcp_server import mcp
 from api.routes.main import router as main_router
@@ -71,7 +70,6 @@ mcp_app = mcp.http_app(path="/", stateless_http=True)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     assert_cell_startup_config()
-    warn_if_plaintext_at_rest()
     async with mcp_app.lifespan(app):
         # warmup arq pool
         await get_arq_redis()
