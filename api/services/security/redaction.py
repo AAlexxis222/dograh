@@ -109,7 +109,7 @@ def active_secret_values() -> set[str]:
     Today: the values of secret-named environment variables and each credential
     master key with its derived forms (VOZ-AC-B6-16). The log patcher
     binds this set once, at ``setup_logging``, so a secret loaded later (the
-    decrypted database credentials of VOZ-N0-23) is not redacted until the
+    decrypted database credentials of VOZ-N0-24) is not redacted until the
     credential box rebuilds that binding with a refreshed set.
     """
     values = {

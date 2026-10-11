@@ -218,7 +218,7 @@ def test_aad_for_refuses_a_string_path():
 
 
 def test_the_concrete_walk_records_list_positions_under_wildcards():
-    from api.services.configuration.secrets_registry import iter_concrete_leaves
+    from api.services.security.secret_walk import iter_concrete_leaves
 
     document = {"s": {"x": [{"api_key": "a"}, {"deep": [{"api_key": "b"}]}]}}
     assert set(iter_concrete_leaves(document, ("s", "*", "api_key"))) == {
@@ -232,8 +232,8 @@ def test_the_concrete_walk_records_list_positions_under_wildcards():
 
 def test_every_leaf_of_a_graph_walk_gets_its_own_aad():
     # The walk N0-24 encrypts over: each leaf's concrete path (list indexes included) binds its token to that leaf.
-    from api.services.configuration.secrets_registry import iter_concrete_leaves
     from api.services.security.secret_surfaces import WORKFLOW_GRAPH_SECRET_PATHS
+    from api.services.security.secret_walk import iter_concrete_leaves
 
     graph = {
         "nodes": [
@@ -386,7 +386,7 @@ def test_every_node_secret_field_is_registered():
 
 def test_webhook_node_custom_header_values_are_registered_in_every_graph_column():
     # The source of webhook_deliveries.custom_headers: run_integrations.py copies these values verbatim.
-    from api.services.configuration.secrets_registry import iter_concrete_leaves
+    from api.services.security.secret_walk import iter_concrete_leaves
 
     graph = {
         "nodes": [
@@ -413,7 +413,7 @@ def test_webhook_node_custom_header_values_are_registered_in_every_graph_column(
 def test_tool_static_header_values_are_registered():
     # HttpApiConfig.headers and HttpTransferResolverConfig.headers (api/schemas/tool.py): dict[str, str] sent on
     # every request.
-    from api.services.configuration.secrets_registry import iter_concrete_leaves
+    from api.services.security.secret_walk import iter_concrete_leaves
 
     definitions = [
         {"type": "http_api", "config": {"headers": {"Authorization": "Bearer canary"}}},

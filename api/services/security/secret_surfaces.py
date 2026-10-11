@@ -3,7 +3,7 @@
 A surface is ``(table, column, json_path)``, plus ``row_key`` when a keyed store holds a different document per row
 (the ``key`` column of organization_configurations). ``json_path`` is a tuple of keys: ``()`` is the whole column
 value, ``*`` matches one level and ``**`` any depth, and either passes through a list (the walk of
-api/services/configuration/secrets_registry.py). Encryption at rest and VOZ-AT-B6-05 derive from this list.
+api/services/security/secret_walk.py). Encryption at rest and VOZ-AT-B6-05 derive from this list.
 
 ``SECRET_PATHS`` (secrets_registry.py) derives from it directly. The org model-configuration masking reads
 ``SECRET_LEAF_NAMES`` from here, and the node and call-event secret fields that integration packages declare at load
@@ -22,15 +22,7 @@ SECRET_LEAF_NAMES: tuple[str, ...] = (
     "aws_session_token",
 )
 
-# The ``model_overrides`` sections merge.py restores real secrets into
-# (MODEL_OVERRIDE_FIELDS in masking.py is an alias of this); a section outside
-# this list (e.g. "embeddings") is never unmasked on merge, so it must never be
-# masked either. The rule holds for ``model_overrides`` only:
-# ``model_configuration_v2_override`` is masked below and merge.py does not
-# restore it, so a masked value sent back on that section would be stored as
-# the mask string. What stops that today is the explicit masked-value check in
-# ai_model_configuration.py, not the merger. Unifying the two descriptions of
-# the secret set is a tracked follow-up.
+# The ``model_overrides`` sections of a workflow configuration that carry secrets.
 MODEL_OVERRIDE_SECTIONS: tuple[str, ...] = ("llm", "tts", "stt", "realtime")
 
 # Secret leaves of a workflow configuration document: the one a workflow and each of its definitions store, and the

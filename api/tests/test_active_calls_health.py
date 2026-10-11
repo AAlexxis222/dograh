@@ -17,6 +17,7 @@ from api.app import assert_cell_startup_config
 from api.routes import main as main_routes
 from api.services.observability import loop_lag
 from api.services.runtime import cell_state
+from api.services.security import credential_box
 
 SECRET = "test-dograh-devops-secret"
 MASTER_KEY = "k1=" + base64.b64encode(os.urandom(32)).decode()
@@ -144,6 +145,21 @@ def test_startup_refuses_a_missing_or_invalid_master_key_in_cell(
     message = str(e.value)
     for key in ("code=credentials_master_key_invalid where=call ", reason, "hint="):
         assert key in message, message
+
+
+def test_startup_validates_the_master_key_without_touching_the_loader_cache(
+    cell_env, monkeypatch
+):
+    # The check reads the environment as it is now: a key cached earlier must neither hide a bad env nor be cleared.
+    credential_box.load_keys.cache_clear()
+    try:
+        credential_box.load_keys()  # primes the cache from the valid cell env
+        monkeypatch.delenv("CREDENTIALS_MASTER_KEY")
+        with pytest.raises(RuntimeError, match="code=credentials_master_key_invalid"):
+            assert_cell_startup_config("call")
+        assert credential_box.load_keys.cache_info().currsize == 1
+    finally:
+        credential_box.load_keys.cache_clear()
 
 
 def test_startup_is_a_noop_outside_a_cell(monkeypatch):
