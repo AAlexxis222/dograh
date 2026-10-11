@@ -449,8 +449,8 @@ async def test_column_selects_return_plaintext(
         after_id=draft.id - 1, limit=1
     )
     assert listed == [(draft.id, workflow.id, org.id, CONFIG)]
-    assert await db_session.get_workflow_run_settings(legacy_run.id, org.id) == CONFIG
-    assert await db_session.get_workflow_run_settings(pinned_run.id, org.id) == CONFIG
+    assert await db_session.get_workflow_run_config_without_credentials(legacy_run.id, org.id) == CONFIG
+    assert await db_session.get_workflow_run_config_without_credentials(pinned_run.id, org.id) == CONFIG
 
 
 @pytest.mark.asyncio

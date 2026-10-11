@@ -54,7 +54,7 @@ HANDLED: dict[tuple[str, str], str] = {
     ): "unseals each selected document with its definition id",
     (
         "db/workflow_run_client.py",
-        "get_workflow_run_settings",
+        "get_workflow_run_config_without_credentials",
     ): "unseals the run snapshot and the pinned document with their ids",
     (
         "db/user_client.py",
