@@ -37,6 +37,11 @@ from api.services.pipecat.minimax_tts import (
 # Module level, unlike the rest of the realtime module's contents, so the
 # branches below name the service class the way every other branch in this
 # file does — and so a test can patch one.
+from api.services.pipecat.openai_llm import (
+    OPENAI_CHAT_WIRES,
+    build_openai_llm,
+    openai_chat_inputs,
+)
 from api.services.pipecat.realtime.azure_realtime import DograhAzureRealtimeLLMService
 from api.services.pipecat.realtime.gemini_live import DograhGeminiLiveLLMService
 from api.services.pipecat.realtime.gemini_live_vertex import (
@@ -55,6 +60,9 @@ from api.services.pipecat.service_tuning import (
     coerce_settings,
     llm_document_for_role,
     tuning_for,
+)
+from api.services.pipecat.service_tuning import (
+    warn_dropped as _warn_dropped,
 )
 from api.services.pipecat.service_tuning_specs import (
     FLUX_SETTINGS,
@@ -324,21 +332,6 @@ def _validate_runtime_service_url(url: str, field_name: str) -> None:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-def _warn_dropped(section: str, provider: str, model: str, names, reason: str) -> None:
-    """One run-log line per knob the selected model cannot take (#8).
-
-    The PUT accepts a model-dependent knob because the same document may
-    serve a workflow whose model does use it; when the build drops it, the
-    drop is the only trace, so it is named. ``provider`` is the ``kind.name``
-    path prefix (``stt.deepgram``), ``section`` one of settings/ctor/options.
-    """
-    for name in sorted(names):
-        logger.warning(
-            f"service_tuning: {provider}.{section}.{name} dropped for model "
-            f"{model}: {reason}"
-        )
-
-
 _DEEPGRAM_MULTI_MODEL = "flux-general-multi"
 
 
@@ -387,79 +380,6 @@ def _nova_ctor_allowed() -> frozenset[str]:
     """Nova takes ``base_url``, not ``url``; ``url`` is Flux-only, so the
     shared allow-list minus it is what Nova's constructor may receive."""
     return SPECS[("stt", "deepgram")].ctor_allowed - {"url"}
-
-
-def _is_gpt5_reasoning(model: str) -> bool:
-    """Whether ``model`` is a gpt-5 reasoning model over chat/completions.
-
-    Keyed to the model name rather than the provider branch: OpenRouter
-    spells it ``openai/gpt-5-mini`` and Dograh's proxy forwards the bare
-    name. ``gpt-5-chat*`` is the non-reasoning member of the family — it
-    accepts ``temperature`` and rejects ``reasoning_effort``/``verbosity`` —
-    so it is excluded (#15).
-    """
-    return "gpt-5" in model and "gpt-5-chat" not in model
-
-
-# Wires that carry OpenAI's own models and speak chat/completions through an
-# ``OpenAILLMService`` subclass, so the gpt-5 rule applies (#12). Groq,
-# HuggingFace, Speaches, MiniMax and Sarvam serve their own catalogues, which
-# have no gpt-5 model.
-_OPENAI_MODEL_WIRES = frozenset(
-    {
-        ServiceProviders.OPENAI.value,
-        ServiceProviders.ATLASCLOUD.value,
-        ServiceProviders.OPENROUTER.value,
-        ServiceProviders.AZURE.value,
-        ServiceProviders.DOGRAH.value,
-    }
-)
-
-
-def _chat_llm_base(model: str) -> dict:
-    """Base settings for a chat/completions branch that defaults temperature.
-
-    Today's ``temperature: 0.1`` default, except on a gpt-5 reasoning model,
-    which rejects the field over this API: the default would start the run
-    and fail every turn (§1.2), and the plan rewrite in ``_gpt5_chat_plan``
-    never sees the base kwargs.
-    """
-    if _is_gpt5_reasoning(model):
-        return {"model": model}
-    return {"model": model, "temperature": 0.1}
-
-
-def _gpt5_chat_plan(plan, model: str):
-    """Translate an LLM plan into what a gpt-5 reasoning model accepts over
-    chat/completions; a no-op on any other model.
-
-    ``build_chat_completion_params`` sends ``temperature`` and ``max_tokens``
-    verbatim (openai/base_llm.py:356-358), and gpt-5 rejects both over this
-    API: the completion cap has to arrive as ``max_completion_tokens``, and
-    temperature is not supported at all. The cap is translated (lossless);
-    an explicit temperature cannot be honoured, so it fails the run start by
-    name rather than starting a run that silently differs from the document
-    (spec §1.2, R20). An explicitly tuned ``max_completion_tokens`` wins over
-    a translated ``max_tokens``. Returns a copy; the plan is never mutated.
-    """
-    if not _is_gpt5_reasoning(model) or not (
-        {"temperature", "max_tokens"} & set(plan.settings)
-    ):
-        return plan
-    if "temperature" in plan.settings:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"llm temperature is not accepted by {model} over "
-                "chat/completions; remove llm.*.settings.temperature or "
-                "choose another model"
-            ),
-        )
-    settings = {
-        name: value for name, value in plan.settings.items() if name != "max_tokens"
-    }
-    settings.setdefault("max_completion_tokens", plan.settings["max_tokens"])
-    return replace(plan, settings=settings)
 
 
 def _openai_realtime_stt_base_url(base_url: str) -> str:
@@ -1671,8 +1591,8 @@ def create_llm_service_from_provider(
         + (f", location={vertex_location}" if vertex_location else "")
     )
     plan = tuning_for(tuning, "llm", provider)
-    if provider in _OPENAI_MODEL_WIRES:
-        plan = _gpt5_chat_plan(plan, model)
+    if provider in OPENAI_CHAT_WIRES:
+        plan, chat_base = openai_chat_inputs(model, plan)
 
     if provider in (
         ServiceProviders.OPENAI.value,
@@ -1686,30 +1606,7 @@ def create_llm_service_from_provider(
         if base_url:
             _validate_runtime_service_url(base_url, "base_url")
             kwargs["base_url"] = base_url
-        if _is_gpt5_reasoning(model):
-            # Today's behaviour, declared: two extras and no temperature
-            # (spec §5.4). ``extra`` is REGISTRY_OWNED, so these two keys are
-            # only ever reachable through ``options`` — never through
-            # ``from_mapping``'s overflow.
-            reasoning = plan.options.get("reasoning") or {}
-            settings = build_settings(OpenAILLMSettings, {"model": model}, plan)
-            settings.extra = {
-                "reasoning_effort": reasoning.get("effort", "minimal"),
-                "verbosity": plan.options.get("verbosity", "low"),
-            }
-            return OpenAILLMService(api_key=api_key, settings=settings, **kwargs)
-        _warn_dropped(
-            "options",
-            f"llm.{provider}",
-            model,
-            {"reasoning", "verbosity"} & set(plan.options),
-            "only a gpt-5 reasoning model takes reasoning_effort/verbosity",
-        )
-        return OpenAILLMService(
-            api_key=api_key,
-            settings=build_settings(OpenAILLMSettings, _chat_llm_base(model), plan),
-            **kwargs,
-        )
+        return build_openai_llm(provider, model, api_key, plan, kwargs)
     elif provider == ServiceProviders.GROQ.value:
         return GroqLLMService(
             api_key=api_key,
@@ -1728,7 +1625,7 @@ def create_llm_service_from_provider(
         if base_url:
             _validate_runtime_service_url(base_url, "base_url")
             kwargs["base_url"] = base_url
-        settings = build_settings(OpenRouterLLMSettings, _chat_llm_base(model), plan)
+        settings = build_settings(OpenRouterLLMSettings, chat_base, plan)
         if provider_order:
             # OpenRouter's provider preferences are a request-body field the
             # OpenAI client does not know, so they travel in extra_body.
@@ -1763,7 +1660,7 @@ def create_llm_service_from_provider(
         return AzureLLMService(
             api_key=api_key,
             endpoint=endpoint,
-            settings=build_settings(AzureLLMSettings, _chat_llm_base(model), plan),
+            settings=build_settings(AzureLLMSettings, chat_base, plan),
         )
     elif provider == ServiceProviders.DOGRAH.value:
         return DograhLLMService(
