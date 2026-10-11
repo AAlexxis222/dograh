@@ -16,11 +16,15 @@ from sqlalchemy import text
 
 from api.services.security import credential_box
 from api.services.security.secret_surfaces import SURFACES
-from api.tests._at_rest_seed import CANARY, DOCUMENTS, TOKEN, build_row, new_context
+from api.tests._at_rest_seed import CANARY, TOKEN, build_row, documents_for, new_context
 from api.tests._migration_sql import load_migration, run_downgrade, run_upgrade
 
 REVISION = "e2b7c4d9a613"
 KEY = base64.b64encode(os.urandom(32)).decode()
+# Seeded from the surfaces frozen in the migration, not the registry at HEAD: a surface registered later is
+# encrypted by its own migration, and must not make this one look broken.
+FROZEN = load_migration(REVISION)._SURFACES
+DOCUMENTS = documents_for(FROZEN)
 
 
 def _emptied(document):
@@ -42,12 +46,18 @@ SHAPES = {
     "empty_leaves": lambda doc, whole: {} if whole else _emptied(doc),
     "json_null": lambda doc, whole: None,
 }
-WHOLE = {(s.table, s.column, s.row_key) for s in SURFACES if not s.json_path}
+WHOLE = {
+    (table, column, row_key) for table, column, path, row_key in FROZEN if not path
+}
 
 
 @pytest.fixture
 def migration():
-    return load_migration(REVISION)
+    """The migration, with the open-sessions check off: the test process holds other connections to the test DB.
+    test_the_migration_refuses_while_other_sessions_are_connected runs the real check."""
+    module = load_migration(REVISION)
+    module._other_sessions = lambda conn: 0
+    return module
 
 
 def _set_key(monkeypatch, value):
@@ -163,10 +173,12 @@ async def _canaries_anywhere(async_session):
     return found
 
 
-def test_the_frozen_surfaces_are_the_registry(migration):
-    assert list(migration._SURFACES) == [
-        (s.table, s.column, s.json_path, s.row_key) for s in SURFACES
-    ]
+def test_every_frozen_surface_is_still_registered(migration):
+    # The registry may grow (each new surface brings its own migration); it must not lose or change what this
+    # migration encrypted, or the app would stop reading those tokens.
+    registered = {(s.table, s.column, s.json_path, s.row_key) for s in SURFACES}
+    assert set(migration._SURFACES) <= registered
+    assert len(migration._SURFACES) == 108  # the registry at this revision
 
 
 @pytest.mark.asyncio
@@ -235,7 +247,14 @@ async def test_without_a_key_outside_a_cell_the_upgrade_changes_nothing(
     with caplog.at_level(logging.WARNING, logger="alembic.runtime.migration"):
         await run_upgrade(async_session, migration)
     assert await _raws(async_session, rows) == before
-    assert any("stay in clear" in record.getMessage() for record in caplog.records)
+    (message,) = [
+        r.getMessage() for r in caplog.records if "stay in clear" in r.getMessage()
+    ]
+    assert "code=credentials_at_rest_skipped" in message and "reason=" in message
+    assert (
+        "hint=" in message
+        and "alembic downgrade c5e8a2d7f914 && alembic upgrade head" in message
+    )
 
 
 @pytest.mark.asyncio
@@ -337,3 +356,98 @@ async def test_a_token_that_does_not_decrypt_aborts_the_upgrade(
         await run_upgrade(async_session, migration)
     assert f"integrations:{second.id}:connection_details:[]" in str(caught.value)
     assert CANARY not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_the_migration_refuses_while_other_sessions_are_connected(
+    async_session, test_engine, monkeypatch
+):
+    real = load_migration(REVISION)  # the real pg_stat_activity check
+    _set_key(monkeypatch, f"k1={KEY}")
+    async with test_engine.connect() as other:  # another process of some release
+        await other.execute(text("SELECT 1"))
+        for step in (run_upgrade, run_downgrade):
+            with pytest.raises(
+                RuntimeError, match="code=credentials_at_rest_sessions_open"
+            ) as caught:
+                await step(async_session, real)
+            assert "reason=" in str(caught.value) and "hint=stop api, call, arq" in str(
+                caught.value
+            )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_write_on_downgrade_prints_no_credential(
+    migration, async_session, monkeypatch
+):
+    _set_key(monkeypatch, f"k1={KEY}")
+    ctx = await new_context(async_session)
+    row = build_row(ctx, "integrations", "connection_details", {"token": CANARY}, None)
+    async_session.add(row)
+    await async_session.flush()
+    # A constraint the decrypted document breaks: the driver error would print it as a bound parameter.
+    await async_session.execute(
+        text(
+            "ALTER TABLE integrations ADD CONSTRAINT no_canary_for_the_test "
+            f"CHECK (connection_details::text NOT LIKE '%{CANARY}%') NOT VALID"
+        )
+    )
+    with pytest.raises(
+        RuntimeError, match="code=credentials_at_rest_write_failed"
+    ) as caught:
+        await run_downgrade(async_session, migration)
+    assert f"where=integrations:{row.id}:connection_details" in str(caught.value)
+    assert CANARY not in str(caught.value) and caught.value.__cause__ is None
+
+
+UNREGISTERED = {
+    ("organization_configurations", "value", "ORGANIZATION_BOOTSTRAP"): {
+        "status": "completed",
+        "owner_token": "u-1",
+    },
+    ("organization_configurations", "value", "WORKFLOW_CONFIGURATION_DEFAULTS"): {
+        "model_overrides": {"llm": {"api_key": "u-2"}}
+    },
+    ("user_configurations", "configuration", "ONBOARDING"): {
+        "api_key": "u-3",
+        "step": 2,
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_rows_of_unregistered_keys_stay_byte_identical(
+    migration, async_session, monkeypatch
+):
+    _set_key(monkeypatch, None)
+    ctx = await new_context(async_session)
+    rows = []
+    for (table, column, row_key), document in UNREGISTERED.items():
+        row = build_row(ctx, table, column, document, row_key)
+        async_session.add(row)
+        await async_session.flush()
+        rows.append((table, column, row.id, document, row_key))
+    call_events = build_row(
+        ctx,
+        "organization_configurations",
+        "value",
+        {"enabled": True, "config": {"private_key": CANARY, "project_id": "p1"}},
+        "CALL_EVENTS",
+    )
+    async_session.add(call_events)
+    await async_session.flush()
+    seeded = await _raws(async_session, rows)
+
+    _set_key(monkeypatch, f"k1={KEY}")
+    await run_upgrade(async_session, migration)
+    assert await _raws(async_session, rows) == seeded
+    stored = json.loads(
+        await _raw(
+            async_session, "organization_configurations", "value", call_events.id
+        )
+    )
+    assert stored["enabled"] is True and stored["config"]["project_id"] == "p1"
+    assert TOKEN.fullmatch(stored["config"]["private_key"])
+
+    await run_downgrade(async_session, migration)
+    assert await _raws(async_session, rows) == seeded

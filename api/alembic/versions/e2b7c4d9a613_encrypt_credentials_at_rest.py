@@ -6,7 +6,8 @@ Every leaf of the registry of secret surfaces (api/services/security/secret_surf
 both forms until the contraction (VOZ-FU-N0-24-contract) and writes tokens from now on
 (api/db/credentials_at_rest.py); this file keeps frozen copies of the envelope, the AAD, the walk and the
 surfaces because migrations do not import application code. A test checks that the app decrypts what this
-writes and that `_SURFACES` equals the registry at this revision.
+writes and that every surface frozen here is still registered. A surface registered later needs its own
+migration: never edit e2b7c4d9a613 once it has shipped.
 
 Leaves are walked outermost first (an encrypted `credentials` object takes its nested `api_key` along).
 Empty values (null, "", {}, []), tokens and run credential markers (references, `<redacted>`) are left as
@@ -20,12 +21,14 @@ migration aborts (rolling back) unless the tokens equal the secret leaves counte
 leaf is left.
 
 Without CREDENTIALS_MASTER_KEY: in a cell (CELL_ROLE set) the upgrade refuses; anywhere else it changes
-nothing and logs how many leaves stay in clear (a fresh or keyless install; the app also writes in clear
-there). Run it with the API and workers stopped: a row written by an older release meanwhile stays in
-clear until the next write through the app.
+nothing, stamps the revision and logs how many leaves stay in clear, with the way back (set the key, then
+`alembic downgrade c5e8a2d7f914 && alembic upgrade head`).
 
+Every process of an older release READS a token as if it were the credential (it would send it to a
+provider as a key, or to a customer's webhook as a header). So with the key, upgrade and downgrade refuse
+while any other client session is connected to the database: stop api, call, arq and coordinators first.
 Downgrade decrypts every token back (needs the key; refuses without it when a token exists). Roll the API
-image back only after the downgrade: an image without the dual reader sends tokens to providers as keys.
+image back only after the downgrade, with the key.
 
 Revision ID: e2b7c4d9a613
 Revises: c5e8a2d7f914
@@ -341,10 +344,43 @@ def _patterns_for(surfaces, row_key, *, any_row_key=False):
 
 
 def _write(conn, table, column, row_id, value) -> None:
-    conn.execute(
-        sa.text(f"UPDATE {table} SET {column} = CAST(:doc AS json) WHERE id = :id"),
-        {"doc": json.dumps(value), "id": row_id},
-    )
+    try:
+        conn.execute(
+            sa.text(f"UPDATE {table} SET {column} = CAST(:doc AS json) WHERE id = :id"),
+            {"doc": json.dumps(value), "id": row_id},
+        )
+    except sa.exc.DBAPIError as e:
+        # The driver error prints the bound parameters: on a downgrade those are decrypted credentials.
+        raise _Abort(
+            "credentials_at_rest_write_failed",
+            f"{table}:{row_id}:{column}",
+            f"the database refused the write ({type(e.orig).__name__})",
+            "check the row's constraints and triggers, then run the migration again",
+        ) from None
+
+
+def _refuse_other_sessions(conn) -> None:
+    """Fail closed at the only point that sees every process: an older release still connected would read the
+    tokens as credentials (upgrade), or a newer one would keep writing tokens (downgrade)."""
+    others = _other_sessions(conn)
+    if others:
+        raise _Abort(
+            "credentials_at_rest_sessions_open",
+            "pg_stat_activity",
+            f"{others} other client sessions are connected to this database, and a process of another "
+            "release would read the stored credentials in the wrong form",
+            "stop api, call, arq and coordinator processes (and close psql or monitoring sessions on this "
+            "database), then run the migration again",
+        )
+
+
+def _other_sessions(conn) -> int:
+    return conn.execute(
+        sa.text(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+            "AND pid <> pg_backend_pid() AND backend_type = 'client backend'"
+        )
+    ).scalar_one()
 
 
 def _census(conn, keys, table, column, surfaces) -> tuple[int, int]:
@@ -432,11 +468,15 @@ def upgrade() -> None:
             for (table, column), surfaces in _groups().items()
         )
         logger.warning(
-            "VOZ-N0-24c skipped: %s is not set, %d secret leaves stay in clear",
+            "code=credentials_at_rest_skipped where=alembic e2b7c4d9a613 reason=%s is not set, so %d secret "
+            "leaves stay in clear and the revision is stamped hint=set %s, then run `alembic downgrade "
+            "c5e8a2d7f914 && alembic upgrade head`",
             _ENV,
             plain,
+            _ENV,
         )
         return
+    _refuse_other_sessions(conn)
     for (table, column), surfaces in _groups().items():
         _encrypt_column(conn, keys, table, column, surfaces)
 
@@ -458,6 +498,7 @@ def downgrade() -> None:
                 f"set {_ENV} to the key that encrypted them and run the downgrade again",
             )
         return
+    _refuse_other_sessions(conn)
     for (table, column), surfaces in groups.items():
         rows = 0
         for row_id, _row_key, value in _rows(conn, table, column, surfaces):

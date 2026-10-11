@@ -101,20 +101,20 @@ def _put(document, path, value):
     node[path[-1]] = value
 
 
-def _documents() -> dict:
-    """One document per (table, column, row key) with a canary at a concrete path of every surface registered for
-    it: a string leaf, a dict leaf (``credentials``, holding an ``api_key`` that a ``**`` surface also names), and for
+def documents_for(surfaces) -> dict:
+    """One document per (table, column, row key) with a canary at a concrete path of every surface given for it
+    (``(table, column, json_path, row_key)``): a string leaf, a dict leaf (``credentials``, holding an ``api_key`` that a ``**`` surface also names), and for
     a whole column a document with nested values."""
     documents: dict = {}
-    for index, surface in enumerate(SURFACES):
-        group = (surface.table, surface.column, surface.row_key)
-        if not surface.json_path:
+    for index, (table, column, json_path, row_key) in enumerate(surfaces):
+        group = (table, column, row_key)
+        if not json_path:
             documents[group] = {
                 "secret": f"{CANARY}-{index}",
                 "nested": {"list": [f"{CANARY}-{index}b"]},
             }
             continue
-        path = [WILDCARDS.get(part, part) for part in surface.json_path]
+        path = [WILDCARDS.get(part, part) for part in json_path]
         leaf = (
             {"private_key": f"{CANARY}-{index}", "api_key": f"{CANARY}-{index}n"}
             if path[-1] == "credentials"
@@ -124,4 +124,4 @@ def _documents() -> dict:
     return documents
 
 
-DOCUMENTS = _documents()
+DOCUMENTS = documents_for((s.table, s.column, s.json_path, s.row_key) for s in SURFACES)
