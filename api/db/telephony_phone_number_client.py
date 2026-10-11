@@ -130,50 +130,90 @@ class TelephonyPhoneNumberClient(BaseDBClient):
             )
             return result.scalars().first()
 
-    async def _match_unkeyed_configurations(
+    async def _configurations_for_account(
         self, session, stmt, provider: str, account_id: str
     ) -> List[Tuple[TelephonyConfigurationModel, TelephonyPhoneNumberModel]]:
-        """Second chance after an ``account_id`` miss, for rows the column does not
-        cover: a configuration saved by a release that predates the column (a rolling
-        update, or an image rolled back and forward again) keeps ``account_id`` NULL.
+        """The ``(config, phone)`` rows of ``stmt`` whose credentials name ``account_id``.
 
-        ``stmt`` is the caller's query without the account filter. Its NULL rows are
-        matched in Python with the same mapping the writers use, and the column is
-        written for each match, so the next lookup is served by the index. Bounded by
-        the NULL rows of one provider that own the number asked for.
+        ``stmt`` is the caller's query without the account filter. The ``account_id``
+        column is the index, not the truth: a configuration saved by a release that
+        predates the column (a rolling update, or an image rolled back and forward
+        again) can carry NULL, or the id it had before its credentials were edited.
+        So every column hit is checked against the credentials with the writers'
+        mapping, and when nothing verifies, the provider's other rows that own the
+        number are checked the same way. Every row found out of step is re-keyed.
         """
-        result = await session.execute(
-            stmt.where(TelephonyConfigurationModel.account_id.is_(None))
-        )
-        matched = [
-            (config, phone)
-            for config, phone in result.all()
-            if account_id_for(provider, config.credentials) == account_id
-        ]
-        config_ids = {config.id for config, _ in matched}
-        if config_ids:
-            # A second session: committing this one would expire the rows we return.
-            # ``updated_at`` is set to itself so the heal does not look like an edit.
-            async with self.async_session() as writer:
-                await writer.execute(
+        # populate_existing: the compare-and-set below needs the stored value, not a
+        # copy this session may already hold.
+        stmt = stmt.execution_options(populate_existing=True)
+        keyed = (
+            await session.execute(
+                stmt.where(TelephonyConfigurationModel.account_id == account_id)
+            )
+        ).all()
+        rows = []
+        fixes = {}  # config id -> (config, value read, value to store)
+        for config, phone in keyed:
+            actual = account_id_for(provider, config.credentials)
+            if actual == account_id:
+                rows.append((config, phone))
+            else:
+                fixes[config.id] = (config, config.account_id, actual)
+        if not rows:
+            others = await session.execute(
+                stmt.where(
+                    TelephonyConfigurationModel.account_id.is_distinct_from(account_id)
+                )
+            )
+            for config, phone in others.all():
+                if account_id_for(provider, config.credentials) == account_id:
+                    rows.append((config, phone))
+                    fixes[config.id] = (config, config.account_id, account_id)
+        await self._store_account_ids(session, rows, fixes)
+        return rows
+
+    async def _store_account_ids(self, session, rows, fixes) -> None:
+        """Write the re-keyed values through the read's own session (one connection).
+
+        Best effort: the call has already matched, so a failing write is logged and
+        the next lookup retries it. The returned rows are detached first, so neither
+        the commit nor a rollback can expire them. ``updated_at`` is set to itself so
+        the heal does not look like an edit, and each write only applies if the
+        column still holds the value that was read.
+        """
+        if not fixes:
+            return
+        for config, phone in rows:
+            session.expunge(config)
+            session.expunge(phone)
+        try:
+            for config_id, (_, read, value) in fixes.items():
+                await session.execute(
                     update(TelephonyConfigurationModel)
                     .where(
-                        TelephonyConfigurationModel.id.in_(config_ids),
-                        TelephonyConfigurationModel.account_id.is_(None),
+                        TelephonyConfigurationModel.id == config_id,
+                        TelephonyConfigurationModel.account_id.is_(None)
+                        if read is None
+                        else TelephonyConfigurationModel.account_id == read,
                     )
                     .values(
-                        account_id=account_id,
+                        account_id=value,
                         updated_at=TelephonyConfigurationModel.updated_at,
                     )
                 )
-                await writer.commit()
-            for config, _ in matched:
-                set_committed_value(config, "account_id", account_id)
-            logger.info(
-                f"Filled account_id={account_id!r} on provider={provider} "
-                f"configurations {sorted(config_ids)}: saved without it"
+            await session.commit()
+        except Exception as exc:
+            logger.warning(
+                f"account_id_heal_failed: could not re-key configurations "
+                f"{sorted(fixes)}: {exc!r}; the lookup result is unaffected"
             )
-        return matched
+            return
+        for config, _, value in fixes.values():
+            set_committed_value(config, "account_id", value)
+        logger.info(
+            f"Re-keyed account_id on configurations "
+            f"{ {i: v for i, (_, _, v) in fixes.items()} }: it disagreed with their credentials"
+        )
 
     async def find_inbound_route_by_account(
         self,
@@ -222,14 +262,9 @@ class TelephonyPhoneNumberClient(BaseDBClient):
                 stmt = stmt.where(
                     TelephonyConfigurationModel.organization_id == organization_id
                 )
-            result = await session.execute(
-                stmt.where(TelephonyConfigurationModel.account_id == account_id)
+            rows = await self._configurations_for_account(
+                session, stmt, provider, account_id
             )
-            rows = result.all()
-            if not rows:
-                rows = await self._match_unkeyed_configurations(
-                    session, stmt, provider, account_id
-                )
 
             if not rows:
                 logger.info(
@@ -353,15 +388,9 @@ class TelephonyPhoneNumberClient(BaseDBClient):
                 stmt = stmt.where(
                     TelephonyConfigurationModel.id != exclude_configuration_id
                 )
-            result = await session.execute(
-                stmt.where(TelephonyConfigurationModel.account_id == account_id)
+            return await self._configurations_for_account(
+                session, stmt, provider, account_id
             )
-            rows = result.all()
-            if not rows:
-                rows = await self._match_unkeyed_configurations(
-                    session, stmt, provider, account_id
-                )
-            return [(row[0], row[1]) for row in rows]
 
     async def create_phone_number(
         self,
