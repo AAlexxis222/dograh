@@ -19,8 +19,18 @@ API = Path(__file__).resolve().parents[1]
 MODEL = "TelephonyConfigurationModel"
 
 # Applied to string literals (raw SQL), operators after an optional closing paren and cast.
-SQL_OPERATOR = re.compile(r"credentials[\s)\"']*(?:::\w+[\s)]*)?(?:->>?|#>>?|@>)")
-SQL_FUNCTION = re.compile(r"\bjsonb?_\w+\s*\(\s*(?:\w+\.)?credentials\b")
+SQL_OPERATOR = re.compile(
+    r"credentials[\s)\"']*(?:::\w+[\s)]*)?(?:->>?|#>>?|@>)",
+    re.IGNORECASE,
+)
+# Any cast of the column (`credentials::jsonb ? :f`, `credentials::text LIKE :p`) or a
+# CAST(credentials AS ...): the column is only cast to be searched.
+SQL_CAST = re.compile(
+    r"credentials[\s)\"']*::\w+|\bCAST\s*\(\s*\(?\s*credentials\b", re.IGNORECASE
+)
+SQL_FUNCTION = re.compile(r"\bjsonb?_\w+\s*\(\s*(?:\w+\.)?\"?credentials\b")
+SQL_PATTERNS = (SQL_OPERATOR, SQL_CAST, SQL_FUNCTION)
+TABLE_COLLECTIONS = {"c", "columns"}
 # SQLAlchemy accessors that only exist on a JSON column expression, never on a dict.
 JSON_ACCESSORS = {
     "astext",
@@ -70,12 +80,14 @@ def offences(source: str) -> list[str]:
             if isinstance(node.value, ast.Name) and node.value.id == MODEL:
                 if node.attr == "credentials":
                     found.append(f"{line}: {MODEL}.credentials")
-            if node.attr == "credentials" and _name(node.value) == "c":
+            if node.attr == "credentials" and _name(node.value) in TABLE_COLLECTIONS:
                 found.append(f"{line}: table.c.credentials")
             if node.attr in JSON_ACCESSORS and _is_credentials_expression(node.value):
                 found.append(f"{line}: JSON accessor .{node.attr} on credentials")
         elif isinstance(node, ast.Subscript):
-            if _name(node.value) == "c" and _is_credentials_literal(node.slice):
+            if _name(node.value) in TABLE_COLLECTIONS and _is_credentials_literal(
+                node.slice
+            ):
                 found.append(f"{line}: table.c['credentials']")
         elif isinstance(node, ast.Call):
             func = _name(node.func)
@@ -89,7 +101,7 @@ def offences(source: str) -> list[str]:
             if func == "getattr" and len(args) > 1 and _name(args[0]) == MODEL:
                 found.append(f"{line}: getattr({MODEL}, ...)")
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if SQL_OPERATOR.search(node.value) or SQL_FUNCTION.search(node.value):
+            if any(pattern.search(node.value) for pattern in SQL_PATTERNS):
                 found.append(
                     f"{line}: SQL string applies a JSON operator to credentials"
                 )
@@ -146,17 +158,34 @@ REVIEW_FORMS = {
         '     "->> :f = :v")'
     ),
 }
+ROUND2_FORMS = {
+    "CAST(credentials AS jsonb)": (
+        'text("SELECT 1 FROM telephony_configurations WHERE CAST(credentials AS jsonb) ->> :f = :v")'
+    ),
+    "jsonb existence operator": (
+        'text("SELECT 1 FROM telephony_configurations WHERE credentials::jsonb ? :f")'
+    ),
+    "text cast with LIKE": (
+        'text("SELECT 1 FROM telephony_configurations WHERE credentials::text LIKE :p")'
+    ),
+    "quoted identifier in a JSON function": (
+        'text("SELECT json_extract_path_text(\\"credentials\\", :f) FROM t")'
+    ),
+    "table.columns subscript": "select(TelephonyConfigurationModel.__table__.columns['credentials'])",
+    "table.columns attribute": "select(TelephonyConfigurationModel.__table__.columns.credentials)",
+}
 INNOCENT = {
     "instance read": "account_id = (config.credentials or {}).get('x')",
     "instance subscript": "value = config.credentials['api_key']",
     "annotation arrow": "def fetch(credentials) -> dict:\n    return {}\n",
     "docstring": 'def f():\n    """Reads the credentials of the account."""\n',
     "other dict key": "payload = {'credentials': secret}",
+    "prose question": 'raise ValueError("Missing credentials? Add them first.")',
 }
 
 
 def test_the_guard_recognises_every_known_spelling():
-    for name, source in {**OLD_FORMS, **REVIEW_FORMS}.items():
+    for name, source in {**OLD_FORMS, **REVIEW_FORMS, **ROUND2_FORMS}.items():
         assert offences(source), name
 
 

@@ -14,26 +14,23 @@ from sqlalchemy.future import select
 
 from api.db.base_client import BaseDBClient
 from api.db.models import CampaignModel, TelephonyConfigurationModel
-
-
-def _is_missing(credentials: Any, field: str) -> bool:
-    """True when ``field`` is absent, null or empty; a credentials document that is
-    not an object (a legacy row stored double-encoded) has no fields at all."""
-    if not isinstance(credentials, dict):
-        return True
-    return credentials.get(field) in (None, "")
+from api.utils.stored_credentials import credential_value
 
 
 def account_id_for(provider: str, credentials: Any) -> Optional[str]:
-    """The ``account_id`` column value for a credentials document. Imported here
-    because ``inbound_routing`` imports this package, and the registry that
-    ``routing_account_id`` reads is filled by importing the providers package."""
-    import importlib
+    """The ``account_id`` column value for a credentials document: the provider
+    registry maps it (``ProviderSpec.account_id_from``).
 
-    importlib.import_module("api.services.telephony.providers")
-    from api.services.telephony.inbound_routing import routing_account_id
+    The registry is imported here, not at module level: importing
+    ``api.services.telephony`` loads every provider, and the providers import
+    ``api.db``. A top-level import makes ``from api.db import db_client`` inside a
+    provider resolve to the ``api.db.db_client`` module instead of the client.
+    That package import is also what fills the registry, so no provider has to be
+    imported by hand.
+    """
+    from api.services.telephony import registry
 
-    return routing_account_id(provider, credentials)
+    return registry.account_id_for(provider, credentials)
 
 
 class TelephonyConfigurationInUseError(Exception):
@@ -134,12 +131,15 @@ class TelephonyConfigurationClient(BaseDBClient):
         self, organization_id: int, provider: str, field: str
     ) -> int:
         """Count the org's configs of ``provider`` whose ``credentials[field]`` is
-        absent, null or empty. Counted in Python over the loaded rows: the column
-        is not queryable in SQL (see ``telephony_configurations.account_id``)."""
+        not set. Counted in Python over the loaded rows: ``credentials`` is
+        encrypted whole from N0-24c, so SQL cannot look inside it (see the
+        ``account_id`` comment on ``TelephonyConfigurationModel``)."""
         rows = await self.list_telephony_configurations_by_provider(
             organization_id, provider, active_only=False
         )
-        return sum(1 for row in rows if _is_missing(row.credentials, field))
+        return sum(
+            1 for row in rows if credential_value(row.credentials, field) is None
+        )
 
     async def count_telnyx_configs_missing_webhook_public_key(
         self, organization_id: int

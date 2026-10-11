@@ -9,8 +9,13 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.db.models import OrganizationModel, TelephonyPhoneNumberModel
+from api.services.telephony.inbound_routing import (
+    InboundRoutingConflictError,
+    assert_no_inbound_routing_conflict,
+)
 
 # provider -> (credentials as the UI saves them, expected account_id). Secrets sit next to the
 # account field on purpose: Telnyx and Exotel call a secret `api_key`, Vonage's `api_key` is
@@ -397,3 +402,170 @@ async def test_a_json_number_account_id_routes_as_its_text(async_session, db_ses
         )
         is not None
     )
+
+
+# --- rows whose account_id is stale: credentials edited by a release without the column ---
+
+
+async def _edit_credentials_like_the_old_release(async_session, row, credentials):
+    """The previous release rewrote ``credentials`` only: the column keeps the old id."""
+    await async_session.execute(
+        text(
+            "UPDATE telephony_configurations SET credentials = CAST(:c AS json) WHERE id = :id"
+        ),
+        {"c": json.dumps(credentials), "id": row.id},
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stale_account_id_routes_the_new_account_and_not_the_old_one(
+    async_session, db_session
+):
+    organization = await _org(async_session)
+    row = await db_session.create_telephony_configuration(
+        organization.id, "cfg", "twilio", {"account_sid": "AC-old"}
+    )
+    await _number(async_session, organization, row, "+15551230020")
+    await _edit_credentials_like_the_old_release(
+        async_session, row, {"account_sid": "AC-new"}
+    )
+
+    old = await db_session.find_inbound_route_by_account(
+        provider="twilio", account_id="AC-old", to_number="+15551230020"
+    )
+    assert old is None
+    assert await _stored(async_session, row) == "AC-new"  # healed by the stale hit
+
+    await _edit_credentials_like_the_old_release(
+        async_session, row, {"account_sid": "AC-newer"}
+    )
+    new = await db_session.find_inbound_route_by_account(
+        provider="twilio", account_id="AC-newer", to_number="+15551230020"
+    )
+    assert new is not None and new[0].id == row.id
+    assert new[0].account_id == "AC-newer"
+    assert await _stored(async_session, row) == "AC-newer"
+
+
+@pytest.mark.asyncio
+async def test_a_stale_row_does_not_beat_the_organization_that_owns_the_account(
+    async_session, db_session
+):
+    previous = await _org(async_session)
+    owner = await _org(async_session)
+    create = db_session.create_telephony_configuration
+    stale = await create(previous.id, "stale", "twilio", {"account_sid": "AC-x"})
+    await _number(async_session, previous, stale, "+15551230021")
+    await _edit_credentials_like_the_old_release(
+        async_session, stale, {"account_sid": "AC-elsewhere"}
+    )
+    current = await create(owner.id, "current", "twilio", {"account_sid": "AC-x"})
+    owner_phone = await _number(async_session, owner, current, "+15551230021")
+    await _null_out(async_session, current)
+
+    match = await db_session.find_inbound_route_by_account(
+        provider="twilio", account_id="AC-x", to_number="+15551230021"
+    )
+
+    assert match is not None
+    assert (match[0].id, match[1].id) == (current.id, owner_phone.id)
+    assert await _stored(async_session, current) == "AC-x"
+    assert await _stored(async_session, stale) == "AC-elsewhere"
+
+
+@pytest.mark.asyncio
+async def test_a_stale_account_id_gives_no_false_conflict(async_session, db_session):
+    organization = await _org(async_session)
+    row = await db_session.create_telephony_configuration(
+        organization.id, "cfg", "twilio", {"account_sid": "AC-old"}
+    )
+    await _number(async_session, organization, row, "+15551230022")
+    await _edit_credentials_like_the_old_release(
+        async_session, row, {"account_sid": "AC-new"}
+    )
+
+    async def conflicts(account_id):
+        return await db_session.find_inbound_routing_conflicts(
+            provider="twilio",
+            account_id=account_id,
+            addresses_normalized=["+15551230022"],
+        )
+
+    assert await conflicts("AC-old") == []
+    assert [c.id for c, _ in await conflicts("AC-new")] == [row.id]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_heal_still_routes_the_call(
+    async_session, db_session, monkeypatch
+):
+    organization = await _org(async_session)
+    row = await db_session.create_telephony_configuration(
+        organization.id, "cfg", "twilio", {"account_sid": "AC-h"}
+    )
+    await _number(async_session, organization, row, "+15551230023")
+    await _null_out(async_session, row)
+
+    async def failing_commit(self):
+        raise RuntimeError("heal write failed")
+
+    monkeypatch.setattr(AsyncSession, "commit", failing_commit)
+    match = await db_session.find_inbound_route_by_account(
+        provider="twilio", account_id="AC-h", to_number="+15551230023"
+    )
+
+    assert match is not None and match[0].id == row.id
+    assert match[0].credentials == {"account_sid": "AC-h"}  # the row is still readable
+
+
+@pytest.mark.asyncio
+async def test_the_heal_uses_the_session_of_the_read(
+    async_session, db_session, monkeypatch
+):
+    organization = await _org(async_session)
+    row = await db_session.create_telephony_configuration(
+        organization.id, "cfg", "twilio", {"account_sid": "AC-s"}
+    )
+    await _number(async_session, organization, row, "+15551230024")
+    await _null_out(async_session, row)
+    opened = []
+    original = db_session.async_session
+
+    def counting(*args, **kwargs):
+        opened.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(db_session, "async_session", counting)
+    await db_session.find_inbound_route_by_account(
+        provider="twilio", account_id="AC-s", to_number="+15551230024"
+    )
+
+    assert await _stored(async_session, row) == "AC-s"
+    assert len(opened) == 1
+
+
+@pytest.mark.asyncio
+async def test_one_configuration_owning_two_checked_numbers_still_conflicts(
+    async_session, db_session
+):
+    """A heal is pending and the same configuration owns two of the numbers being saved:
+    the check must answer with the conflict, not fail on the shared configuration."""
+    organization = await _org(async_session)
+    row = await db_session.create_telephony_configuration(
+        organization.id, "cfg", "twilio", {"account_sid": "AC-two"}
+    )
+    await _number(async_session, organization, row, "+15551230030")
+    await _number(async_session, organization, row, "+15551230031")
+    await _null_out(async_session, row)
+
+    with pytest.raises(InboundRoutingConflictError) as raised:
+        await assert_no_inbound_routing_conflict(
+            provider="twilio",
+            credentials={"account_sid": "AC-two"},
+            addresses=["+15551230030", "+15551230031"],
+            organization_id=organization.id,
+            db=db_session,
+        )
+
+    assert raised.value.address in {"+15551230030", "+15551230031"}
+    assert await _stored(async_session, row) == "AC-two"
