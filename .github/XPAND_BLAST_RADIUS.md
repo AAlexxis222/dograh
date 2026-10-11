@@ -17,11 +17,16 @@ Importer count is NOT the only axis. In this repo the deciding question is: **is
 | `api/services/workflow/` (64), `telephony/` (56), `configuration/` (35), `auth/` (24), `api/utils` (49) | shared by most routes; telephony = real calls to real people |
 | `docker-compose*.yaml`, `deploy/`, `nginx/`, `api/Dockerfile` | deploy and capacity (`max_conns`, grace periods) |
 | `.github/workflows/` | CI, release automation |
+| `scripts/xpand/call_entrypoint.sh`, `scripts/xpand/require_db_head.sh` | PID 1 of the `call` role, and the start gate of every cell role |
+| `api/services/runtime/cell_startup.py` | the start check of every cell role (api lifespan, and `python -m` from `require_db_head.sh`); a wrong refusal stops every role of the cell |
+| `api/services/security/egress_guard.py`, `api/services/security/egress_flag.py` | the egress URL guard of every tool (custom HTTP tools, transfer resolver, MCP servers) on the call hot path, and the flag rule the cell start check shares (`egress_flag.py`, stdlib only); with `URL_GUARD_ENFORCE=true` (every cell) a wrong block breaks every tool call, a wrong allow reopens SSRF to IMDS / the compose network (VOZ-AC-B5-91) |
+| `api/services/workflow/mcp_tool_session.py` | owns the MCP connection itself (the SDK's streamable-HTTP transport + `ClientSession` on the httpx2 client `egress_guard` builds, no longer Pipecat's `MCPClient`): every MCP tool at call start, MCP discovery and refresh; a regression drops the MCP tools of every call (sessions degrade, the call continues) |
+| `api/services/security/redaction.py`, `api/logging_config.py`, `api/services/security/credential_box.py` | every process, every log line: a regression either leaks a secret or phone number to the sinks or slows the call loop; `credential_box` is imported at load by `redaction.py` and `cell_startup.py`, so a broken import (a missing `cryptography` wheel) stops every process |
 
 ## Leaf (while additive and gated)
 
 - New `adapters/<provider>/`, new engines running in **shadow**, new presets that are not the platform default (once those mechanisms exist, see below).
-- `evals/`, `docs/`, `api/tests/`, `scripts/xpand/`.
+- `evals/`, `docs/`, `api/tests/`, `scripts/xpand/` (except the two trunk files above).
 
 ## Gating mechanisms
 

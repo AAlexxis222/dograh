@@ -2026,7 +2026,10 @@ async def test_destination_mcp_session_is_prepared_and_closed_by_its_owner(monke
         finally:
             await harness.stop()
         assert session._owner_task is None
-        assert session._client is None
+        # No live MCP connection remains: the transport, its HTTP client and the session are closed together.
+        assert session._exit_stack is None
+        with pytest.raises(RuntimeError, match="unavailable"):
+            await session.call("mcp__destination_mcp__echo", {"text": "hello"})
 
 
 @pytest.mark.asyncio

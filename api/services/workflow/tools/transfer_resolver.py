@@ -11,10 +11,16 @@ import httpx
 from loguru import logger
 
 from api.db import db_client
+from api.services.security.egress_guard import ToolUrlBlocked, guard_egress
 from api.services.workflow.tools.custom_tool import _resolve_preset_parameters
 from api.utils.credential_auth import build_auth_header
 from api.utils.template_renderer import render_template
-from api.utils.url_security import validate_user_configured_service_url
+
+
+_RESOLVER_URL_HINT = (
+    "point the transfer resolver at a public http(s) endpoint: private, loopback, link-local and "
+    "internal service addresses are not reachable from tools"
+)
 
 
 @dataclass
@@ -281,7 +287,17 @@ async def _execute_http_resolver(
     resolution_id: str,
 ) -> dict[str, Any]:
     url = resolver.get("url", "")
-    validate_user_configured_service_url(url, field_name="config.resolver.url")
+    try:
+        target = await guard_egress(
+            url, field="config.resolver.url", hint=_RESOLVER_URL_HINT
+        )
+    except ToolUrlBlocked as exc:
+        if not exc.enforced:
+            raise  # guard off: the legacy DEPLOYMENT_MODE refusal keeps its pre-existing path (a ValueError)
+        logger.warning(
+            f"Transfer resolver blocked resolution_id={resolution_id}: {exc}"
+        )
+        raise TransferResolutionError(exc.code, str(exc)) from exc
 
     method = "POST"
     headers = dict(resolver.get("headers", {}) or {})
@@ -313,12 +329,9 @@ async def _execute_http_resolver(
 
     try:
         started_at = time.monotonic()
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        async with target.httpx_client(timeout=timeout_seconds) as client:
             response = await client.request(
-                method=method,
-                url=url,
-                headers=headers,
-                json=body,
+                method=method, url=url, headers=headers, json=body
             )
         duration_ms = int((time.monotonic() - started_at) * 1000)
     except httpx.TimeoutException as exc:

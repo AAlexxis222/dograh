@@ -4185,6 +4185,14 @@ export type McpRefreshResponse = {
      * Error
      */
     error?: string | null;
+    /**
+     * Code
+     */
+    code?: string | null;
+    /**
+     * Hint
+     */
+    hint?: string | null;
 };
 
 /**

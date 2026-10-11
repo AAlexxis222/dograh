@@ -100,6 +100,18 @@ def test_mask_secrets_descends_into_lists_under_model_configuration_v2_override(
     )
 
 
+def test_find_secret_paths_through_a_list_records_no_index():
+    # The 422 writer and masking read index-free, deduped paths; only iter_concrete_leaves records positions.
+    document = {
+        "model_configuration_v2_override": {
+            "stt": [{"credentials": "dg-1234567890"}, {"credentials": "aai-1234567890"}]
+        }
+    }
+    assert find_secret_paths(document) == [
+        ("model_configuration_v2_override", "stt", "credentials")
+    ]
+
+
 def test_mask_workflow_configurations_masks_a_registered_secret():
     document = {"voicemail_detection": {"api_key": "vm-1234567890"}}
     masked = mask_workflow_configurations(document)
