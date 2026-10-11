@@ -100,7 +100,7 @@ HANDLED: dict[tuple[str, str], str] = {
     (
         "scripts/xpand/deprecation_sweep.py",
         "_load_rows",
-    ): "open_encrypted_rows opens every whole-column token; a token it cannot open exits 3, never a clean 0",
+    ): "open_encrypted_rows opens every token through credential_documents.unseal_document; one it cannot open exits 3",
 }
 
 

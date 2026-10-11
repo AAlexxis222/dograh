@@ -35,6 +35,18 @@ TOKEN_PATTERN = (
     r"v1:[A-Za-z0-9_.\-]+:[A-Za-z0-9+/]{16}:[A-Za-z0-9+/]{22,}?={0,2}"
     r"(?=v1:|[^A-Za-z0-9+/=]|$)"
 )
+TOKEN = re.compile(TOKEN_PATTERN)
+
+
+def is_token(value) -> bool:
+    """A stored value that is a token, as opposed to a plaintext value."""
+    return isinstance(value, str) and TOKEN.fullmatch(value) is not None
+
+
+def key_configured() -> bool:
+    """Whether a master key is set at all (validity is ``validate_master_key``): without one, outside a cell,
+    credentials are stored in clear."""
+    return bool(master_key_items(os.environ.get(ENV, "")))
 
 
 class MasterKeyInvalid(RuntimeError):

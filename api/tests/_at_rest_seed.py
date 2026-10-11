@@ -3,7 +3,6 @@
 ``DOCUMENTS`` is derived from ``SURFACES``: a surface added to the registry gets a seed without touching the tests.
 """
 
-import re
 from uuid import uuid4
 
 from api.db import models as m
@@ -12,7 +11,7 @@ from api.services.security import credential_box
 from api.services.security.secret_surfaces import SURFACES
 
 CANARY = "canary-" + "at-rest-" + uuid4().hex[:8]
-TOKEN = re.compile(credential_box.TOKEN_PATTERN)
+TOKEN = credential_box.TOKEN
 
 # A concrete step for a registry wildcard, and the keys that hold lists in real graphs (the walk passes through them).
 WILDCARDS = {"*": "k", "**": "deep"}

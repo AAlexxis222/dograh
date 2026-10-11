@@ -76,15 +76,6 @@ _PATTERNS = [
 ]
 
 
-# A credential_box token (v1:<key_id>:<nonce_b64>:<ct_b64>): ciphertext, but it
-# never belongs in a log line. Anchored on the token's structure, not on its left
-# edge, so a token glued to any text ("xv1:", "workflow_v1:") is matched whole; an
-# earlier "v1:" ("dev1:<token>") cannot start the match, since what follows it does
-# not have that shape, and neither does a look-alike such as "dev1:host:12:34".
-# It runs before every other rule: the bearer rule stops at ":" and the "sk-" rule
-# matches a key id, and either would leave the rest of the token in clear.
-_TOKEN = re.compile(credential_box.TOKEN_PATTERN)
-
 _SECRET_ENV_MARKERS: tuple[str, ...] = ("SECRET", "PASSWORD", "TOKEN")
 # Shorter values ("true", "dev") are flags, not secrets; redacting them would
 # mangle every log line that contains the word.
@@ -152,8 +143,15 @@ def redact(text: str, secrets: Iterable[str] | None = None) -> str:
         secrets = known_secret_values()
     for value in secrets:
         text = text.replace(value, "<redacted:secret>")
+    # A credential_box token (v1:<key_id>:<nonce_b64>:<ct_b64>) is ciphertext, but it
+    # never belongs in a log line. credential_box.TOKEN is anchored on the token's
+    # structure, not on its left edge, so a token glued to any text ("xv1:",
+    # "workflow_v1:") is matched whole, and an earlier "v1:" ("dev1:<token>") or a
+    # look-alike ("dev1:host:12:34") cannot start the match. It runs before every
+    # other rule: the bearer rule stops at ":" and the "sk-" rule matches a key id,
+    # and either would leave the rest of the token in clear.
     if "v1:" in text:
-        text = _TOKEN.sub("<redacted:credential_token>", text)
+        text = credential_box.TOKEN.sub("<redacted:credential_token>", text)
     text = redact_credentials(text)
     folded = fold_for_gate(text)
     for needles, pattern, repl in _PATTERNS:

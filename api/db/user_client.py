@@ -11,13 +11,7 @@ from api.db.base_client import BaseDBClient
 from api.db.models import UserConfigurationModel, UserModel
 from api.enums import UserConfigurationKey
 from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
-from api.services.security.secret_surfaces import SURFACES
-
-# Keys whose document holds secrets (VOZ-AC-B6-15): written through the ORM, whose encryption at rest binds each
-# token to the row id, which the Core upsert below does not know.
-_SECRET_KEYS = {
-    s.row_key for s in SURFACES if s.table == UserConfigurationModel.__tablename__
-}
+from api.services.security.credential_documents import secret_row_keys
 
 
 class UserClient(BaseDBClient):
@@ -93,7 +87,9 @@ class UserClient(BaseDBClient):
         self, user_id: int, key: str, value: dict
     ) -> dict:
         """Create or update the JSON value stored for a user under `key`."""
-        if key in _SECRET_KEYS:
+        # A key whose document holds secrets (VOZ-AC-B6-15) goes through the ORM, whose encryption at rest binds
+        # each token to the row id, which this Core upsert does not know.
+        if key in secret_row_keys(UserConfigurationModel.__tablename__):
             raise ValueError(
                 f"code=user_configuration_secret_key where=user_configurations.{key} "
                 "reason=this Core upsert cannot encrypt a document that holds secrets "

@@ -455,3 +455,26 @@ def test_every_call_event_sink_secret_is_registered():
     assert declared  # bigquery's private_key today
     registered = {s.json_path for s in SURFACES if s.row_key == "CALL_EVENTS"}
     assert {("config", field) for field in declared} <= registered
+
+
+def test_secret_row_keys_name_the_keyed_stores():
+    from api.services.security.credential_documents import secret_row_keys
+
+    assert secret_row_keys("user_configurations") == {"MODEL_CONFIGURATION"}
+    assert "CALL_EVENTS" in secret_row_keys("organization_configurations")
+    assert "ORGANIZATION_BOOTSTRAP" not in secret_row_keys(
+        "organization_configurations"
+    )
+    assert secret_row_keys("tools") == frozenset()
+
+
+def test_key_configured_and_is_token(monkeypatch):
+    token = cb.encrypt(b"x", aad=AAD)
+    assert cb.key_configured() and cb.is_token(token)
+    assert (
+        not cb.is_token(token + " ")
+        and not cb.is_token({"t": token})
+        and not cb.is_token("plain")
+    )
+    monkeypatch.setenv(cb.ENV, " , ")
+    assert not cb.key_configured()

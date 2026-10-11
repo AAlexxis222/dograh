@@ -274,3 +274,31 @@ def test_a_double_encoded_token_text_is_opened_too(monkeypatch, capsys):
     _key_value, token = _whole_token(monkeypatch, "organization_configurations", 6, "value", document)
     code, out = _run_main(monkeypatch, capsys, [("org", 6, json.dumps(token))])
     assert code == 1 and "where=org#6:tts state=shutdown" in out
+
+
+def _leaf_sealed_workflow(monkeypatch):
+    """A workflow configuration whose secret leaf (a ``credentials`` object) is a token, as the app stores it."""
+    import base64
+
+    from api.services.security.credential_documents import seal_document
+
+    _key(monkeypatch, "k1=" + base64.b64encode(os.urandom(32)).decode())
+    document = {"model_configuration_v2_override": {"tts": {"credentials": {"provider": "cartesia", "model": "sonic-2"}}}}
+    sealed = seal_document("workflows", 4, "workflow_configurations", document)
+    assert sealed["model_configuration_v2_override"]["tts"]["credentials"].startswith("v1:")
+    return sealed
+
+
+def test_a_leaf_token_inside_a_document_is_opened(monkeypatch, capsys):
+    code, out = _run_main(monkeypatch, capsys, [("workflow", 4, _leaf_sealed_workflow(monkeypatch))])
+    assert code == 1
+    assert "where=workflow#4:model_configuration_v2_override.tts.credentials state=shutdown" in out
+
+
+def test_a_leaf_token_the_sweep_cannot_open_exits_non_zero(monkeypatch, capsys):
+    sealed = _leaf_sealed_workflow(monkeypatch)
+    _key(monkeypatch, None)
+    code, out = _run_main(monkeypatch, capsys, [("workflow", 4, sealed)])
+    assert code == 3
+    (line,) = [line for line in out.splitlines() if line.startswith("deprecation_sweep_encrypted_unreadable")]
+    assert "where=workflow#4" in line and "reason=" in line and "hint=" in line
