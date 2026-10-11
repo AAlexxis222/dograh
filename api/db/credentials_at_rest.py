@@ -258,7 +258,10 @@ def _after_write(_mapper, _connection, target) -> None:
         set_committed_value(target, key, plain)
 
 
-def _register() -> None:
+def register() -> None:
+    """Attach the events to every mapped class with a registered secret column (api/db/__init__.py, once)."""
+    if _ATTRIBUTES:
+        return
     columns_by_table: dict[str, set[str]] = {}
     for surface in SURFACES:
         columns_by_table.setdefault(surface.table, set()).add(surface.column)
@@ -280,6 +283,3 @@ def _register() -> None:
         )
         event.listen(mapper.class_, "after_insert", _after_write)
         event.listen(mapper.class_, "after_update", _after_write)
-
-
-_register()
