@@ -6,6 +6,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import joinedload, selectinload
 
 from api.db.base_client import BaseDBClient
+from api.db.credentials_at_rest import unseal
 from api.db.filters import apply_workflow_run_filters, get_workflow_run_order_clause
 from api.db.models import (
     OrganizationModel,
@@ -16,6 +17,7 @@ from api.db.models import (
 )
 from api.enums import CallType, StorageBackend, WorkflowRunMode
 from api.schemas.workflow import WorkflowRunResponseSchema
+from api.services.configuration.credential_refs import check_no_credential_values
 from api.services.workflow.run_usage_response import format_public_cost_info
 from api.utils.recording_artifacts import get_recording_storage_key
 
@@ -83,6 +85,9 @@ class WorkflowRunClient(BaseDBClient):
                         f"Workflow definition {definition_id} does not belong to "
                         f"workflow {workflow.id}"
                     )
+
+            # Run creation enforces this; repeated for a creator that bypasses it.
+            check_no_credential_values(effective_configurations)
 
             # Get the current storage backend based on ENABLE_AWS_S3 flag
             current_backend = StorageBackend.get_current_backend()
@@ -255,16 +260,20 @@ class WorkflowRunClient(BaseDBClient):
             )
             return result.scalars().first()
 
-    async def get_workflow_run_configurations(
+    async def get_workflow_run_config_without_credentials(
         self, run_id: int, organization_id: int
     ) -> dict:
-        """Configuration the run executes with: the snapshot frozen at creation,
-        or the pinned definition for runs created before the snapshot existed."""
+        """Configuration the run executes with, credentials left as stored
+        (references or redactions): the snapshot frozen at creation, or the
+        pinned definition for runs created before the snapshot existed. For
+        readers that need no credential; credential readers use
+        ``cascade.run_config_with_credentials``."""
 
         async with self.async_session() as session:
             result = await session.execute(
                 select(
                     WorkflowRunModel.effective_configurations,
+                    WorkflowRunModel.definition_id,
                     WorkflowDefinitionModel.workflow_configurations,
                 )
                 .join(WorkflowModel, WorkflowRunModel.workflow_id == WorkflowModel.id)
@@ -280,8 +289,17 @@ class WorkflowRunClient(BaseDBClient):
             row = result.first()
             if row is None:
                 return {}
-            frozen, pinned = row
-            return frozen if frozen is not None else (pinned or {})
+            frozen, definition_id, pinned = row
+            if frozen is not None:
+                return unseal(WorkflowRunModel.effective_configurations, run_id, frozen)
+            return (
+                unseal(
+                    WorkflowDefinitionModel.workflow_configurations,
+                    definition_id,
+                    pinned,
+                )
+                or {}
+            )
 
     async def get_organization_id_by_workflow_run_id(
         self, run_id: int | None
