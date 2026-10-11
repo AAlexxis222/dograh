@@ -49,11 +49,10 @@ def assert_cell_startup_config(where: str = "api.app") -> None:
             f"CALL_K_P is not an integer >= 1 ({e})",
             "set CALL_K_P to a positive integer, or unset it for the default of 4",
         ) from e
-    # VOZ-AC-B6-16: the credential master key, fail-fast in a cell only (nothing else loads it at start). Cleared first
-    # so the check reads the environment as it is now, not a key cached earlier in this process.
-    credential_box.load_keys.cache_clear()
+    # VOZ-AC-B6-16: the credential master key, fail-fast in a cell only (nothing else loads it at start). Validated
+    # uncached, so the check reads the environment as it is now, not a key cached earlier in this process.
     try:
-        credential_box.load_keys()
+        credential_box.validate_master_key()
     except credential_box.MasterKeyInvalid as e:
         raise CellStartupError(
             e.code, where, f"{e.where}: {e.reason}", e.hint

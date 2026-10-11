@@ -96,9 +96,9 @@ def _parse_key(where: str, item: str, seen: set[str]) -> tuple[str, bytes]:
     return key_id, key
 
 
-@functools.cache
-def load_keys() -> tuple[tuple[str, bytes], ...]:
-    """Validated ``(key_id, key)`` pairs, active first. Raises ``MasterKeyInvalid``; a failure is not cached."""
+def validate_master_key() -> tuple[tuple[str, bytes], ...]:
+    """Parse and validate the master key variable as it is now, uncached. Raises ``MasterKeyInvalid``. The start check
+    calls this, so it never depends on (or disturbs) the cache of ``load_keys``."""
     items = master_key_items(os.environ.get(ENV, ""))
     if not items:
         raise MasterKeyInvalid(
@@ -110,10 +110,16 @@ def load_keys() -> tuple[tuple[str, bytes], ...]:
     return tuple(keys)
 
 
+@functools.cache
+def load_keys() -> tuple[tuple[str, bytes], ...]:
+    """Validated ``(key_id, key)`` pairs, active first. Raises ``MasterKeyInvalid``; a failure is not cached."""
+    return validate_master_key()
+
+
 def aad_for(table: str, pk, column: str, path: Sequence[str | int]) -> bytes:
     """The AAD of the leaf at ``path`` (concrete: list indexes as ints, no ``*``/``**``) of ``table.column`` in row
     ``pk``. The path is compact JSON, so a ``.`` or ``:`` inside a key cannot make two leaves share an AAD.
-    Build ``path`` with ``secrets_registry.iter_concrete_leaves``: it records every list position."""
+    Build ``path`` with ``secret_walk.iter_concrete_leaves``: it records every list position."""
     if isinstance(path, str):
         raise ValueError(  # noqa: TRY004 ruled: every malformed aad_for path is a ValueError, like the wildcard one
             "code=credential_aad_path_str where=credential_box.aad_for reason=path is a str, "

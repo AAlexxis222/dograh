@@ -24,6 +24,11 @@ VISIBLE_CHARS = 4  # number of trailing characters to reveal
 MASK_CHAR = "*"
 MASK_MARKER = "***"  # substring that indicates a masked key
 SERVICE_SECRET_FIELDS = SECRET_LEAF_NAMES
+# The ``model_overrides`` sections merge.py restores real secrets into: a section outside this list (e.g.
+# "embeddings") is never unmasked on merge, so it must never be masked either. The rule holds for ``model_overrides``
+# only: ``model_configuration_v2_override`` is masked too and merge.py does not restore it, so a masked value sent back
+# on that section would be stored as the mask string. What stops that today is the explicit masked-value check in
+# ai_model_configuration.py, not the merger. Unifying the two descriptions of the secret set is a tracked follow-up.
 MODEL_OVERRIDE_FIELDS = MODEL_OVERRIDE_SECTIONS
 VOICEMAIL_DETECTION_KEY = "voicemail_detection"
 
