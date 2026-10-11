@@ -12,18 +12,19 @@ The rules are simple:
 """
 
 import copy
+from collections import defaultdict
 from typing import Any, Dict, Optional
 
 from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
+from api.services.configuration.credential_refs import is_credential_marker
 from api.services.configuration.registry import ServiceConfig
 from api.services.configuration.secrets_registry import mask_secrets
-from api.services.integrations import get_node_secret_fields
+from api.services.security import secret_surfaces
 from api.services.security.secret_surfaces import (
     MODEL_OVERRIDE_SECTIONS,
     SECRET_LEAF_NAMES,
-    SURFACES,
 )
-from api.services.security.secret_walk import iter_leaves, value_at
+from api.services.security.secret_walk import iter_leaves
 
 VISIBLE_CHARS = 4  # number of trailing characters to reveal
 MASK_CHAR = "*"
@@ -196,154 +197,157 @@ def mask_workflow_configurations(config: Optional[Dict]) -> Optional[Dict]:
 
 
 # ---------------------------------------------------------------------------
-# Workflow definition helpers – mask / merge node API keys
+# Registry-driven mask / merge-back (workflow graphs, tool definitions)
 # ---------------------------------------------------------------------------
 
-_NODE_SECRET_FIELDS: dict[str, tuple[str, ...]] = {
-    "qa": ("qa_api_key",),
-}
+# How a list item keeps its identity between a read and a save, by the list's field name: a node by its id, a custom
+# header by its key (a key may repeat: each stored value is used once). Items of any other list match by position.
+_LIST_ITEM_IDENTITY: dict[str, str] = {"nodes": "id", "custom_headers": "key"}
 
 
-def _secret_fields_for_node_type(node_type: str | None) -> tuple[str, ...]:
-    if not node_type:
-        return ()
-    return _NODE_SECRET_FIELDS.get(node_type, ()) or get_node_secret_fields(node_type)
+def _masked(value: Any) -> Any:
+    """The mask of a secret leaf: strings and lists of strings; anything else, and a
+    run's credential reference or redaction (not a secret), is returned as it is."""
+    if is_credential_marker(value):
+        return value
+    if isinstance(value, str):
+        return mask_key(value)
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return [mask_key(item) for item in value]
+    return value
 
 
-def _header_items(data: Any) -> list[dict]:
-    """A node's ``custom_headers`` entries (``[{key, value}]``); every value is a registered secret."""
-    headers = data.get("custom_headers") if isinstance(data, dict) else None
-    if not isinstance(headers, list):
-        return []
-    return [header for header in headers if isinstance(header, dict)]
-
-
-def mask_workflow_definition(workflow_definition: Optional[Dict]) -> Optional[Dict]:
-    """Return a copy of *workflow_definition* with node secret fields and custom header values masked."""
-    if not workflow_definition:
-        return workflow_definition
-
-    masked = copy.deepcopy(workflow_definition)
-    for node in masked.get("nodes", []):
-        for header in _header_items(node.get("data")):
-            if isinstance(header.get("value"), str):
-                header["value"] = mask_key(header["value"])
-        secret_fields = _secret_fields_for_node_type(node.get("type"))
-        if not secret_fields:
-            continue
-        data = node.get("data", {})
-        for field in secret_fields:
-            raw_key = data.get(field)
-            if raw_key:
-                data[field] = mask_key(raw_key)
+def mask_paths(document: Any, paths: tuple[tuple[str, ...], ...]) -> Any:
+    """Copy of *document* with every leaf at a registered *paths* pattern masked.
+    An empty or ``None`` document is returned unchanged rather than copied."""
+    if not document:
+        return document
+    masked = copy.deepcopy(document)
+    for pattern in paths:
+        for _path, container, key in iter_leaves(masked, pattern, ()):
+            container[key] = _masked(container[key])
     return masked
 
 
-def _merge_custom_headers(data: Any, old_data: dict | None, node_id: Any) -> None:
-    """Restore each masked header value from a stored header of the same key in
-    the same node, each stored header used once (a key may repeat); an omitted
-    header is simply gone. A mask with no stored value it masks is refused
-    rather than stored."""
-    unused = [
-        (header.get("key"), header.get("value")) for header in _header_items(old_data)
-    ]
-    for header in _header_items(data):
-        value = header.get("value")
-        if not isinstance(value, str) or not contains_masked_key(value):
-            continue
-        match = next(
-            (
-                index
-                for index, (key, real) in enumerate(unused)
-                if key == header.get("key")
-                and isinstance(real, str)
-                and is_mask_of(value, real)
-            ),
-            None,
-        )
-        if match is None:
-            raise MaskedSecretUnmatched(
-                f"workflow_definition:nodes[{node_id}].data"
-                f".custom_headers[{header.get('key')}]"
+def _identity(document: Any, path: tuple[str | int, ...]) -> tuple[Any, ...]:
+    """*path* with each list position replaced by the item's identity (``_LIST_ITEM_IDENTITY``)."""
+    identity: list[Any] = []
+    node: Any = document
+    field = ""
+    for part in path:
+        node = node[part]
+        if isinstance(part, int):
+            key = _LIST_ITEM_IDENTITY.get(field) if isinstance(node, dict) else None
+            identity.append((key, node.get(key)) if key else part)
+        else:
+            identity.append(part)
+            field = part
+    return tuple(identity)
+
+
+def _describe(identity: tuple[Any, ...]) -> str:
+    text = ""
+    for part in identity:
+        if isinstance(part, tuple):
+            text += f"[{part[1]}]"
+        elif isinstance(part, int):
+            text += f"[{part}]"
+        else:
+            text += f".{part}" if text else part
+    return text
+
+
+def merge_masked_paths(
+    incoming: Any,
+    stored: Any,
+    paths: tuple[tuple[str, ...], ...],
+    *,
+    where: str,
+    keep_unmatched: frozenset[tuple[str, ...]] = frozenset(),
+) -> Any:
+    """Restore, in place, each masked leaf of *incoming* from the *stored* leaf with the
+    same identity, each stored value used once. A leaf left out of *incoming* is gone. A
+    mask with no stored value it masks is refused (``MaskedSecretUnmatched``) rather than
+    stored, except under the patterns in *keep_unmatched*, where it is kept as sent."""
+    if not incoming:
+        return incoming
+    for pattern in paths:
+        candidates: dict[tuple[Any, ...], list[Any]] = defaultdict(list)
+        if stored:
+            for path, container, key in iter_leaves(stored, pattern, (), indexed=True):
+                candidates[_identity(stored, path)].append(container[key])
+        for path, container, key in iter_leaves(incoming, pattern, (), indexed=True):
+            value = container[key]
+            if not isinstance(value, str):
+                continue
+            identity = _identity(incoming, path)
+            pool = candidates.get(identity, [])
+            match = next(
+                (
+                    index
+                    for index, real in enumerate(pool)
+                    if isinstance(real, str) and real and is_mask_of(value, real)
+                ),
+                None,
             )
-        header["value"] = unused.pop(match)[1]
+            if match is not None:
+                container[key] = pool.pop(match)
+            elif contains_masked_key(value) and pattern not in keep_unmatched:
+                raise MaskedSecretUnmatched(f"{where}:{_describe(identity)}")
+    return incoming
+
+
+# Node secret fields (``nodes.data.<field>``) keep the behaviour they had before VOZ-N0-24b: an unmatched mask is
+# stored as sent. Every other graph path (custom headers, any path registered later) refuses it.
+def _node_secret_field_paths() -> frozenset[tuple[str, ...]]:
+    return frozenset(
+        ("nodes", "data", field) for field in secret_surfaces.NODE_SECRET_FIELDS
+    )
+
+
+def mask_workflow_definition(workflow_definition: dict | None) -> dict | None:
+    """Return a copy of *workflow_definition* with every registered graph secret masked."""
+    return mask_paths(workflow_definition, secret_surfaces.WORKFLOW_GRAPH_SECRET_PATHS)
 
 
 def merge_workflow_api_keys(
-    incoming_definition: Optional[Dict], existing_definition: Optional[Dict]
-) -> Optional[Dict]:
-    """Preserve real node secret fields and custom header values when the incoming value is masked."""
-    if not incoming_definition:
-        return incoming_definition
-
-    existing_nodes: dict[Any, dict] = {
-        node.get("id"): node.get("data") or {}
-        for node in (existing_definition or {}).get("nodes", [])
-        if isinstance(node, dict)
-    }
-
-    for node in incoming_definition.get("nodes", []):
-        _merge_custom_headers(
-            node.get("data"), existing_nodes.get(node.get("id")), node.get("id")
-        )
-        secret_fields = _secret_fields_for_node_type(node.get("type"))
-        if not secret_fields:
-            continue
-        data = node.get("data", {})
-
-        old_data = existing_nodes.get(node.get("id"))
-        if not old_data:
-            continue
-
-        for field in secret_fields:
-            incoming_key = data.get(field)
-            if not incoming_key:
-                continue
-
-            old_key = old_data.get(field, "")
-            if old_key and is_mask_of(incoming_key, old_key):
-                data[field] = old_key
-
-    return incoming_definition
+    incoming_definition: dict | None, existing_definition: dict | None
+) -> dict | None:
+    """Restore masked graph secrets in *incoming_definition* from *existing_definition*."""
+    return merge_masked_paths(
+        incoming_definition,
+        existing_definition,
+        secret_surfaces.WORKFLOW_GRAPH_SECRET_PATHS,
+        where="workflow_definition",
+        keep_unmatched=_node_secret_field_paths(),
+    )
 
 
-# ---------------------------------------------------------------------------
-# Tool definition helpers – mask / merge static headers
-# ---------------------------------------------------------------------------
+def refuse_masked_secrets(workflow_definition: dict | None) -> dict | None:
+    """The create/import guard: a masked secret in a client-sent graph has nothing to keep
+    (e.g. a downloaded workflow uploaded again), so it is refused rather than stored."""
+    return merge_workflow_api_keys(workflow_definition, None)
 
-# A tool's static headers and its transfer resolver's (``dict[str, str]``), from the registry.
-TOOL_HEADER_PATHS: tuple[tuple[str, ...], ...] = tuple(
-    surface.json_path for surface in SURFACES if surface.table == "tools"
-)
+
+def _tool_paths() -> tuple[tuple[str, ...], ...]:
+    """A tool's static headers and its transfer resolver's, and any tool path registered later."""
+    return tuple(
+        surface.json_path
+        for surface in secret_surfaces.SURFACES
+        if surface.table == "tools"
+    )
 
 
 def mask_tool_definition(definition: dict | None) -> dict | None:
-    """Return a copy of a tool *definition* with every static header value masked."""
-    if not definition:
-        return definition
-    masked = copy.deepcopy(definition)
-    for pattern in TOOL_HEADER_PATHS:
-        for _path, container, key in iter_leaves(masked, pattern, ()):
-            if isinstance(container[key], str):
-                container[key] = mask_key(container[key])
-    return masked
+    """Return a copy of a tool *definition* with every registered secret masked."""
+    return mask_paths(definition, _tool_paths())
 
 
 def merge_tool_headers(incoming: dict, stored: dict | None) -> dict:
-    """Restore each masked header value in *incoming* from the *stored*
-    definition's header of the same name.
+    """Restore masked secrets in a tool *incoming* definition from the *stored* one."""
+    return merge_masked_paths(incoming, stored, _tool_paths(), where="tools.definition")
 
-    A header left out of *incoming* is gone (the definition is replaced whole);
-    a mask with no stored value it masks is refused rather than stored."""
-    for pattern in TOOL_HEADER_PATHS:
-        for path, container, key in iter_leaves(incoming, pattern, ()):
-            value = container[key]
-            if not isinstance(value, str) or not contains_masked_key(value):
-                continue
-            _found, real = value_at(stored or {}, path)
-            if not (isinstance(real, str) and is_mask_of(value, real)):
-                raise MaskedSecretUnmatched(
-                    f"tools.definition:{'.'.join(map(str, path))}"
-                )
-            container[key] = real
-    return incoming
+
+def refuse_masked_tool_headers(definition: dict) -> dict:
+    """The tool create guard: a masked secret copied from another tool's response has nothing to keep."""
+    return merge_tool_headers(definition, None)

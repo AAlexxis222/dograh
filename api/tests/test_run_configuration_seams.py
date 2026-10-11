@@ -1,9 +1,9 @@
 """Two seams read a run's frozen configuration (VOZ-N0-24b fix r1, MAJOR-1 / MINOR-4).
 
-``run_settings_for`` / ``get_workflow_run_settings`` hand out the document as stored: credential leaves stay
+``run_config_without_credentials`` / ``get_workflow_run_config_without_credentials`` hand out the document as stored: credential leaves stay
 references or redactions, so a reader that needs no credential (the text-chat inactivity sweep, the external PBX
 field mappings before a transfer or a do-not-call) cannot be broken by a reference that no longer resolves.
-``run_configurations_for`` resolves every credential and fails closed, ``<redacted>`` included.
+``run_config_with_credentials`` resolves every credential and fails closed, ``<redacted>`` included.
 """
 
 from types import SimpleNamespace
@@ -15,9 +15,10 @@ from sqlalchemy import text
 from api.db.models import OrganizationModel, UserModel
 from api.enums import CallType, WorkflowRunMode
 from api.services.configuration import cascade
-from api.services.configuration.cascade import run_configurations_for
+from api.services.configuration.cascade import run_config_with_credentials
 from api.services.configuration.credential_refs import (
     REDACTED,
+    CredentialRedacted,
     CredentialRefUnresolved,
     credential_ref,
 )
@@ -59,16 +60,16 @@ def test_settings_keep_references_and_never_need_the_definition():
         "text_chat_inactivity_timeout_seconds": 120,
         "voicemail_detection": {"api_key": credential_ref(5)},
     }
-    settings = cascade.run_settings_for(_run(frozen, definition=None))
+    settings = cascade.run_config_without_credentials(_run(frozen, definition=None))
     assert settings == frozen and settings is not frozen
     with pytest.raises(CredentialRefUnresolved):
-        run_configurations_for(_run(frozen, definition=None))
+        run_config_with_credentials(_run(frozen, definition=None))
 
 
 def test_a_redacted_credential_fails_closed_for_a_credential_reader():
     frozen = {"voicemail_detection": {"api_key": REDACTED}}
-    with pytest.raises(CredentialRefUnresolved) as raised:
-        run_configurations_for(_run(frozen))
+    with pytest.raises(CredentialRedacted) as raised:
+        run_config_with_credentials(_run(frozen))
     error = raised.value
     assert error.code == "credential_redacted"
     assert (
@@ -76,14 +77,14 @@ def test_a_redacted_credential_fails_closed_for_a_credential_reader():
         == "workflow_runs:1:effective_configurations:voicemail_detection.api_key"
     )
     assert error.reason and error.hint
-    assert cascade.run_settings_for(_run(frozen)) == frozen
+    assert cascade.run_config_without_credentials(_run(frozen)) == frozen
 
 
 def test_settings_of_a_run_without_a_snapshot_are_its_pinned_definition():
     definition = SimpleNamespace(workflow_configurations={"max_call_duration": 60})
-    assert cascade.run_settings_for(_run(None, definition=definition)) == {
-        "max_call_duration": 60
-    }
+    assert cascade.run_config_without_credentials(
+        _run(None, definition=definition)
+    ) == {"max_call_duration": 60}
 
 
 # --- the inactivity sweep -------------------------------------------------------------------------------------------
@@ -196,15 +197,20 @@ async def test_settings_readers_survive_a_reference_that_no_longer_resolves(
     db_session, broken_run
 ):
     org, run, _ = broken_run
-    settings = await db_session.get_workflow_run_settings(run.id, org.id)
+    settings = await db_session.get_workflow_run_config_without_credentials(
+        run.id, org.id
+    )
     assert settings["external_pbx_field_mappings"] == MAPPINGS
     assert settings["voicemail_detection"]["api_key"] == credential_ref(
         run.definition_id
     )
     loaded = await db_session.get_workflow_run(run.id, organization_id=org.id)
-    assert cascade.run_settings_for(loaded)["external_pbx_field_mappings"] == MAPPINGS
+    assert (
+        cascade.run_config_without_credentials(loaded)["external_pbx_field_mappings"]
+        == MAPPINGS
+    )
     with pytest.raises(CredentialRefUnresolved):
-        run_configurations_for(loaded)
+        run_config_with_credentials(loaded)
 
 
 async def test_pbx_write_back_still_applies_do_not_call(

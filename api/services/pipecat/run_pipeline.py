@@ -24,7 +24,7 @@ from api.schemas.workflow_configurations import (
     WorkflowConfigurationDefaults,
 )
 from api.services.call_concurrency import call_concurrency
-from api.services.configuration.cascade import run_configurations_for
+from api.services.configuration.cascade import run_config_with_credentials
 from api.services.configuration.registry import ServiceProviders
 from api.services.integrations import (
     IntegrationRuntimeContext,
@@ -495,7 +495,7 @@ async def _run_pipeline_telephony_impl(
     # row's workflow_configurations column tracks the latest *draft*, and the
     # pinned definition can still be edited, so either would let later edits
     # change live call behaviour.
-    run_configs = run_configurations_for(workflow_run)
+    run_configs = run_config_with_credentials(workflow_run)
     ambient_noise_config = run_configs.get("ambient_noise_configuration")
     user_config = await get_effective_ai_model_configuration_for_workflow(
         organization_id=workflow.organization_id,
@@ -620,7 +620,7 @@ async def _run_pipeline_smallwebrtc_impl(
         )
 
     # The run's frozen snapshot, not the workflow row (which mirrors the draft).
-    run_configs = run_configurations_for(workflow_run)
+    run_configs = run_config_with_credentials(workflow_run)
     ambient_noise_config = run_configs.get("ambient_noise_configuration")
     user_config = await get_effective_ai_model_configuration_for_workflow(
         organization_id=workflow.organization_id if workflow else None,
@@ -765,7 +765,7 @@ async def _run_pipeline_impl(
     run_configs = (
         run_configurations
         if run_configurations is not None
-        else run_configurations_for(workflow_run)
+        else run_config_with_credentials(workflow_run)
     )
 
     # Extract configurations from the run's effective configuration

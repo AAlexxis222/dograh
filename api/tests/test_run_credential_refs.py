@@ -1,7 +1,7 @@
 """A run stores credential references, never credential values (VOZ-N0-24b; VOZ-AC-B1-07, VOZ-AT-B6-05 (c)).
 
 Every credential reader of a run's frozen configuration gets the real value back through the resolver,
-``run_configurations_for`` (pipeline, QA, quota, text chat); readers that need no credential (inactivity sweep, PBX
+``run_config_with_credentials`` (pipeline, QA, quota, text chat); readers that need no credential (inactivity sweep, PBX
 write-back, PBX transfer) read it with references in place (test_run_configuration_seams.py).
 """
 
@@ -15,10 +15,11 @@ from api.enums import CallType, WorkflowRunMode
 from api.services.configuration.ai_model_configuration import (
     get_effective_ai_model_configuration_for_workflow,
 )
-from api.services.configuration.cascade import run_configurations_for
+from api.services.configuration.cascade import run_config_with_credentials
 from api.services.configuration.credential_refs import (
     REDACTED,
     CredentialRefUnresolved,
+    CredentialValueRefused,
     credential_ref,
     is_credential_marker,
     resolve_credential_refs,
@@ -246,7 +247,9 @@ async def test_a_new_run_stores_references_and_every_reader_resolves_them(
     assert CANARY not in json.dumps(run_inputs.effective_configurations)
 
     # Column-select settings reader (PBX write-back, PBX transfer): no credential, no value.
-    settings = await db_session.get_workflow_run_settings(run.id, org.id)
+    settings = await db_session.get_workflow_run_config_without_credentials(
+        run.id, org.id
+    )
     assert settings["voicemail_detection"]["api_key"] == credential_ref(
         run_inputs.definition_id
     )
@@ -256,7 +259,7 @@ async def test_a_new_run_stores_references_and_every_reader_resolves_them(
         await db_session.get_workflow_run(run.id, organization_id=org.id),
         (await db_session.get_workflow_run_with_context(run.id))[0],
     ):
-        resolved = run_configurations_for(loaded)
+        resolved = run_config_with_credentials(loaded)
         assert resolved["voicemail_detection"]["api_key"] == f"{CANARY}-vm"
         # ai_model_configuration.py:85-106 compiles the frozen v2 override with its key.
         effective = await get_effective_ai_model_configuration_for_workflow(
@@ -269,7 +272,7 @@ async def test_the_store_refuses_a_credential_value_in_a_run_row(db_session, org
     org, user = org_user
     run, run_inputs = await _run_with(db_session, org, user, {})
 
-    with pytest.raises(RuntimeError, match="voicemail_detection.api_key"):
+    with pytest.raises(CredentialValueRefused, match="voicemail_detection.api_key"):
         await db_session.create_workflow_run(
             name="leak",
             workflow_id=run.workflow_id,
@@ -296,6 +299,37 @@ async def test_a_reference_whose_definition_lost_the_value_fails_closed(
     )
 
     with pytest.raises(CredentialRefUnresolved):
-        run_configurations_for(
+        run_config_with_credentials(
             await db_session.get_workflow_run(run.id, organization_id=org.id)
         )
+
+
+async def test_run_creation_refuses_a_snapshot_that_holds_a_value(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from api.services.workflow import run_creation
+
+    monkeypatch.setattr(
+        run_creation,
+        "load_run_configurations_to_freeze",
+        AsyncMock(return_value={"voicemail_detection": {"api_key": CANARY}}),
+    )
+    workflow = SimpleNamespace(
+        id=1,
+        organization_id=2,
+        released_definition=SimpleNamespace(id=3),
+        current_definition=None,
+    )
+
+    with pytest.raises(CredentialValueRefused) as raised:
+        await run_creation.prepare_workflow_run_inputs(SimpleNamespace(), workflow)
+
+    error = raised.value
+    assert error.code == "run_credential_value_refused"
+    assert (
+        error.where
+        == "workflow_runs.effective_configurations:voicemail_detection.api_key"
+    )
+    assert error.reason and error.hint
+    assert CANARY not in str(error)

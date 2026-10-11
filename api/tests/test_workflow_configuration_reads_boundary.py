@@ -1,7 +1,7 @@
 """Architecture guard: workflow configuration is read through the cascade.
 
 After the cascade, runtime code reads the run's frozen effective document
-(``run_configurations_for`` / ``get_workflow_run_settings``). Reading
+(``run_config_with_credentials`` / ``get_workflow_run_config_without_credentials``). Reading
 ``.workflow_configurations`` (however it is spelled) or
 ``get_definition_configurations_with_owner(`` anywhere
 else lets a draft, the legacy workflow column, or a live organization edit
@@ -84,8 +84,8 @@ def test_runtime_reads_workflow_configuration_only_through_the_cascade():
         if READ_PATTERN.search(line) and not line.lstrip().startswith("#")
     ]
     assert violations == [], (
-        "read the run's frozen configuration (run_configurations_for / "
-        f"get_workflow_run_settings) instead: {violations}"
+        "read the run's frozen configuration (run_config_with_credentials / "
+        f"get_workflow_run_config_without_credentials) instead: {violations}"
     )
 
 
@@ -120,14 +120,14 @@ def test_only_known_callers_resolve_the_live_cascade():
         if LIVE_CASCADE_PATTERN.search(line) and not line.lstrip().startswith("#")
     ]
     assert violations == [], (
-        "a running call reads the run's frozen configuration (run_configurations_for "
-        f"/ get_workflow_run_settings), not the live cascade: {violations}"
+        "a running call reads the run's frozen configuration (run_config_with_credentials "
+        f"/ get_workflow_run_config_without_credentials), not the live cascade: {violations}"
     )
 
 
 # A run's frozen configuration (``workflow_runs.effective_configurations``) holds credential references
-# (credential_refs.py). It is read through two seams only: ``run_settings_for`` / ``get_workflow_run_settings``
-# (credentials left as stored) and ``run_configurations_for`` (credentials resolved, fail closed). A reader that
+# (credential_refs.py). It is read through two seams only: ``run_config_without_credentials`` / ``get_workflow_run_config_without_credentials``
+# (credentials left as stored) and ``run_config_with_credentials`` (credentials resolved, fail closed). A reader that
 # goes around them would hand a provider a reference string as a key, or skip the fail-closed check.
 RUN_SNAPSHOT_SEAMS = {
     Path("services/configuration/cascade.py"),  # the two ORM seams
@@ -157,6 +157,6 @@ def test_run_snapshot_is_read_only_through_the_two_seams():
             if RUN_SNAPSHOT_READ.search(line) and not line.lstrip().startswith("#"):
                 violations.append(f"{relative}:{number}: {line.strip()}")
     assert violations == [], (
-        "read a run's configuration through run_settings_for / get_workflow_run_settings "
-        f"or run_configurations_for: {violations}"
+        "read a run's configuration through run_config_without_credentials / get_workflow_run_config_without_credentials "
+        f"or run_config_with_credentials: {violations}"
     )

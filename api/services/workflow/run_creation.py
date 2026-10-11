@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from api.services.configuration.cascade import load_run_configurations_to_freeze
+from api.services.configuration.credential_refs import check_no_credential_values
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,7 @@ async def prepare_workflow_run_inputs(
         organization_id=workflow.organization_id,
         definition_id=getattr(target_definition, "id", None),
     )
+    check_no_credential_values(frozen)  # VOZ-AC-B1-07: references, never values
     return WorkflowRunInputs(
         definition_id=getattr(target_definition, "id", None),
         initial_context={

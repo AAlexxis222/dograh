@@ -18,7 +18,7 @@ from api.constants import (
 from api.db import db_client
 from api.db.models import WorkflowRunTextSessionModel
 from api.enums import WorkflowRunMode
-from api.services.configuration.cascade import run_settings_for
+from api.services.configuration.cascade import run_config_without_credentials
 from api.services.workflow.text_chat_session_service import (
     TextChatSessionRevisionConflictError,
     complete_text_chat_session,
@@ -151,7 +151,7 @@ def _text_chat_inactivity_timeout_seconds(
     text_session: WorkflowRunTextSessionModel,
 ) -> int:
     """Resolve the timeout from the configuration frozen on this run."""
-    configurations = run_settings_for(text_session.workflow_run)
+    configurations = run_config_without_credentials(text_session.workflow_run)
 
     configured_timeout = configurations.get(
         "text_chat_inactivity_timeout_seconds",

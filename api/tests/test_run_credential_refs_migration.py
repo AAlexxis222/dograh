@@ -13,7 +13,7 @@ from sqlalchemy import text
 
 from api.db.models import OrganizationModel, UserModel
 from api.enums import WorkflowRunMode
-from api.services.configuration.cascade import run_configurations_for
+from api.services.configuration.cascade import run_config_with_credentials
 from api.services.configuration.credential_refs import (
     REDACTED,
     credential_ref,
@@ -244,7 +244,7 @@ async def test_every_row_shape_through_upgrade_and_downgrade(
 
     # The app reads the migrated row back with the values the definition holds.
     loaded = await db_session.get_workflow_run(rows["held"][0], organization_id=org.id)
-    assert run_configurations_for(loaded) == SECRETS
+    assert run_config_with_credentials(loaded) == SECRETS
 
     # Idempotent: a second pass changes nothing.
     await run_upgrade(async_session, migration)

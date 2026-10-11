@@ -8,7 +8,7 @@ from api.services.configuration.cascade import (
     WorkflowDefinitionMissingError,
     WorkflowDefinitionNotVisibleError,
     load_effective_workflow_configurations,
-    run_configurations_for,
+    run_config_with_credentials,
 )
 from api.services.workflow.run_creation import prepare_workflow_run_inputs
 
@@ -76,7 +76,9 @@ async def test_run_freezes_effective_at_creation(db_session, org_user):
 
     run = await _create_run(db_session, workflow, user, org)
 
-    frozen = await db_session.get_workflow_run_settings(run.id, org.id)
+    frozen = await db_session.get_workflow_run_config_without_credentials(
+        run.id, org.id
+    )
     assert frozen["max_call_duration"] == 600
     assert frozen["dictionary"] == "mine"
     assert frozen["max_user_idle_timeout"] == 10.0  # schema layer materialised
@@ -87,11 +89,11 @@ async def test_run_freezes_effective_at_creation(db_session, org_user):
         OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value,
         {"max_call_duration": 900},
     )
-    assert (await db_session.get_workflow_run_settings(run.id, org.id))[
-        "max_call_duration"
-    ] == 600
+    assert (
+        await db_session.get_workflow_run_config_without_credentials(run.id, org.id)
+    )["max_call_duration"] == 600
     reloaded = await db_session.get_workflow_run(run.id, organization_id=org.id)
-    assert run_configurations_for(reloaded)["max_call_duration"] == 600
+    assert run_config_with_credentials(reloaded)["max_call_duration"] == 600
 
 
 async def test_legacy_run_without_snapshot_reads_pinned(db_session, org_user):
@@ -112,10 +114,12 @@ async def test_legacy_run_without_snapshot_reads_pinned(db_session, org_user):
         definition_id=run_inputs.definition_id,
         effective_configurations=None,
     )
-    pinned = await db_session.get_workflow_run_settings(legacy.id, org.id)
+    pinned = await db_session.get_workflow_run_config_without_credentials(
+        legacy.id, org.id
+    )
     assert pinned == {"dictionary": "mine"}  # no org layer retroactively
     reloaded = await db_session.get_workflow_run(legacy.id, organization_id=org.id)
-    assert run_configurations_for(reloaded) == {"dictionary": "mine"}
+    assert run_config_with_credentials(reloaded) == {"dictionary": "mine"}
 
 
 async def test_definition_null_is_400_and_cross_tenant_is_403(

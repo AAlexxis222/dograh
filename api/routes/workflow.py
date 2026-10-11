@@ -41,6 +41,7 @@ from api.services.configuration.masking import (
     mask_workflow_configurations,
     mask_workflow_definition,
     merge_workflow_api_keys,
+    refuse_masked_secrets,
 )
 from api.services.configuration.merge import merge_workflow_configuration_secrets
 from api.services.configuration.resolve import (
@@ -486,7 +487,7 @@ async def create_workflow(
     # clients don't need to generate UUIDs themselves. A masked secret (a
     # downloaded workflow uploaded again) has nothing to keep: 422, not stored.
     workflow_definition = ensure_trigger_paths(
-        merge_workflow_api_keys(request.workflow_definition, None)
+        refuse_masked_secrets(request.workflow_definition)
     )
     trigger_path_issues = validate_trigger_paths(workflow_definition)
     if trigger_path_issues:
