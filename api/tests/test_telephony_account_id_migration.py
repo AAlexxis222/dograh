@@ -45,7 +45,9 @@ ROWS = {
     "empty-object": ("twilio", "{}", None),
     "empty-string": ("twilio", json.dumps({"account_sid": ""}), None),
     "json-null-field": ("twilio", json.dumps({"account_sid": None}), None),
-    "numeric-field": ("twilio", json.dumps({"account_sid": 12345}), None),
+    "numeric-field": ("twilio", json.dumps({"account_sid": 12345}), "12345"),
+    "boolean-field": ("twilio", json.dumps({"account_sid": True}), None),
+    "array-field": ("twilio", json.dumps({"account_sid": ["AC1"]}), None),
     "json-null-document": ("twilio", "null", None),
     "double-encoded": (
         "twilio",
@@ -156,3 +158,38 @@ async def test_backfill_corrects_a_stale_value(
 
     await run_upgrade_backfill_only(async_session, migration)
     assert (await _account_ids(async_session, ids))["twilio"] == "AC1"
+
+
+@pytest.mark.asyncio
+async def test_backfill_never_blanks_a_row_it_can_no_longer_read(async_session):
+    """Once the credentials column holds tokens (a JSON string, not an object), a re-run of
+    the fill must leave the routing keys alone."""
+    migration = load_migration(REVISION)
+    ids = await _seed(async_session)
+    await async_session.execute(
+        text(
+            "UPDATE telephony_configurations SET account_id = 'kept', "
+            "credentials = CAST(:token AS json) WHERE id = :id"
+        ),
+        {"id": ids["twilio"], "token": json.dumps("v1:k:nonce:ct")},
+    )
+    await async_session.execute(
+        text("UPDATE telephony_configurations SET account_id = 'kept2' WHERE id = :id"),
+        {"id": ids["empty-object"]},
+    )
+
+    await run_upgrade_backfill_only(async_session, migration)
+
+    got = await _account_ids(async_session, ids)
+    assert got["twilio"] == "kept"
+    assert got["empty-object"] == "kept2"
+
+
+@pytest.mark.asyncio
+async def test_the_migration_gives_up_on_a_lock_instead_of_queueing(async_session):
+    migration = load_migration(REVISION)
+    for step in (run_downgrade, run_upgrade):
+        await async_session.execute(text("SET LOCAL lock_timeout = 0"))
+        await step(async_session, migration)
+        shown = await async_session.execute(text("SHOW lock_timeout"))
+        assert shown.scalar_one() == "5s", step.__name__

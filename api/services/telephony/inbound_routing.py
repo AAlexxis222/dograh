@@ -79,12 +79,18 @@ def routing_account_id(
     This is the value the db client stores in ``telephony_configurations.account_id``
     on every save. ``None`` when the provider has no account concept (ARI, whose
     inbound path is keyed differently), when the credential has not been filled
-    in yet, or when it is not a non-empty string.
+    in yet, or when it is not a non-empty string or a number.
     """
     spec = registry.get_optional(provider)
     if spec is None or not spec.account_id_credential_field:
         return None
-    value = (credentials or {}).get(spec.account_id_credential_field)
+    if not isinstance(credentials, Mapping):
+        return None  # a legacy document stored double-encoded is a string
+    value = credentials.get(spec.account_id_credential_field)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(
+            value
+        )  # a JSON number, as the text ``->>`` rendered for the old lookup
     return value if isinstance(value, str) and value else None
 
 

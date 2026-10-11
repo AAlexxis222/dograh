@@ -24,7 +24,7 @@ def _is_missing(credentials: Any, field: str) -> bool:
     return credentials.get(field) in (None, "")
 
 
-def _account_id_for(provider: str, credentials: Dict[str, Any]) -> Optional[str]:
+def account_id_for(provider: str, credentials: Any) -> Optional[str]:
     """The ``account_id`` column value for a credentials document. Imported here
     because ``inbound_routing`` imports this package, and the registry that
     ``routing_account_id`` reads is filled by importing the providers package."""
@@ -248,7 +248,7 @@ class TelephonyConfigurationClient(BaseDBClient):
                 name=name,
                 provider=provider,
                 credentials=credentials,
-                account_id=_account_id_for(provider, credentials),
+                account_id=account_id_for(provider, credentials),
                 is_default_outbound=is_default_outbound,
             )
             session.add(row)
@@ -276,7 +276,7 @@ class TelephonyConfigurationClient(BaseDBClient):
                 row.name = name
             if credentials is not None:
                 row.credentials = credentials
-                row.account_id = _account_id_for(row.provider, credentials)
+                row.account_id = account_id_for(row.provider, credentials)
 
             try:
                 await session.commit()

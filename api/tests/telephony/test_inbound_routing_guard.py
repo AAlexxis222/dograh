@@ -46,11 +46,20 @@ def test_routing_account_id_reads_the_providers_account_field():
     )
 
 
+def test_routing_account_id_renders_a_json_number_as_its_text():
+    # what the old ``credentials->>'account_sid'`` comparison matched
+    assert routing_account_id("twilio", {"account_sid": 12345}) == "12345"
+    assert routing_account_id("twilio", {"account_sid": 1.5}) == "1.5"
+    assert routing_account_id("twilio", {"account_sid": "AC1"}) == "AC1"
+
+
 def test_routing_account_id_is_none_when_unset_or_provider_has_no_account():
     assert routing_account_id("twilio", {}) is None
     assert routing_account_id("twilio", {"account_sid": ""}) is None
     assert routing_account_id("twilio", None) is None
-    assert routing_account_id("twilio", {"account_sid": 12345}) is None
+    assert routing_account_id("twilio", {"account_sid": True}) is None
+    assert routing_account_id("twilio", '{"account_sid": "AC1"}') is None
+    assert routing_account_id("twilio", {"account_sid": ["AC1"]}) is None
     # ARI has no account concept; its inbound path is keyed differently.
     assert routing_account_id("ari", {"app_name": "dograh"}) is None
     assert routing_account_id("nonexistent-provider", {"account_sid": "AC1"}) is None
