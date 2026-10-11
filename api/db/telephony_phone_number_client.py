@@ -11,6 +11,7 @@ from loguru import logger
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.future import select
+from sqlalchemy.orm.attributes import set_committed_value
 
 from api.db.base_client import BaseDBClient
 from api.db.models import (
@@ -18,6 +19,7 @@ from api.db.models import (
     TelephonyPhoneNumberModel,
     WorkflowModel,
 )
+from api.db.telephony_configuration_client import account_id_for
 from api.utils.telephony_address import normalize_telephony_address
 
 
@@ -128,6 +130,51 @@ class TelephonyPhoneNumberClient(BaseDBClient):
             )
             return result.scalars().first()
 
+    async def _match_unkeyed_configurations(
+        self, session, stmt, provider: str, account_id: str
+    ) -> List[Tuple[TelephonyConfigurationModel, TelephonyPhoneNumberModel]]:
+        """Second chance after an ``account_id`` miss, for rows the column does not
+        cover: a configuration saved by a release that predates the column (a rolling
+        update, or an image rolled back and forward again) keeps ``account_id`` NULL.
+
+        ``stmt`` is the caller's query without the account filter. Its NULL rows are
+        matched in Python with the same mapping the writers use, and the column is
+        written for each match, so the next lookup is served by the index. Bounded by
+        the NULL rows of one provider that own the number asked for.
+        """
+        result = await session.execute(
+            stmt.where(TelephonyConfigurationModel.account_id.is_(None))
+        )
+        matched = [
+            (config, phone)
+            for config, phone in result.all()
+            if account_id_for(provider, config.credentials) == account_id
+        ]
+        config_ids = {config.id for config, _ in matched}
+        if config_ids:
+            # A second session: committing this one would expire the rows we return.
+            # ``updated_at`` is set to itself so the heal does not look like an edit.
+            async with self.async_session() as writer:
+                await writer.execute(
+                    update(TelephonyConfigurationModel)
+                    .where(
+                        TelephonyConfigurationModel.id.in_(config_ids),
+                        TelephonyConfigurationModel.account_id.is_(None),
+                    )
+                    .values(
+                        account_id=account_id,
+                        updated_at=TelephonyConfigurationModel.updated_at,
+                    )
+                )
+                await writer.commit()
+            for config, _ in matched:
+                set_committed_value(config, "account_id", account_id)
+            logger.info(
+                f"Filled account_id={account_id!r} on provider={provider} "
+                f"configurations {sorted(config_ids)}: saved without it"
+            )
+        return matched
+
     async def find_inbound_route_by_account(
         self,
         provider: str,
@@ -165,7 +212,6 @@ class TelephonyPhoneNumberClient(BaseDBClient):
                 )
                 .where(
                     TelephonyConfigurationModel.provider == provider,
-                    TelephonyConfigurationModel.account_id == account_id,
                     TelephonyPhoneNumberModel.address_normalized
                     == normalized.canonical,
                     TelephonyPhoneNumberModel.is_active.is_(True),
@@ -176,8 +222,14 @@ class TelephonyPhoneNumberClient(BaseDBClient):
                 stmt = stmt.where(
                     TelephonyConfigurationModel.organization_id == organization_id
                 )
-            result = await session.execute(stmt)
+            result = await session.execute(
+                stmt.where(TelephonyConfigurationModel.account_id == account_id)
+            )
             rows = result.all()
+            if not rows:
+                rows = await self._match_unkeyed_configurations(
+                    session, stmt, provider, account_id
+                )
 
             if not rows:
                 logger.info(
@@ -292,7 +344,6 @@ class TelephonyPhoneNumberClient(BaseDBClient):
                 )
                 .where(
                     TelephonyConfigurationModel.provider == provider,
-                    TelephonyConfigurationModel.account_id == account_id,
                     TelephonyPhoneNumberModel.address_normalized.in_(
                         list(addresses_normalized)
                     ),
@@ -302,8 +353,15 @@ class TelephonyPhoneNumberClient(BaseDBClient):
                 stmt = stmt.where(
                     TelephonyConfigurationModel.id != exclude_configuration_id
                 )
-            result = await session.execute(stmt)
-            return [(row[0], row[1]) for row in result.all()]
+            result = await session.execute(
+                stmt.where(TelephonyConfigurationModel.account_id == account_id)
+            )
+            rows = result.all()
+            if not rows:
+                rows = await self._match_unkeyed_configurations(
+                    session, stmt, provider, account_id
+                )
+            return [(row[0], row[1]) for row in rows]
 
     async def create_phone_number(
         self,

@@ -6,16 +6,21 @@ whole, so the account id moves to a column of its own: it identifies an account,
 secret (it is already logged on every inbound match).
 
 Expand only: a nullable column, a composite index, and a backfill of the existing rows. The
-backfill is SQL, per provider, from the credential field that identifies the account. A
-credential that is not a JSON object (a legacy document stored double-encoded, a JSON null) or
-whose field is missing, empty or not a string gets NULL: the old `->>` lookup did not match it
-either, and the app writer applies the same rule to every new save.
+backfill is SQL, per provider, from the credential field that identifies the account. It reads
+only rows whose credentials are a JSON object, and only writes a value it found, so a re-run can
+never blank a routing key. A string or a JSON number is the account id (a number as the text
+`->>` renders, which is what the old lookup compared); a missing or empty field, an array, a
+boolean, a legacy document stored double-encoded or a JSON null gets NULL: the old lookup did not
+match those either.
 
-An app instance that still runs the previous release keeps saving credentials without an
-account_id during a rolling update; running `backfill` again after the rollout (it is
-idempotent) closes that window.
+Rows saved by the previous release while this one rolls out, or after an image rollback, keep a
+NULL account_id; the inbound lookup and the duplicate-account check heal them on first use
+(TelephonyPhoneNumberClient), so no operator step is needed.
 
-downgrade() drops the index and the column.
+downgrade() drops the index and the column. Roll the image back FIRST: this release's pods select
+the column and fail on every telephony query once it is gone. Both directions set a short
+lock_timeout so a deploy blocked by a long transaction on the table fails fast instead of
+queueing behind it (and every inbound lookup behind the ALTER).
 
 Revision ID: a4f1c8e27b35
 Revises: d7e3a915c2b8
@@ -52,30 +57,37 @@ _ACCOUNT_ID_FIELDS: dict[str, str] = {
 }
 
 # The value a row must carry after the backfill. `credentials` is a `json` column: `->` keeps the
-# JSON type, so json_typeof tells a string from a number, and `->>` renders the string.
+# JSON type, so json_typeof tells a string or number from the rest, and `->>` renders the text.
 _EXPECTED = (
-    "CASE WHEN json_typeof(credentials) = 'object' "
-    "AND json_typeof(credentials -> CAST(:field AS text)) = 'string' "
+    "CASE WHEN json_typeof(credentials -> CAST(:field AS text)) IN ('string', 'number') "
     "THEN NULLIF(credentials ->> CAST(:field AS text), '') END"
 )
+
+LOCK_TIMEOUT = "5s"
+
+
+def _fail_fast_on_locks() -> None:
+    op.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
 
 
 def backfill(bind) -> None:
     """Fill ``account_id`` from ``credentials`` for every provider that has an account field.
-    Idempotent; the tests call it on seeded rows."""
+    Only object documents are read and only a found value is written, so it can be repeated
+    (the tests do) without ever blanking a row."""
     for provider, field in _ACCOUNT_ID_FIELDS.items():
-        params = {"provider": provider, "field": field}
         bind.execute(
             sa.text(
                 f"UPDATE telephony_configurations SET account_id = {_EXPECTED} "
-                "WHERE provider = :provider"
+                "WHERE provider = :provider AND json_typeof(credentials) = 'object' "
+                f"AND {_EXPECTED} IS NOT NULL"
             ),
-            params,
+            {"provider": provider, "field": field},
         )
         logger.info("telephony_configurations.account_id backfilled for %s", provider)
 
 
 def upgrade() -> None:
+    _fail_fast_on_locks()
     op.add_column(
         "telephony_configurations",
         sa.Column("account_id", sa.Text(), nullable=True),
@@ -85,5 +97,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    _fail_fast_on_locks()
     op.drop_index(INDEX_NAME, table_name="telephony_configurations")
     op.drop_column("telephony_configurations", "account_id")

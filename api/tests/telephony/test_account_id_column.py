@@ -195,6 +195,12 @@ async def test_setup_warning_counts_count_missing_and_empty_fields(
         {"connection_id": "c4", "webhook_public_key": "pk"},
     )
     await create(other.id, "t-other-org", "telnyx", {"connection_id": "c5"})
+    parked = await create(
+        organization.id, "t-inactive", "telnyx", {"connection_id": "c6"}
+    )
+    await db_session.set_telephony_configuration_inactive(
+        parked.id, organization.id, "parked"
+    )
     await create(organization.id, "v-absent", "vonage", {"api_key": "v1"})
     await create(
         organization.id, "v-empty", "vonage", {"api_key": "v2", "signature_secret": ""}
@@ -211,7 +217,7 @@ async def test_setup_warning_counts_count_missing_and_empty_fields(
         await db_session.count_telnyx_configs_missing_webhook_public_key(
             organization.id
         )
-        == 3
+        == 4  # absent, empty, null and the parked (inactive) one: the old SQL counted it
     )
     assert (
         await db_session.count_vonage_configs_missing_signature_secret(organization.id)
@@ -244,4 +250,150 @@ async def test_a_double_encoded_credentials_document_counts_as_missing(
             organization.id
         )
         == 1
+    )
+
+
+# --- rows the previous release saved: account_id NULL with valid credentials ---------
+
+
+async def _null_out(async_session, row) -> None:
+    await async_session.execute(
+        text("UPDATE telephony_configurations SET account_id = NULL WHERE id = :id"),
+        {"id": row.id},
+    )
+
+
+async def _stored(async_session, row, column="account_id"):
+    result = await async_session.execute(
+        text(f"SELECT {column} FROM telephony_configurations WHERE id = :id"),
+        {"id": row.id},
+    )
+    return result.scalar_one()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", [p for p in sorted(ACCOUNT_CASES) if p != "ari"])
+async def test_a_row_with_a_null_account_id_still_routes_and_is_healed(
+    provider, async_session, db_session
+):
+    organization = await _org(async_session)
+    credentials, account_id = ACCOUNT_CASES[provider]
+    row = await db_session.create_telephony_configuration(
+        organization.id, "cfg", provider, credentials
+    )
+    phone = await _number(async_session, organization, row, "+15551230010")
+    await _null_out(async_session, row)
+
+    match = await db_session.find_inbound_route_by_account(
+        provider=provider, account_id=account_id, to_number="+15551230010"
+    )
+
+    assert match is not None
+    assert (match[0].id, match[1].id) == (row.id, phone.id)
+    assert match[0].account_id == account_id
+    assert await _stored(async_session, row) == account_id
+    assert (
+        await db_session.find_inbound_route_by_account(
+            provider=provider, account_id=account_id, to_number="+15551230010"
+        )
+        is not None
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_fallback_skips_other_accounts_ari_inactive_and_other_orgs(
+    async_session, db_session
+):
+    organization = await _org(async_session)
+    other = await _org(async_session)
+    create = db_session.create_telephony_configuration
+
+    wrong = await create(organization.id, "wrong", "twilio", {"account_sid": "AC-w"})
+    await _number(async_session, organization, wrong, "+15551230011")
+    ari = await create(organization.id, "ari", "ari", {"app_name": "dograh"})
+    await _number(async_session, organization, ari, "+15551230012")
+    parked = await create(organization.id, "parked", "twilio", {"account_sid": "AC-p"})
+    await _number(async_session, organization, parked, "+15551230013")
+    await db_session.set_telephony_configuration_inactive(
+        parked.id, organization.id, "parked"
+    )
+    foreign = await create(other.id, "foreign", "twilio", {"account_sid": "AC-f"})
+    await _number(async_session, other, foreign, "+15551230014")
+    for row in (wrong, ari, parked, foreign):
+        await _null_out(async_session, row)
+
+    async def route(account_id, number, **kwargs):
+        return await db_session.find_inbound_route_by_account(
+            provider="twilio", account_id=account_id, to_number=number, **kwargs
+        )
+
+    assert await route("AC-other", "+15551230011") is None
+    assert await route("anything", "+15551230012") is None
+    assert await route("AC-p", "+15551230013") is None
+    assert await route("AC-f", "+15551230014", organization_id=organization.id) is None
+    assert await route("AC-f", "+15551230014", organization_id=other.id) is not None
+    for row in (wrong, ari, parked):
+        assert await _stored(async_session, row) is None
+
+
+@pytest.mark.asyncio
+async def test_the_conflict_check_sees_a_row_with_a_null_account_id(
+    async_session, db_session
+):
+    organization = await _org(async_session)
+    row = await db_session.create_telephony_configuration(
+        organization.id, "cfg", "twilio", {"account_sid": "AC7", "auth_token": "t"}
+    )
+    await _number(async_session, organization, row, "+15551230015")
+    await _null_out(async_session, row)
+
+    found = await db_session.find_inbound_routing_conflicts(
+        provider="twilio", account_id="AC7", addresses_normalized=["+15551230015"]
+    )
+
+    assert [(c.id, p.address) for c, p in found] == [(row.id, "+15551230015")]
+    assert await _stored(async_session, row) == "AC7"
+    assert (
+        await db_session.find_inbound_routing_conflicts(
+            provider="twilio",
+            account_id="AC7",
+            addresses_normalized=["+15551230015"],
+            exclude_configuration_id=row.id,
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_healing_leaves_updated_at_alone(async_session, db_session):
+    organization = await _org(async_session)
+    row = await db_session.create_telephony_configuration(
+        organization.id, "cfg", "twilio", {"account_sid": "AC8"}
+    )
+    await _number(async_session, organization, row, "+15551230016")
+    await _null_out(async_session, row)
+    before = await _stored(async_session, row, "updated_at")
+
+    await db_session.find_inbound_route_by_account(
+        provider="twilio", account_id="AC8", to_number="+15551230016"
+    )
+
+    assert await _stored(async_session, row, "account_id") == "AC8"
+    assert await _stored(async_session, row, "updated_at") == before
+
+
+@pytest.mark.asyncio
+async def test_a_json_number_account_id_routes_as_its_text(async_session, db_session):
+    organization = await _org(async_session)
+    row = await db_session.create_telephony_configuration(
+        organization.id, "cfg", "twilio", {"account_sid": 12345}
+    )
+    await _number(async_session, organization, row, "+15551230017")
+
+    assert row.account_id == "12345"
+    assert (
+        await db_session.find_inbound_route_by_account(
+            provider="twilio", account_id="12345", to_number="+15551230017"
+        )
+        is not None
     )
