@@ -125,6 +125,8 @@ TABLE_REF = r"\b(?:from|join|update|into)\s+\"?({tables})\b"
 SQL_TABLE = re.compile(
     TABLE_REF.format(tables="|".join(map(re.escape, TABLES))), re.IGNORECASE
 )
+PERCENT_FIELD = re.compile(r"%(?:\([^)]*\))?[-#0 +]*\d*(?:\.\d+)?[sdirfx]")
+FORMAT_FIELD = re.compile(r"\{[^{}]*\}")
 # An f-string whose table name is interpolated (NUL marks an interpolation): the walk cannot tell which table.
 SQL_DYNAMIC_TABLE = re.compile(
     r"\bselect\b.*?\b(?:from|join)\s+\"?\x00|\bupdate\s+\"?\x00\"?\s+set\b|\binsert\s+into\s+\"?\x00",
@@ -341,14 +343,56 @@ class _Scan:
                 if not isinstance(self.parents.get(node), ast.JoinedStr):
                     self.string(node, node.value)
             elif isinstance(node, ast.JoinedStr):
-                text = "".join(
-                    part.value if isinstance(part, ast.Constant) else "\x00"
-                    for part in node.values
+                self.built_sql(
+                    node,
+                    [
+                        p.value if isinstance(p, ast.Constant) else None
+                        for p in node.values
+                    ],
                 )
-                if SQL_DYNAMIC_TABLE.search(text):
-                    self.flag(node, "raw SQL on an interpolated table name")
-                self.string(node, text)
+            elif (
+                isinstance(node, ast.BinOp)
+                and isinstance(node.op, ast.Mod)
+                and _is_str(node.left)
+            ):
+                self.built_sql(node, [PERCENT_FIELD.sub("\x00", node.left.value)])
+            elif (
+                isinstance(node, ast.BinOp)
+                and isinstance(node.op, ast.Add)
+                and not (
+                    isinstance(self.parents.get(node), ast.BinOp)
+                    and isinstance(self.parents[node].op, ast.Add)
+                )
+            ):
+                parts = _concatenated(node)
+                if any(isinstance(part, str) for part in parts):
+                    self.built_sql(node, parts)
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "format"
+                and _is_str(node.func.value)
+            ):
+                self.built_sql(node, [FORMAT_FIELD.sub("\x00", node.func.value.value)])
         return self.findings
+
+    def built_sql(self, node, parts: list) -> None:
+        """SQL built from literals and values (f-string, ``%``, ``.format()``, ``+``): ``None`` marks a value."""
+        text = "".join("\x00" if part is None else part for part in parts)
+        if SQL_DYNAMIC_TABLE.search(text):
+            self.flag(node, "raw SQL on an interpolated table name")
+        self.string(node, text)
+
+
+def _is_str(node) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+
+def _concatenated(node) -> list:
+    """The operands of an ``a + b + c`` chain: literal strings as text, anything else as ``None``."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _concatenated(node.left) + _concatenated(node.right)
+    return [node.value if _is_str(node) else None]
 
 
 def scan(source: str) -> list[tuple[str, int, str]]:
@@ -429,6 +473,11 @@ def test_every_handled_site_still_exists():
         "def f():\n    text('UPDATE tools SET status = :s RETURNING *')",
         "def f():\n    text(f'SELECT id, value FROM organization_configurations WHERE id = {i}')",
         "def f():\n    text(f'SELECT id, {s.column} FROM {s.table} {s.where}')",
+        "def f():\n    text('SELECT id FROM %s' % table)",
+        "def f():\n    text('SELECT id FROM %(t)s WHERE x' % {'t': t})",
+        "def f():\n    text('SELECT id FROM {}'.format(t))",
+        "def f():\n    text('SELECT id FROM ' + table)",
+        "def f():\n    text('UPDATE ' + table + ' SET a = 1')",
         "def f():\n    text('SELECT json_agg(t) FROM tools t')",
     ],
 )
@@ -451,6 +500,9 @@ def test_the_guard_flags_a_raw_access(snippet):
         "def f():\n    text('UPDATE workflow_runs SET state = :s')",
         "def f():\n    text('SELECT id FROM tools')",
         "def f():\n    text('Pick the tools from the list')",
+        "def f():\n    log('Hello %s' % name)",
+        "def f():\n    log('{} from {}'.format(a, b))",
+        "def f():\n    log('value ' + x)",
         "def f():\n    text('UPDATE workflow_runs SET gathered_context = to_jsonb(cast(:u as text))')",
     ],
 )

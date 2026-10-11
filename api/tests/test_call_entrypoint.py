@@ -44,6 +44,11 @@ esac
 """
 
 
+# A valid credential master key (32 zero bytes): these tests are about the schema gate, and without a key the start
+# gate adds its own plaintext warning line to stderr (pinned on its own below).
+TEST_MASTER_KEY = "test=" + "A" * 43 + "="
+
+
 @pytest.fixture
 def alembic_env(tmp_path):
     """Env that points the scripts at a fake alembic whose DB is at `current` and whose code has `heads`."""
@@ -60,6 +65,7 @@ def alembic_env(tmp_path):
             "FAKE_HEADS": heads,
             "FAKE_AHEAD": ahead,
             "FAKE_CURRENT_ERROR": current_error,
+            "CREDENTIALS_MASTER_KEY": TEST_MASTER_KEY,
         }
 
     make.log = log
@@ -341,3 +347,13 @@ def test_require_db_head_runs_the_cell_startup_check_before_alembic(alembic_env)
     for key in ("code=log_level_debug_in_cell", "where=arq", "reason=", "hint="):
         assert key in r.stderr, r.stderr
     assert not alembic_env.log.exists()
+
+
+@posix_only
+def test_require_db_head_says_when_credentials_are_stored_in_clear(alembic_env):
+    # VOZ-N0-24c: outside a cell and without a key, every role starts and logs one named plaintext warning.
+    env = {k: v for k, v in alembic_env().items() if k not in ("CREDENTIALS_MASTER_KEY", "CELL_ROLE")}
+    r = subprocess.run(["bash", str(REQUIRE_HEAD), "call"], env=env, capture_output=True, text=True, check=False)
+    assert r.returncode == 0, r.stderr
+    (line,) = r.stderr.strip().splitlines()
+    assert re.fullmatch(r"code=credentials_at_rest_plaintext where=call reason=\S.* hint=\S.*", line), line

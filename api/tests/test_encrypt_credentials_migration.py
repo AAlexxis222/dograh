@@ -13,6 +13,8 @@ import os
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 from api.services.security import credential_box
 from api.services.security.secret_surfaces import SURFACES
@@ -364,7 +366,10 @@ async def test_the_migration_refuses_while_other_sessions_are_connected(
 ):
     real = load_migration(REVISION)  # the real pg_stat_activity check
     _set_key(monkeypatch, f"k1={KEY}")
-    async with test_engine.connect() as other:  # another process of some release
+    fresh = create_async_engine(
+        test_engine.url, poolclass=NullPool
+    )  # a new backend, never a pooled one
+    async with fresh.connect() as other:  # another process of some release
         await other.execute(text("SELECT 1"))
         for step in (run_upgrade, run_downgrade):
             with pytest.raises(
@@ -374,6 +379,74 @@ async def test_the_migration_refuses_while_other_sessions_are_connected(
             assert "reason=" in str(caught.value) and "hint=stop api, call, arq" in str(
                 caught.value
             )
+    await fresh.dispose()
+
+
+def test_sessions_it_cannot_classify_count_as_other_sessions(migration):
+    # Without pg_read_all_stats, another role's sessions show backend_type NULL: fail closed, count them.
+    rows = [
+        ("client backend", 10),
+        (None, 10),
+        (None, None),
+        ("autovacuum worker", None),
+        ("walsender", 10),
+    ]
+    assert migration._count_other_sessions(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_session_count_sees_one_more_connection_and_never_its_own(
+    async_session, test_engine
+):
+    real = load_migration(REVISION)
+    connection = await async_session.connection()
+
+    async def count():
+        return await connection.run_sync(real._other_sessions)
+
+    async def client_backends():
+        await async_session.execute(text("SELECT pg_stat_clear_snapshot()"))
+        return (
+            await async_session.execute(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+                    "AND backend_type = 'client backend'"
+                )
+            )
+        ).scalar_one()
+
+    before = await count()
+    assert before == await client_backends() - 1  # this session is not counted
+    fresh = create_async_engine(test_engine.url, poolclass=NullPool)
+    async with fresh.connect() as other:
+        await other.execute(text("SELECT 1"))
+        assert await count() == before + 1  # read again inside the same transaction
+    await fresh.dispose()
+    elsewhere = create_async_engine(
+        test_engine.url.set(database="postgres"), poolclass=NullPool
+    )
+    async with elsewhere.connect() as other:
+        await other.execute(text("SELECT 1"))
+        assert await count() == before  # another database is not this one
+    await elsewhere.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("step", ["upgrade", "downgrade"])
+async def test_a_session_that_connects_during_the_pass_aborts_before_commit(
+    migration, async_session, monkeypatch, step
+):
+    _set_key(monkeypatch, f"k1={KEY}")
+    ctx = await new_context(async_session)
+    async_session.add(
+        build_row(ctx, "integrations", "connection_details", {"token": CANARY}, None)
+    )
+    await async_session.flush()
+    counts = iter([0, 1])  # nobody at the start, somebody by the end
+    migration._other_sessions = lambda conn: next(counts)
+    run = run_upgrade if step == "upgrade" else run_downgrade
+    with pytest.raises(RuntimeError, match="code=credentials_at_rest_sessions_open"):
+        await run(async_session, migration)
 
 
 @pytest.mark.asyncio
@@ -397,6 +470,8 @@ async def test_a_refused_write_on_downgrade_prints_no_credential(
     ) as caught:
         await run_downgrade(async_session, migration)
     assert f"where=integrations:{row.id}:connection_details" in str(caught.value)
+    assert "sqlstate=23514" in str(caught.value)
+    assert "constraint=no_canary_for_the_test" in str(caught.value)
     assert CANARY not in str(caught.value) and caught.value.__cause__ is None
 
 

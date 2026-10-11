@@ -350,13 +350,30 @@ def _write(conn, table, column, row_id, value) -> None:
             {"doc": json.dumps(value), "id": row_id},
         )
     except sa.exc.DBAPIError as e:
-        # The driver error prints the bound parameters: on a downgrade those are decrypted credentials.
+        # The driver error prints the bound parameters: on a downgrade those are decrypted credentials. Only the
+        # error class, the SQLSTATE and the constraint name leave this function.
         raise _Abort(
             "credentials_at_rest_write_failed",
             f"{table}:{row_id}:{column}",
-            f"the database refused the write ({type(e.orig).__name__})",
+            f"the database refused the write ({_db_error_names(e)})",
             "check the row's constraints and triggers, then run the migration again",
         ) from None
+
+
+def _db_error_names(error) -> str:
+    """``<class> sqlstate=<code> constraint=<name>`` of a driver error (asyncpg through SQLAlchemy, or psycopg)."""
+    orig = error.orig
+    cause = getattr(orig, "__cause__", None)
+    sqlstate = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    constraint = getattr(cause, "constraint_name", None) or getattr(
+        getattr(orig, "diag", None), "constraint_name", None
+    )
+    names = [type(orig).__name__]
+    if sqlstate:
+        names.append(f"sqlstate={sqlstate}")
+    if constraint:
+        names.append(f"constraint={constraint}")
+    return " ".join(names)
 
 
 def _refuse_other_sessions(conn) -> None:
@@ -375,12 +392,27 @@ def _refuse_other_sessions(conn) -> None:
 
 
 def _other_sessions(conn) -> int:
-    return conn.execute(
+    # pg_stat_activity is a snapshot taken once per transaction: clear it, or a re-check before commit sees the
+    # sessions of the first check.
+    conn.execute(sa.text("SELECT pg_stat_clear_snapshot()"))
+    rows = conn.execute(
         sa.text(
-            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
-            "AND pid <> pg_backend_pid() AND backend_type = 'client backend'"
+            "SELECT backend_type, usesysid FROM pg_stat_activity "
+            "WHERE datname = current_database() AND pid <> pg_backend_pid()"
         )
-    ).scalar_one()
+    ).fetchall()
+    return _count_other_sessions(rows)
+
+
+def _count_other_sessions(rows) -> int:
+    """Client backends, plus the sessions this role cannot classify: without pg_read_all_stats another role's
+    rows show backend_type NULL, and failing open there would let an older release keep running."""
+    return sum(
+        1
+        for backend_type, usesysid in rows
+        if backend_type == "client backend"
+        or (backend_type is None and usesysid is not None)
+    )
 
 
 def _census(conn, keys, table, column, surfaces) -> tuple[int, int]:
@@ -479,6 +511,7 @@ def upgrade() -> None:
     _refuse_other_sessions(conn)
     for (table, column), surfaces in _groups().items():
         _encrypt_column(conn, keys, table, column, surfaces)
+    _refuse_other_sessions(conn)  # again before commit: the pass can take minutes
 
 
 def downgrade() -> None:
@@ -529,3 +562,4 @@ def downgrade() -> None:
                 f"{tokens} tokens left after the downgrade",
                 "run the downgrade again with the API stopped",
             )
+    _refuse_other_sessions(conn)  # again before commit: the pass can take minutes
