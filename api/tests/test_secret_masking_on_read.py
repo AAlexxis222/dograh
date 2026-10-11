@@ -358,3 +358,107 @@ async def test_the_workflow_routes_mask_headers_and_refuse_an_orphan_mask(
     draft = await db_session.get_draft_version(workflow.id)
     hook = next(node for node in draft.workflow_json["nodes"] if node["id"] == "hook")
     assert hook["data"]["custom_headers"] == stored_headers
+
+
+# --- fix r1: duplicate header keys, the create path, the templates GET ---------------------------------------------
+
+
+def test_an_untouched_node_with_duplicate_header_keys_saves_unchanged():
+    stored = _graph(
+        _webhook(
+            headers=[
+                {"key": "X-Sig", "value": f"{CANARY}-first"},
+                {"key": "X-Sig", "value": f"{CANARY}-second"},
+                {"key": "", "value": f"{CANARY}-half-row"},
+            ]
+        )
+    )
+    masked = mask_workflow_definition(stored)
+    merged = merge_workflow_api_keys(copy.deepcopy(masked), stored)
+    assert merged == stored
+    swapped = copy.deepcopy(masked)
+    swapped["nodes"][0]["data"]["custom_headers"][:2] = reversed(
+        swapped["nodes"][0]["data"]["custom_headers"][:2]
+    )
+    assert [
+        h["value"]
+        for h in merge_workflow_api_keys(swapped, stored)["nodes"][0]["data"][
+            "custom_headers"
+        ]
+    ] == [
+        f"{CANARY}-second",
+        f"{CANARY}-first",
+        f"{CANARY}-half-row",
+    ]
+
+
+def test_a_duplicate_key_mask_is_used_once():
+    stored = _graph(_webhook(headers=[{"key": "X-Sig", "value": f"{CANARY}-only"}]))
+    mask = mask_key(f"{CANARY}-only")
+    incoming = _graph(
+        _webhook(
+            headers=[{"key": "X-Sig", "value": mask}, {"key": "X-Sig", "value": mask}]
+        )
+    )
+    with pytest.raises(MaskedSecretUnmatched):
+        merge_workflow_api_keys(incoming, stored)
+
+
+async def test_download_then_upload_refuses_the_masked_header(
+    test_client_factory, db_session, org_user
+):
+    org, user = org_user
+    workflow = await db_session.create_workflow(
+        name="W",
+        workflow_definition=_graph_with_hook(
+            copy.deepcopy(STORED["nodes"][0]["data"]["custom_headers"])
+        ),
+        user_id=user.id,
+        organization_id=org.id,
+    )
+    async with test_client_factory(user) as client:
+        downloaded = (await client.get(f"/api/v1/workflow/fetch/{workflow.id}")).json()[
+            "workflow_definition"
+        ]
+        uploaded = await client.post(
+            "/api/v1/workflow/create/definition",
+            json={"name": "Copy", "workflow_definition": downloaded},
+        )
+        plain = _graph_with_hook(
+            [{"key": "Authorization", "value": f"Bearer {CANARY}-typed"}]
+        )
+        created = await client.post(
+            "/api/v1/workflow/create/definition",
+            json={"name": "Typed", "workflow_definition": plain},
+        )
+    assert uploaded.status_code == 422, uploaded.text
+    assert uploaded.json()["error"]["code"] == "masked_secret_unmatched"
+    assert created.status_code == 200, created.text
+    assert CANARY not in created.text
+
+
+async def test_the_templates_list_masks_secrets(monkeypatch):
+    import api.routes.workflow as workflow_route
+
+    template = SimpleNamespace(
+        id=1,
+        template_name="Hook",
+        template_description="d",
+        template_json=_graph_with_hook(
+            [{"key": "Authorization", "value": f"Bearer {CANARY}"}]
+        ),
+        created_at=datetime.now(UTC),
+    )
+    monkeypatch.setattr(
+        workflow_route.WorkflowTemplateClient,
+        "get_all_workflow_templates",
+        AsyncMock(return_value=[template]),
+    )
+    response = await workflow_route.get_workflow_templates()
+    assert CANARY not in json.dumps(response, default=str)
+    hook = next(n for n in response[0]["template_json"]["nodes"] if n["id"] == "hook")
+    assert hook["data"]["custom_headers"][0]["value"] == mask_key(f"Bearer {CANARY}")
+    assert (
+        template.template_json["nodes"][2]["data"]["custom_headers"][0]["value"]
+        == f"Bearer {CANARY}"
+    )

@@ -483,8 +483,11 @@ async def create_workflow(
         user: The user to create the workflow for
     """
     # Auto-mint trigger_path for any trigger node that didn't ship one so
-    # clients don't need to generate UUIDs themselves.
-    workflow_definition = ensure_trigger_paths(request.workflow_definition)
+    # clients don't need to generate UUIDs themselves. A masked secret (a
+    # downloaded workflow uploaded again) has nothing to keep: 422, not stored.
+    workflow_definition = ensure_trigger_paths(
+        merge_workflow_api_keys(request.workflow_definition, None)
+    )
     trigger_path_issues = validate_trigger_paths(workflow_definition)
     if trigger_path_issues:
         raise _trigger_path_validation_http_exception(trigger_path_issues)
@@ -1724,7 +1727,7 @@ async def get_workflow_templates() -> List[WorkflowTemplateResponse]:
             "id": template.id,
             "template_name": template.template_name,
             "template_description": template.template_description,
-            "template_json": template.template_json,
+            "template_json": mask_workflow_definition(template.template_json),
             "created_at": template.created_at,
         }
         for template in templates

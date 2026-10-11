@@ -1,8 +1,8 @@
 """A run stores credential references, never credential values (VOZ-N0-24b; VOZ-AC-B1-07, VOZ-AT-B6-05 (c)).
 
-Every runtime reader of a run's frozen configuration gets the real value back through the resolver, at the two read
-points: ``run_configurations_for`` (pipeline, QA, quota, text chat, inactivity) and
-``get_workflow_run_configurations`` (PBX write-back, custom tools).
+Every credential reader of a run's frozen configuration gets the real value back through the resolver,
+``run_configurations_for`` (pipeline, QA, quota, text chat); readers that need no credential (inactivity sweep, PBX
+write-back, PBX transfer) read it with references in place (test_run_configuration_seams.py).
 """
 
 import json
@@ -126,9 +126,8 @@ def test_resolution_gives_back_the_definition_values():
     )
 
 
-def test_resolution_leaves_plain_values_and_redactions_and_skips_the_definition():
+def test_resolution_leaves_plain_values_and_skips_the_definition():
     legacy = _secrets_document()
-    legacy["voicemail_detection"]["api_key"] = REDACTED
 
     def definition_not_needed():
         raise AssertionError("a run without references must not load its definition")
@@ -246,9 +245,11 @@ async def test_a_new_run_stores_references_and_every_reader_resolves_them(
     )
     assert CANARY not in json.dumps(run_inputs.effective_configurations)
 
-    # Column-select reader (PBX write-back, custom tools).
-    by_columns = await db_session.get_workflow_run_configurations(run.id, org.id)
-    assert by_columns["voicemail_detection"]["api_key"] == f"{CANARY}-vm"
+    # Column-select settings reader (PBX write-back, PBX transfer): no credential, no value.
+    settings = await db_session.get_workflow_run_settings(run.id, org.id)
+    assert settings["voicemail_detection"]["api_key"] == credential_ref(
+        run_inputs.definition_id
+    )
 
     # ORM readers: the pipeline/quota loader and the QA/text-chat loader.
     for loaded in (
@@ -294,8 +295,6 @@ async def test_a_reference_whose_definition_lost_the_value_fails_closed(
         {"id": run_inputs.definition_id},
     )
 
-    with pytest.raises(CredentialRefUnresolved):
-        await db_session.get_workflow_run_configurations(run.id, org.id)
     with pytest.raises(CredentialRefUnresolved):
         run_configurations_for(
             await db_session.get_workflow_run(run.id, organization_id=org.id)

@@ -810,10 +810,8 @@ class CustomToolManager:
                         configured_call_disposition
                         or EndTaskReason.CALL_TRANSFERRED.value
                     )
-                    workflow_configurations = (
-                        await db_client.get_workflow_run_configurations(
-                            self._engine._workflow_run_id, organization_id
-                        )
+                    workflow_configurations = await db_client.get_workflow_run_settings(
+                        self._engine._workflow_run_id, organization_id
                     )
                     field_updates = resolve_external_pbx_field_mappings(
                         self._engine._gathered_context,

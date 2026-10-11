@@ -1,7 +1,7 @@
 """Architecture guard: workflow configuration is read through the cascade.
 
 After the cascade, runtime code reads the run's frozen effective document
-(``run_configurations_for`` / ``get_workflow_run_configurations``). Reading
+(``run_configurations_for`` / ``get_workflow_run_settings``). Reading
 ``.workflow_configurations`` (however it is spelled) or
 ``get_definition_configurations_with_owner(`` anywhere
 else lets a draft, the legacy workflow column, or a live organization edit
@@ -85,7 +85,7 @@ def test_runtime_reads_workflow_configuration_only_through_the_cascade():
     ]
     assert violations == [], (
         "read the run's frozen configuration (run_configurations_for / "
-        f"get_workflow_run_configurations) instead: {violations}"
+        f"get_workflow_run_settings) instead: {violations}"
     )
 
 
@@ -121,5 +121,42 @@ def test_only_known_callers_resolve_the_live_cascade():
     ]
     assert violations == [], (
         "a running call reads the run's frozen configuration (run_configurations_for "
-        f"/ get_workflow_run_configurations), not the live cascade: {violations}"
+        f"/ get_workflow_run_settings), not the live cascade: {violations}"
+    )
+
+
+# A run's frozen configuration (``workflow_runs.effective_configurations``) holds credential references
+# (credential_refs.py). It is read through two seams only: ``run_settings_for`` / ``get_workflow_run_settings``
+# (credentials left as stored) and ``run_configurations_for`` (credentials resolved, fail closed). A reader that
+# goes around them would hand a provider a reference string as a key, or skip the fail-closed check.
+RUN_SNAPSHOT_SEAMS = {
+    Path("services/configuration/cascade.py"),  # the two ORM seams
+    Path("db/workflow_run_client.py"),  # writes the column; the column-select seam
+    Path("db/models.py"),  # declares the column
+    Path("routes/workflow.py"),  # run detail: the stored document, masked
+    Path("services/security/secret_surfaces.py"),  # names the column
+    Path(
+        "services/configuration/credential_refs.py"
+    ),  # names the column in an error's ``where``
+}
+# ``run_inputs.effective_configurations`` is what a creator passes to create_workflow_run (already references).
+RUN_SNAPSHOT_READ = re.compile(
+    r"(?<!run_inputs)\.effective_configurations\b|[\"']effective_configurations[\"']"
+)
+
+
+def test_run_snapshot_is_read_only_through_the_two_seams():
+    violations = []
+    for path in API_ROOT.rglob("*.py"):
+        relative = path.relative_to(API_ROOT)
+        if relative.parts[0] in {"alembic", "tests"} or "__pycache__" in relative.parts:
+            continue
+        if relative in RUN_SNAPSHOT_SEAMS:
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if RUN_SNAPSHOT_READ.search(line) and not line.lstrip().startswith("#"):
+                violations.append(f"{relative}:{number}: {line.strip()}")
+    assert violations == [], (
+        "read a run's configuration through run_settings_for / get_workflow_run_settings "
+        f"or run_configurations_for: {violations}"
     )

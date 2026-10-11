@@ -5,10 +5,13 @@ registered paths, ``WORKFLOW_CONFIGURATION_SECRET_PATHS``) becomes a reference t
 run pins, or ``REDACTED`` when that definition does not hold the same value there. The organization layer refuses
 secrets (422), so the pinned definition is the only legitimate source of one.
 
-The two places that hand a run's configuration to the runtime resolve the references against the pinned definition:
-``cascade.run_configurations_for`` and ``WorkflowRunClient.get_workflow_run_configurations``. A reference that no
-longer resolves fails closed with ``CredentialRefUnresolved`` (VOZ-AC-B0-28 shape) rather than handing a provider a
-placeholder. A plain value (a run frozen before the redaction migration) passes through until the contraction.
+A run's configuration is read through two seams. ``cascade.run_settings_for`` and
+``WorkflowRunClient.get_workflow_run_settings`` hand out the document as stored, references included, for readers
+that need no credential (timeouts, PBX field mappings): a reference that no longer resolves cannot break them.
+``cascade.run_configurations_for`` resolves every credential against the pinned definition and fails closed with
+``CredentialRefUnresolved`` (VOZ-AC-B0-28 shape) on a reference that no longer resolves or a ``REDACTED`` leaf, rather
+than handing a provider a placeholder. A plain value (a run frozen before the redaction migration) passes through
+until the contraction.
 
 The reference names its target table and row, so the credential object (VOZ-AC-B1-77) can become the target without
 changing the shape. Alembic revision c5e8a2d7f914 keeps a frozen copy of ``to_credential_refs`` for historic runs.
@@ -43,12 +46,18 @@ def is_credential_marker(value: Any) -> bool:
 class CredentialRefUnresolved(Exception):
     """VOZ-AC-B0-28 shape. Never carries a credential value."""
 
-    def __init__(self, where: str, reason: str):
-        self.code, self.where, self.reason = "credential_ref_unresolved", where, reason
-        self.hint = (
+    def __init__(
+        self,
+        where: str,
+        reason: str,
+        *,
+        code: str = "credential_ref_unresolved",
+        hint: str = (
             "the workflow version this run pins no longer holds the credential: "
             "re-enter it in the workflow and start a new run"
-        )
+        ),
+    ):
+        self.code, self.where, self.reason, self.hint = code, where, reason, hint
         super().__init__(
             f"code={self.code} where={where} reason={reason} hint={self.hint}"
         )
@@ -113,16 +122,25 @@ def resolve_credential_refs(
     """Copy of ``frozen`` with every reference replaced by the pinned definition's value at the same path.
 
     ``pinned`` returns that definition's document and is called only when a reference is present, so a run without
-    one never touches its definition. ``REDACTED`` and plain values are returned as they are."""
+    one never touches its definition. Plain values are returned as they are; a ``REDACTED`` leaf raises, the value
+    it stood for is gone."""
     resolved = copy.deepcopy(frozen)
     if not isinstance(resolved, dict):
         return resolved
     source: dict[str, Any] | None = None
     for path, container, key, value in _live_secret_leaves(resolved):
+        where = f"workflow_runs:{run_id}:effective_configurations:{'.'.join(map(str, path))}"
+        if value == REDACTED:
+            raise CredentialRefUnresolved(
+                where,
+                "the run's credential was redacted when references replaced stored values",
+                code="credential_redacted",
+                hint="the value is not recoverable from the run: start a new run, "
+                "which takes the credential from the workflow",
+            )
         match = _REF.fullmatch(value) if isinstance(value, str) else None
         if match is None:
             continue
-        where = f"workflow_runs:{run_id}:effective_configurations:{'.'.join(map(str, path))}"
         if int(match.group(1)) != definition_id:
             raise CredentialRefUnresolved(
                 where,

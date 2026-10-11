@@ -240,23 +240,33 @@ def mask_workflow_definition(workflow_definition: Optional[Dict]) -> Optional[Di
 
 
 def _merge_custom_headers(data: Any, old_data: dict | None, node_id: Any) -> None:
-    """Restore each masked header value from the stored header of the same key in
-    the same node; an omitted header is simply gone. A mask with no stored value
-    it masks is refused rather than stored."""
-    stored = {
-        header.get("key"): header.get("value") for header in _header_items(old_data)
-    }
+    """Restore each masked header value from a stored header of the same key in
+    the same node, each stored header used once (a key may repeat); an omitted
+    header is simply gone. A mask with no stored value it masks is refused
+    rather than stored."""
+    unused = [
+        (header.get("key"), header.get("value")) for header in _header_items(old_data)
+    ]
     for header in _header_items(data):
         value = header.get("value")
         if not isinstance(value, str) or not contains_masked_key(value):
             continue
-        real = stored.get(header.get("key"))
-        if not (isinstance(real, str) and is_mask_of(value, real)):
+        match = next(
+            (
+                index
+                for index, (key, real) in enumerate(unused)
+                if key == header.get("key")
+                and isinstance(real, str)
+                and is_mask_of(value, real)
+            ),
+            None,
+        )
+        if match is None:
             raise MaskedSecretUnmatched(
                 f"workflow_definition:nodes[{node_id}].data"
                 f".custom_headers[{header.get('key')}]"
             )
-        header["value"] = real
+        header["value"] = unused.pop(match)[1]
 
 
 def merge_workflow_api_keys(
@@ -281,7 +291,7 @@ def merge_workflow_api_keys(
             continue
         data = node.get("data", {})
 
-        old_data = existing_nodes.get(node["id"])
+        old_data = existing_nodes.get(node.get("id"))
         if not old_data:
             continue
 

@@ -16,10 +16,7 @@ from api.db.models import (
 )
 from api.enums import CallType, StorageBackend, WorkflowRunMode
 from api.schemas.workflow import WorkflowRunResponseSchema
-from api.services.configuration.credential_refs import (
-    resolve_credential_refs,
-    stored_secret_paths,
-)
+from api.services.configuration.credential_refs import stored_secret_paths
 from api.services.workflow.run_usage_response import format_public_cost_info
 from api.utils.recording_artifacts import get_recording_storage_key
 
@@ -271,19 +268,20 @@ class WorkflowRunClient(BaseDBClient):
             )
             return result.scalars().first()
 
-    async def get_workflow_run_configurations(
+    async def get_workflow_run_settings(
         self, run_id: int, organization_id: int
     ) -> dict:
-        """Configuration the run executes with: the snapshot frozen at creation,
-        its credential references resolved from the pinned definition, or that
-        definition itself for runs created before the snapshot existed."""
+        """Configuration the run executes with, credentials left as stored
+        (references or redactions): the snapshot frozen at creation, or the
+        pinned definition for runs created before the snapshot existed. For
+        readers that need no credential; credential readers use
+        ``cascade.run_configurations_for``."""
 
         async with self.async_session() as session:
             result = await session.execute(
                 select(
                     WorkflowRunModel.effective_configurations,
                     WorkflowDefinitionModel.workflow_configurations,
-                    WorkflowRunModel.definition_id,
                 )
                 .join(WorkflowModel, WorkflowRunModel.workflow_id == WorkflowModel.id)
                 .outerjoin(
@@ -298,12 +296,8 @@ class WorkflowRunClient(BaseDBClient):
             row = result.first()
             if row is None:
                 return {}
-            frozen, pinned, definition_id = row
-            if frozen is None:
-                return pinned or {}
-            return resolve_credential_refs(
-                frozen, lambda: pinned, definition_id=definition_id, run_id=run_id
-            )
+            frozen, pinned = row
+            return frozen if frozen is not None else (pinned or {})
 
     async def get_organization_id_by_workflow_run_id(
         self, run_id: int | None

@@ -346,31 +346,39 @@ async def load_run_configurations_to_freeze(
     return to_credential_refs(resolved.effective, pinned, definition_id)
 
 
-def run_configurations_for(workflow_run) -> dict[str, Any]:
-    """Configuration a loaded run executes with; the in-memory twin of
-    ``get_workflow_run_configurations``.
+def _pinned_configurations(workflow_run) -> Any:
+    definition = getattr(workflow_run, "definition", None)
+    return getattr(definition, "workflow_configurations", None) if definition else None
+
+
+def run_settings_for(workflow_run) -> dict[str, Any]:
+    """Configuration a loaded run executes with, credentials left as stored
+    (references or redactions); the in-memory twin of
+    ``get_workflow_run_settings``. For readers that need no credential, which a
+    reference that no longer resolves must not break.
 
     The result is a copy: both sources are columns of a loaded ORM row, and a
     consumer that edited the returned document in place would dirty the row and
-    have the edit flushed back to the database on the next commit. Credential
-    references are resolved from the pinned definition, which is only touched
-    when the snapshot holds one (every caller loads it eagerly).
+    have the edit flushed back to the database on the next commit.
+    """
+    frozen = getattr(workflow_run, "effective_configurations", None)
+    if frozen is not None:
+        return copy.deepcopy(frozen)
+    return copy.deepcopy(_pinned_configurations(workflow_run) or {})
+
+
+def run_configurations_for(workflow_run) -> dict[str, Any]:
+    """``run_settings_for`` with every credential resolved from the pinned
+    definition, for readers that use one (pipeline start, QA, text chat, quota).
+    Fails closed with ``CredentialRefUnresolved``. The definition is only
+    touched when the snapshot holds a reference (every caller loads it eagerly).
     """
     frozen = getattr(workflow_run, "effective_configurations", None)
     if frozen is not None:
         return resolve_credential_refs(
             frozen,
-            lambda: getattr(
-                getattr(workflow_run, "definition", None),
-                "workflow_configurations",
-                None,
-            ),
+            lambda: _pinned_configurations(workflow_run),
             definition_id=getattr(workflow_run, "definition_id", None),
             run_id=getattr(workflow_run, "id", None),
         )
-    definition = getattr(workflow_run, "definition", None)
-    return copy.deepcopy(
-        (getattr(definition, "workflow_configurations", None) or {})
-        if definition
-        else {}
-    )
+    return run_settings_for(workflow_run)
