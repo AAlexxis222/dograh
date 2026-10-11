@@ -69,3 +69,19 @@ def iter_concrete_leaves(
     per leaf, the shape ``credential_box.aad_for`` binds a token to."""
     for path, container, key in iter_leaves(document, pattern, (), indexed=True):
         yield path, container[key]
+
+
+def value_at(document: Any, path: tuple[str | int, ...]) -> tuple[bool, Any]:
+    """``(True, value)`` at a concrete ``path`` (keys and int list positions,
+    as ``iter_leaves(..., indexed=True)`` records them), ``(False, None)`` when
+    a step is missing: the same leaf looked up in another document."""
+    node = document
+    for part in path:
+        in_dict = isinstance(part, str) and isinstance(node, dict) and part in node
+        in_list = (
+            isinstance(part, int) and isinstance(node, list) and 0 <= part < len(node)
+        )
+        if not (in_dict or in_list):
+            return False, None
+        node = node[part]
+    return True, node

@@ -21,6 +21,7 @@ from api.schemas.tool import (
     McpRefreshResponse,
     ToolResponse,
 )
+from api.services.configuration.masking import mask_tool_definition, merge_tool_headers
 from api.services.posthog_client import capture_event
 from api.services.workflow.mcp_tool_session import discover_mcp_tools
 from api.services.workflow.tools.mcp_tool import (
@@ -57,7 +58,7 @@ def build_tool_response(tool: Any, include_created_by: bool = False) -> ToolResp
         icon=tool.icon,
         icon_color=tool.icon_color,
         status=tool.status,
-        definition=tool.definition,
+        definition=mask_tool_definition(tool.definition),
         created_at=tool.created_at,
         updated_at=tool.updated_at,
         created_by=created_by,
@@ -190,7 +191,8 @@ async def create_tool_for_user(
             status_code=400,
         )
 
-    definition = request.definition.model_dump()
+    # A masked header copied from another tool's response has nothing to keep.
+    definition = merge_tool_headers(request.definition.model_dump(), None)
     await validate_tool_references(
         definition, organization_id=user.selected_organization_id
     )

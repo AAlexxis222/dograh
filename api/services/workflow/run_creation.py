@@ -1,9 +1,7 @@
 from dataclasses import dataclass
 from typing import Any
 
-from api.services.configuration.cascade import (
-    load_effective_workflow_configurations,
-)
+from api.services.configuration.cascade import load_run_configurations_to_freeze
 
 
 @dataclass(frozen=True)
@@ -76,7 +74,8 @@ async def prepare_workflow_run_inputs(
     flows.
 
     Resolves and returns the effective configuration so every caller freezes
-    the same document on the run row.
+    the same document on the run row, with credential references in place of
+    secret values (credential_refs.py).
     """
     target_definition = await definition_to_run(
         workflow_client, workflow, use_draft=use_draft, definition_id=definition_id
@@ -95,7 +94,7 @@ async def prepare_workflow_run_inputs(
             else getattr(workflow, "template_context_variables", None)
         ) or {}
 
-    resolved = await load_effective_workflow_configurations(
+    frozen = await load_run_configurations_to_freeze(
         workflow_client,
         organization_id=workflow.organization_id,
         definition_id=getattr(target_definition, "id", None),
@@ -106,6 +105,6 @@ async def prepare_workflow_run_inputs(
             **default_context,
             **(initial_context or {}),
         },
-        effective_configurations=resolved.effective,
+        effective_configurations=frozen,
         use_draft=use_draft,
     )

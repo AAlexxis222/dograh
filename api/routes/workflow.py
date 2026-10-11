@@ -37,6 +37,7 @@ from api.services.configuration.ai_model_configuration import (
 )
 from api.services.configuration.check_validity import UserConfigurationValidator
 from api.services.configuration.masking import (
+    MaskedSecretUnmatched,
     mask_workflow_configurations,
     mask_workflow_definition,
     merge_workflow_api_keys,
@@ -1416,7 +1417,7 @@ async def update_workflow(
             "version_number": active_def.version_number if active_def else None,
             "version_status": active_def.status if active_def else None,
         }
-    except HTTPException:
+    except (HTTPException, MaskedSecretUnmatched):
         raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

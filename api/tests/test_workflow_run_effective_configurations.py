@@ -156,7 +156,10 @@ async def test_run_detail_exposes_masked_effective_configurations(
     run = await _create_run(db_session, workflow, user, org)
     async with test_client_factory(user) as client:
         response = await client.get(f"/api/v1/workflow/{workflow.id}/runs/{run.id}")
+    assert "vm-1234567890" not in response.text
     body = response.json()["effective_configurations"]
     assert body["max_call_duration"] == 300
-    assert body["voicemail_detection"]["api_key"].endswith("7890")
-    assert "*" in body["voicemail_detection"]["api_key"]
+    # The run stores a reference to its pinned definition, never the key (VOZ-N0-24b).
+    assert body["voicemail_detection"]["api_key"] == (
+        f"<credential_ref:workflow_definitions:{run.definition_id}>"
+    )
