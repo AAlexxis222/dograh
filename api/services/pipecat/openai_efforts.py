@@ -125,6 +125,10 @@ _GPT6_REASONING_ONLY = EffortRow(
     tools_by_chat="never",
 )
 
+# Rows whose chat/completions effort follows the docs, not a pre-matrix
+# payload: no explicit effort reached them before, so their range binds there.
+_DOC_RANGE_ON_CHAT = (_GPT6, _GPT6_REASONING_ONLY)
+
 # First match wins, so the narrow globs come before the family ones.
 _ROWS: tuple[tuple[tuple[str, ...], EffortRow], ...] = (
     (("gpt-5-chat*", "gpt-4*", "gpt-3.5*"), _NO_REASONING),
@@ -179,10 +183,10 @@ def wire_params(
             "cannot declare its reasoning",
             hint="use chat_completions or a model listed in openai_efforts",
         )
-    # Chat/completions sends an explicit effort verbatim, as it did before
-    # this table: the documented ranges bind the Responses path only.
+    # The gpt-5 family sends an explicit effort verbatim over chat/completions,
+    # as it did before this table; the documented ranges bind elsewhere.
     if (
-        api == "responses"
+        (api == "responses" or row in _DOC_RANGE_ON_CHAT)
         and requested_effort is not None
         and requested_effort not in row.allowed
     ):

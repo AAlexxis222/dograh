@@ -341,7 +341,7 @@ async def test_responses_sends_top_p_with_effort_none():
     "model, options",
     [
         ("gpt-6-astra", {"api": "chat_completions"}),
-        ("gpt-6.1-sol", {"reasoning": {"effort": "none"}}),
+        ("gpt-6.1-sol", {"reasoning": {"effort": "high"}}),
         ("gpt-6-luna", {"verbosity": "low"}),
         ("gpt-6-sol", {"reasoning": {"effort": "low"}}),
     ],
@@ -359,6 +359,37 @@ def test_chat_refuses_a_model_that_cannot_take_tools_there(model, options):
     assert info.value.status_code == 422 and detail["code"] == "knob_out_of_range"
     assert detail["where"] == "llm.openai.options.api"
     assert model in detail["reason"] and "responses" in detail["hint"]
+
+
+def test_atlascloud_keeps_todays_per_turn_behaviour_for_tools_over_chat():
+    # Atlas Cloud declares no options, so a refusal naming them could not be
+    # acted on; the build goes ahead as it did before the matrix.
+    llm = create_llm_service_from_provider(
+        provider="atlascloud",
+        model="gpt-6-astra",
+        api_key="k",
+        tuning={"llm": {"_all": {"settings": {"max_tokens": 100}}}},
+    )
+    assert _impact_knobs(chat_payload(llm)) == {"reasoning_effort": "medium"}
+
+
+@pytest.mark.parametrize(
+    "model, effort", [("gpt-6-astra", "none"), ("gpt-6-luna", "minimal")]
+)
+def test_chat_checks_an_explicit_effort_on_the_gpt6_rows(model, effort):
+    # Before the matrix no explicit effort reached gpt-6 over chat, so its
+    # documented range binds there; the gpt-5 family stays verbatim.
+    with pytest.raises(HTTPException) as info:
+        create_llm_service_from_provider(
+            provider="openai",
+            model=model,
+            api_key="k",
+            tuning={"llm": {"openai": {"options": {"reasoning": {"effort": effort}}}}},
+        )
+    detail = info.value.detail
+    assert detail["code"] == "knob_out_of_range"
+    assert detail["where"] == "llm.openai.options.reasoning.effort"
+    assert model in detail["reason"] and effort in detail["reason"]
 
 
 def test_the_responses_gate_stops_stored_workflows_at_run_start(monkeypatch):

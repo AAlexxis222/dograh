@@ -595,8 +595,10 @@ def _openai_llm(provider: str, model: str, api_key, plan, kwargs: dict):
         return _openai_responses_llm(api_key, model, wire, plan, kwargs)
     # The service_tuning row reaches the LLM that carries the workflow's
     # tools; tool-less builds (voicemail classifier, extraction, QA) get no
-    # row unless their scope opts in, so they are not refused here.
-    if plan != EMPTY_PLAN:
+    # row unless their scope opts in, so they are not refused here. Only
+    # ``llm.openai`` declares the options the refusal's hint names, so the
+    # other wires (Atlas Cloud included) keep today's per-turn behaviour.
+    if provider == ServiceProviders.OPENAI.value and plan != EMPTY_PLAN:
         try:
             refuse_tools_by_chat(model, wire.get("reasoning_effort"))
         except EffortError as e:
