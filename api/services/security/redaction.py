@@ -32,18 +32,6 @@ _PATTERNS = [
         r"\1<redacted>@",
     ),
     (("sk-", "sk_"), re.compile(r"\bsk[-_][A-Za-z0-9_\-]{8,}"), "<redacted:key>"),
-    # A credential_box token (v1:<key_id>:<nonce_b64>:<ct_b64>): ciphertext, but
-    # it never belongs in a log line. Anchored on the token's structure, not on
-    # its left edge, so a token glued to any text ("xv1:", "workflow_v1:") is
-    # matched whole: the nonce is exactly 16 base64 chars (12 bytes, unpadded)
-    # and ct+tag at least 16 bytes (22 chars before padding). An earlier "v1:"
-    # ("dev1:<token>") cannot start the match, since what follows it does not
-    # have that shape, and neither does a look-alike such as "dev1:host:12:34".
-    (
-        ("v1:",),
-        re.compile(r"v1:[A-Za-z0-9_.\-]+:[A-Za-z0-9+/]{16}:[A-Za-z0-9+/]{22,}={0,2}"),
-        "<redacted:credential_token>",
-    ),
     # sip:/tel: URIs: every digit of the user part is a phone (or extension).
     (
         ("sip",),
@@ -87,6 +75,15 @@ _PATTERNS = [
     ),
 ]
 
+
+# A credential_box token (v1:<key_id>:<nonce_b64>:<ct_b64>): ciphertext, but it
+# never belongs in a log line. Anchored on the token's structure, not on its left
+# edge, so a token glued to any text ("xv1:", "workflow_v1:") is matched whole; an
+# earlier "v1:" ("dev1:<token>") cannot start the match, since what follows it does
+# not have that shape, and neither does a look-alike such as "dev1:host:12:34".
+# It runs before every other rule: the bearer rule stops at ":" and the "sk-" rule
+# matches a key id, and either would leave the rest of the token in clear.
+_TOKEN = re.compile(credential_box.TOKEN_PATTERN)
 
 _SECRET_ENV_MARKERS: tuple[str, ...] = ("SECRET", "PASSWORD", "TOKEN")
 # Shorter values ("true", "dev") are flags, not secrets; redacting them would
@@ -155,6 +152,8 @@ def redact(text: str, secrets: Iterable[str] | None = None) -> str:
         secrets = known_secret_values()
     for value in secrets:
         text = text.replace(value, "<redacted:secret>")
+    if "v1:" in text:
+        text = _TOKEN.sub("<redacted:credential_token>", text)
     text = redact_credentials(text)
     folded = fold_for_gate(text)
     for needles, pattern, repl in _PATTERNS:

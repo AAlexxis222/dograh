@@ -27,6 +27,14 @@ _KEY_BYTES = 32
 _NONCE_BYTES = 12
 # ":" separates token parts and "," separates keys, so a key id never carries either.
 _KEY_ID = re.compile(r"[A-Za-z0-9_.-]+")
+# The shape of a token: the nonce is exactly 16 base64 chars (12 bytes, unpadded) and ct+tag at least 16 bytes
+# (22 chars before padding). The ciphertext ends at the first "v1:" too, so two tokens glued together are two
+# matches (base64 has no ":"). Encryption at rest tells a stored token from a plaintext value with it (fullmatch);
+# log redaction finds tokens inside text with it.
+TOKEN_PATTERN = (
+    r"v1:[A-Za-z0-9_.\-]+:[A-Za-z0-9+/]{16}:[A-Za-z0-9+/]{22,}?={0,2}"
+    r"(?=v1:|[^A-Za-z0-9+/=]|$)"
+)
 
 
 class MasterKeyInvalid(RuntimeError):

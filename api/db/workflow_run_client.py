@@ -6,6 +6,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import joinedload, selectinload
 
 from api.db.base_client import BaseDBClient
+from api.db.credentials_at_rest import unseal
 from api.db.filters import apply_workflow_run_filters, get_workflow_run_order_clause
 from api.db.models import (
     OrganizationModel,
@@ -281,6 +282,7 @@ class WorkflowRunClient(BaseDBClient):
             result = await session.execute(
                 select(
                     WorkflowRunModel.effective_configurations,
+                    WorkflowRunModel.definition_id,
                     WorkflowDefinitionModel.workflow_configurations,
                 )
                 .join(WorkflowModel, WorkflowRunModel.workflow_id == WorkflowModel.id)
@@ -296,8 +298,17 @@ class WorkflowRunClient(BaseDBClient):
             row = result.first()
             if row is None:
                 return {}
-            frozen, pinned = row
-            return frozen if frozen is not None else (pinned or {})
+            frozen, definition_id, pinned = row
+            if frozen is not None:
+                return unseal(WorkflowRunModel.effective_configurations, run_id, frozen)
+            return (
+                unseal(
+                    WorkflowDefinitionModel.workflow_configurations,
+                    definition_id,
+                    pinned,
+                )
+                or {}
+            )
 
     async def get_organization_id_by_workflow_run_id(
         self, run_id: int | None

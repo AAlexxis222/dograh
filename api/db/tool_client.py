@@ -8,6 +8,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from api.db.base_client import BaseDBClient
+from api.db.credentials_at_rest import seal
 from api.db.models import ToolModel
 from api.enums import ToolCategory, ToolStatus
 
@@ -177,7 +178,9 @@ class ToolClient(BaseDBClient):
             if description is not None:
                 update_values["description"] = description
             if definition is not None:
-                update_values["definition"] = definition
+                update_values["definition"] = seal(
+                    ToolModel.definition, tool.id, definition
+                )
             if icon is not None:
                 update_values["icon"] = icon
             if icon_color is not None:

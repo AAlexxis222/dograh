@@ -383,3 +383,51 @@ def test_secret_set_is_computed_once_at_setup(capsys, monkeypatch, real_logging)
     assert "canary-secret-xyz" not in out
     assert out.count("<redacted:secret>") == 5
     assert len(calls) == 1
+
+
+def _token(monkeypatch, key_id="k1", plaintext=b"canary-plaintext"):
+    import base64
+    import os
+
+    from api.services.security import credential_box
+
+    monkeypatch.setenv(
+        "CREDENTIALS_MASTER_KEY",
+        f"{key_id}=" + base64.b64encode(os.urandom(32)).decode(),
+    )
+    credential_box.load_keys.cache_clear()
+    try:
+        return credential_box.encrypt(plaintext, aad=b"t:1:c:[]")
+    finally:
+        credential_box.load_keys.cache_clear()
+
+
+def _token_parts_left(token, out):
+    return [part for part in token.split(":")[1:] if part in out]
+
+
+def test_a_token_in_an_unquoted_bearer_header_is_redacted_whole(monkeypatch):
+    # VOZ-N0-24c: the bearer rule stops at ":", so it must not see the token first.
+    token = _token(monkeypatch)
+    out = redact(f"Authorization: Bearer {token}", secrets=())
+    assert not _token_parts_left(token, out), out
+    assert out.endswith(" <redacted:credential_token>"), out
+
+
+def test_a_token_whose_key_id_looks_like_a_provider_key_is_redacted_whole(
+    monkeypatch,
+):
+    token = _token(monkeypatch, key_id="sk-live-rotation-2026")
+    out = redact(f"value={token} end", secrets=())
+    assert not _token_parts_left(token, out), out
+    assert out == "value=<redacted:credential_token> end"
+
+
+def test_two_tokens_glued_together_are_both_redacted(monkeypatch):
+    # Plaintexts of 14 and 29 bytes (+16 tag bytes) give unpadded base64, so nothing marks where the first ends.
+    first = _token(monkeypatch, plaintext=b"x" * 14)
+    second = _token(monkeypatch, plaintext=b"y" * 29)
+    assert not first.endswith("=") and not second.endswith("=")
+    out = redact(f"a={first}{second} b", secrets=())
+    assert not _token_parts_left(first, out) and not _token_parts_left(second, out), out
+    assert out == "a=<redacted:credential_token><redacted:credential_token> b"

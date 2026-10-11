@@ -33,6 +33,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from api.constants import REDIS_URL
+from api.db.credentials_at_rest import warn_if_plaintext_at_rest
 from api.errors.mps import MPS_UNAVAILABLE_PUBLIC_MESSAGE, MPSUnavailableError
 from api.mcp_server import mcp
 from api.routes.main import router as main_router
@@ -48,6 +49,7 @@ from api.services.pipecat.tracing_config import (
 )
 from api.services.pipecat.tts_cache.runtime import close_speech_cache
 from api.services.runtime.cell_startup import assert_cell_startup_config
+from api.services.security.credential_box import CredentialUnreadable
 from api.services.telephony.providers.twilio.region import RegionError
 from api.services.worker_sync.manager import (
     WorkerSyncManager,
@@ -64,6 +66,7 @@ mcp_app = mcp.http_app(path="/", stateless_http=True)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     assert_cell_startup_config()
+    warn_if_plaintext_at_rest()
     async with mcp_app.lifespan(app):
         # warmup arq pool
         await get_arq_redis()
@@ -227,6 +230,16 @@ async def handle_credential_ref_unresolved(
 ) -> JSONResponse:
     """A run's credential reference no longer resolves: fail closed (VOZ-AC-B0-30)."""
     logger.error("credential reference unresolved: {}", exc)
+    return _named_error(500, exc)
+
+
+@app.exception_handler(CredentialUnreadable)
+async def handle_credential_unreadable(
+    _request: Request, exc: CredentialUnreadable
+) -> JSONResponse:
+    """A stored credential that does not decrypt: fail closed (VOZ-AC-B0-30), never an empty value. ``where`` is the
+    table:id:column:path of the leaf; the token is never echoed."""
+    logger.error("credential unreadable: {}", exc)
     return _named_error(500, exc)
 
 

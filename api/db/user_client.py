@@ -11,6 +11,13 @@ from api.db.base_client import BaseDBClient
 from api.db.models import UserConfigurationModel, UserModel
 from api.enums import UserConfigurationKey
 from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
+from api.services.security.secret_surfaces import SURFACES
+
+# Keys whose document holds secrets (VOZ-AC-B6-15): written through the ORM, whose encryption at rest binds each
+# token to the row id, which the Core upsert below does not know.
+_SECRET_KEYS = {
+    s.row_key for s in SURFACES if s.table == UserConfigurationModel.__tablename__
+}
 
 
 class UserClient(BaseDBClient):
@@ -86,6 +93,12 @@ class UserClient(BaseDBClient):
         self, user_id: int, key: str, value: dict
     ) -> dict:
         """Create or update the JSON value stored for a user under `key`."""
+        if key in _SECRET_KEYS:
+            raise ValueError(
+                f"code=user_configuration_secret_key where=user_configurations.{key} "
+                "reason=this Core upsert cannot encrypt a document that holds secrets "
+                "hint=write it with update_user_configuration (ORM)"
+            )
         async with self.async_session() as session:
             stmt = insert(UserConfigurationModel.__table__).values(
                 user_id=user_id,
@@ -133,11 +146,23 @@ class UserClient(BaseDBClient):
     async def update_user_configuration(
         self, user_id: int, configuration: EffectiveAIModelConfiguration
     ) -> EffectiveAIModelConfiguration:
-        value = await self.upsert_user_configuration_value(
-            user_id,
-            UserConfigurationKey.MODEL_CONFIGURATION.value,
-            configuration.model_dump(),
-        )
+        """Through the ORM, so the secret leaves are encrypted at rest with the row id."""
+        value = configuration.model_dump()
+        async with self.async_session() as session:
+            row = await self._get_user_configuration_row(
+                session, user_id, UserConfigurationKey.MODEL_CONFIGURATION.value
+            )
+            if row is None:
+                row = UserConfigurationModel(
+                    user_id=user_id, key=UserConfigurationKey.MODEL_CONFIGURATION.value
+                )
+                session.add(row)
+            row.configuration = value
+            try:
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
         return EffectiveAIModelConfiguration.model_validate(value)
 
     async def update_user_configuration_last_validated_at(self, user_id: int) -> None:

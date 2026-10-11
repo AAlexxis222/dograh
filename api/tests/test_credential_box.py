@@ -317,7 +317,20 @@ def test_the_org_credential_keys_are_registered_whole():
         Key.LANGFUSE_CREDENTIALS.value,
     }
     valid = {k.value for k in Key}
-    assert all(s.row_key in valid for s in SURFACES if s.row_key is not None)
+    assert all(
+        s.row_key in valid
+        for s in SURFACES
+        if s.table == "organization_configurations" and s.row_key is not None
+    )
+
+
+def test_user_configurations_are_scoped_to_the_model_configuration_key():
+    from api.enums import UserConfigurationKey
+    from api.services.security.secret_surfaces import SURFACES
+
+    assert [s.row_key for s in SURFACES if s.table == "user_configurations"] == [
+        UserConfigurationKey.MODEL_CONFIGURATION.value
+    ]
 
 
 def _paths(table, column):
