@@ -131,7 +131,6 @@ class TelephonyPhoneNumberClient(BaseDBClient):
     async def find_inbound_route_by_account(
         self,
         provider: str,
-        account_id_field: str,
         account_id: str,
         to_number: str,
         country_hint: Optional[str] = None,
@@ -141,7 +140,7 @@ class TelephonyPhoneNumberClient(BaseDBClient):
 
         One SQL roundtrip that joins ``telephony_configurations`` and
         ``telephony_phone_numbers`` and matches all of:
-        provider, ``credentials[account_id_field] == account_id``,
+        provider, ``account_id`` column == account_id,
         ``phone.address_normalized == canonical(to_number)``, and
         ``phone.is_active``, and a non-parked configuration. Replaces the
         previous pattern of resolving the config and the phone number in two
@@ -151,7 +150,7 @@ class TelephonyPhoneNumberClient(BaseDBClient):
         misses (e.g. legacy non-E.164 stored addresses); the caller should
         fall back to the fuzzy ``numbers_match`` path in that case.
         """
-        if not (provider and account_id_field and account_id and to_number):
+        if not (provider and account_id and to_number):
             return None
 
         normalized = normalize_telephony_address(to_number, country_hint=country_hint)
@@ -166,8 +165,7 @@ class TelephonyPhoneNumberClient(BaseDBClient):
                 )
                 .where(
                     TelephonyConfigurationModel.provider == provider,
-                    TelephonyConfigurationModel.credentials.op("->>")(account_id_field)
-                    == account_id,
+                    TelephonyConfigurationModel.account_id == account_id,
                     TelephonyPhoneNumberModel.address_normalized
                     == normalized.canonical,
                     TelephonyPhoneNumberModel.is_active.is_(True),
@@ -184,7 +182,7 @@ class TelephonyPhoneNumberClient(BaseDBClient):
             if not rows:
                 logger.info(
                     f"Inbound route lookup miss — provider={provider} "
-                    f"{account_id_field}={account_id!r} "
+                    f"account_id={account_id!r} "
                     f"to={to_number!r} canonical={normalized.canonical!r} "
                     f"org_scope={organization_id}"
                 )
@@ -203,7 +201,7 @@ class TelephonyPhoneNumberClient(BaseDBClient):
                 )
                 logger.error(
                     f"Ambiguous inbound route — provider={provider} "
-                    f"{account_id_field}={account_id!r} "
+                    f"account_id={account_id!r} "
                     f"canonical={normalized.canonical!r} matched {len(rows)} "
                     f"rows, using the first: {candidates}"
                 )
@@ -211,11 +209,9 @@ class TelephonyPhoneNumberClient(BaseDBClient):
             config, phone_number = rows[0][0], rows[0][1]
             logger.info(
                 f"Inbound route resolved — provider={provider} "
-                f"{account_id_field}={account_id!r} "
+                f"account_id={account_id!r} "
                 f"canonical={normalized.canonical!r} -> config={config.id} "
                 f"org={config.organization_id} name={config.name!r} "
-                f"config_{account_id_field}="
-                f"{(config.credentials or {}).get(account_id_field)!r} "
                 f"phone={phone_number.id} address={phone_number.address!r} "
                 f"inbound_workflow_id={phone_number.inbound_workflow_id}"
             )
@@ -267,16 +263,14 @@ class TelephonyPhoneNumberClient(BaseDBClient):
     async def find_inbound_routing_conflicts(
         self,
         provider: str,
-        account_id_field: str,
         account_id: str,
         addresses_normalized: Sequence[str],
         exclude_configuration_id: Optional[int] = None,
     ) -> List[Tuple[TelephonyConfigurationModel, TelephonyPhoneNumberModel]]:
         """Rows that already hold one of these inbound routing keys.
 
-        Inbound dispatch keys on (provider, credentials[account_id_field],
-        address_normalized) — see ``find_inbound_route_by_account``. That tuple
-        must be globally unique or two orgs race for the same call. The rule and
+        Inbound dispatch keys on (provider, account_id, address_normalized) —
+        see ``find_inbound_route_by_account``. That tuple must be globally unique or two orgs race for the same call. The rule and
         the decision of when to apply it live in
         ``api.services.telephony.inbound_routing``; this is only its query.
 
@@ -285,7 +279,7 @@ class TelephonyPhoneNumberClient(BaseDBClient):
         being updated so it cannot conflict with itself. Addresses are matched as
         already-canonical ``address_normalized`` values — callers normalize.
         """
-        if not (provider and account_id_field and account_id and addresses_normalized):
+        if not (provider and account_id and addresses_normalized):
             return []
 
         async with self.async_session() as session:
@@ -298,8 +292,7 @@ class TelephonyPhoneNumberClient(BaseDBClient):
                 )
                 .where(
                     TelephonyConfigurationModel.provider == provider,
-                    TelephonyConfigurationModel.credentials.op("->>")(account_id_field)
-                    == account_id,
+                    TelephonyConfigurationModel.account_id == account_id,
                     TelephonyPhoneNumberModel.address_normalized.in_(
                         list(addresses_normalized)
                     ),

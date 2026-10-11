@@ -1,9 +1,9 @@
 """Shared uniqueness guard for the inbound routing key.
 
 Inbound dispatch resolves an incoming call by matching
-``(provider, credentials[account_id_field], address_normalized)`` — see
+``(provider, account_id, address_normalized)`` — see
 ``TelephonyPhoneNumberClient.find_inbound_route_by_account``. No database
-constraint spans those three values (the account id lives in a JSON column on
+constraint spans those three values (the account id lives on
 ``telephony_configurations``, the address on ``telephony_phone_numbers``), so
 the tuple stays unique only because every write path that can produce one calls
 ``assert_no_inbound_routing_conflict`` first.
@@ -76,13 +76,16 @@ def routing_account_id(
 ) -> Optional[str]:
     """The credential value inbound dispatch matches this provider's calls on.
 
-    ``None`` when the provider has no account concept (ARI, whose inbound path
-    is keyed differently) or when the credential has not been filled in yet.
+    This is the value the db client stores in ``telephony_configurations.account_id``
+    on every save. ``None`` when the provider has no account concept (ARI, whose
+    inbound path is keyed differently), when the credential has not been filled
+    in yet, or when it is not a non-empty string.
     """
     spec = registry.get_optional(provider)
     if spec is None or not spec.account_id_credential_field:
         return None
-    return (credentials or {}).get(spec.account_id_credential_field) or None
+    value = (credentials or {}).get(spec.account_id_credential_field)
+    return value if isinstance(value, str) and value else None
 
 
 async def assert_no_inbound_routing_conflict(
@@ -126,7 +129,6 @@ async def assert_no_inbound_routing_conflict(
 
     conflicts = await db.find_inbound_routing_conflicts(
         provider=provider,
-        account_id_field=spec.account_id_credential_field,
         account_id=account_id,
         addresses_normalized=list(addresses),
         exclude_configuration_id=exclude_configuration_id,

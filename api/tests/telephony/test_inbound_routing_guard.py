@@ -50,6 +50,7 @@ def test_routing_account_id_is_none_when_unset_or_provider_has_no_account():
     assert routing_account_id("twilio", {}) is None
     assert routing_account_id("twilio", {"account_sid": ""}) is None
     assert routing_account_id("twilio", None) is None
+    assert routing_account_id("twilio", {"account_sid": 12345}) is None
     # ARI has no account concept; its inbound path is keyed differently.
     assert routing_account_id("ari", {"app_name": "dograh"}) is None
     assert routing_account_id("nonexistent-provider", {"account_sid": "AC1"}) is None
@@ -168,7 +169,7 @@ async def test_the_configuration_being_updated_is_excluded_from_its_own_check():
     db.find_inbound_routing_conflicts.assert_awaited_once()
     kwargs = db.find_inbound_routing_conflicts.await_args.kwargs
     assert kwargs["exclude_configuration_id"] == 7
-    assert kwargs["account_id_field"] == "account_sid"
+    assert "account_id_field" not in kwargs
     assert kwargs["account_id"] == "AC123"
     assert kwargs["addresses_normalized"] == ["+19789911885", "+17089052818"]
 

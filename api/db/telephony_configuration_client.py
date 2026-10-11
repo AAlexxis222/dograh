@@ -8,12 +8,32 @@ Each row represents one provider account that an organization has connected
 from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import func, update
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.future import select
 
 from api.db.base_client import BaseDBClient
 from api.db.models import CampaignModel, TelephonyConfigurationModel
+
+
+def _is_missing(credentials: Any, field: str) -> bool:
+    """True when ``field`` is absent, null or empty; a credentials document that is
+    not an object (a legacy row stored double-encoded) has no fields at all."""
+    if not isinstance(credentials, dict):
+        return True
+    return credentials.get(field) in (None, "")
+
+
+def _account_id_for(provider: str, credentials: Dict[str, Any]) -> Optional[str]:
+    """The ``account_id`` column value for a credentials document. Imported here
+    because ``inbound_routing`` imports this package, and the registry that
+    ``routing_account_id`` reads is filled by importing the providers package."""
+    import importlib
+
+    importlib.import_module("api.services.telephony.providers")
+    from api.services.telephony.inbound_routing import routing_account_id
+
+    return routing_account_id(provider, credentials)
 
 
 class TelephonyConfigurationInUseError(Exception):
@@ -110,6 +130,17 @@ class TelephonyConfigurationClient(BaseDBClient):
             result = await session.execute(query)
             return list(result.scalars().all())
 
+    async def _count_configs_missing_credential(
+        self, organization_id: int, provider: str, field: str
+    ) -> int:
+        """Count the org's configs of ``provider`` whose ``credentials[field]`` is
+        absent, null or empty. Counted in Python over the loaded rows: the column
+        is not queryable in SQL (see ``telephony_configurations.account_id``)."""
+        rows = await self.list_telephony_configurations_by_provider(
+            organization_id, provider, active_only=False
+        )
+        return sum(1 for row in rows if _is_missing(row.credentials, field))
+
     async def count_telnyx_configs_missing_webhook_public_key(
         self, organization_id: int
     ) -> int:
@@ -118,49 +149,17 @@ class TelephonyConfigurationClient(BaseDBClient):
         Used by the org-warnings endpoint to surface a UI nudge until customers
         paste their portal-issued public key.
         """
-        async with self.async_session() as session:
-            result = await session.execute(
-                select(func.count(TelephonyConfigurationModel.id)).where(
-                    TelephonyConfigurationModel.organization_id == organization_id,
-                    TelephonyConfigurationModel.provider == "telnyx",
-                    (
-                        TelephonyConfigurationModel.credentials.op("->>")(
-                            "webhook_public_key"
-                        ).is_(None)
-                    )
-                    | (
-                        TelephonyConfigurationModel.credentials.op("->>")(
-                            "webhook_public_key"
-                        )
-                        == ""
-                    ),
-                )
-            )
-            return int(result.scalar() or 0)
+        return await self._count_configs_missing_credential(
+            organization_id, "telnyx", "webhook_public_key"
+        )
 
     async def count_vonage_configs_missing_signature_secret(
         self, organization_id: int
     ) -> int:
         """Count Vonage configs in this org with no signature_secret."""
-        async with self.async_session() as session:
-            result = await session.execute(
-                select(func.count(TelephonyConfigurationModel.id)).where(
-                    TelephonyConfigurationModel.organization_id == organization_id,
-                    TelephonyConfigurationModel.provider == "vonage",
-                    (
-                        TelephonyConfigurationModel.credentials.op("->>")(
-                            "signature_secret"
-                        ).is_(None)
-                    )
-                    | (
-                        TelephonyConfigurationModel.credentials.op("->>")(
-                            "signature_secret"
-                        )
-                        == ""
-                    ),
-                )
-            )
-            return int(result.scalar() or 0)
+        return await self._count_configs_missing_credential(
+            organization_id, "vonage", "signature_secret"
+        )
 
     async def list_active_telephony_configurations_by_provider(
         self, provider: str
@@ -249,6 +248,7 @@ class TelephonyConfigurationClient(BaseDBClient):
                 name=name,
                 provider=provider,
                 credentials=credentials,
+                account_id=_account_id_for(provider, credentials),
                 is_default_outbound=is_default_outbound,
             )
             session.add(row)
@@ -276,6 +276,7 @@ class TelephonyConfigurationClient(BaseDBClient):
                 row.name = name
             if credentials is not None:
                 row.credentials = credentials
+                row.account_id = _account_id_for(row.provider, credentials)
 
             try:
                 await session.commit()
