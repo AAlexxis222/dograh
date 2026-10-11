@@ -29,15 +29,22 @@ _DECLARED_MEDIUM = {"reasoning_effort": "medium"}
 _EFFORT = "llm.openai.options.reasoning.effort"
 
 
-class EffortError(ValueError):
-    """A reasoning knob the selected model or API cannot take (B0-28 shape)."""
+class KnobRefusal(ValueError):
+    """A knob the selected model, API or build cannot take (B0-28 shape).
 
-    def __init__(self, *, code: str, where: str, reason: str, hint: str):
+    ``context`` carries the extra fields a code needs (``gate`` and
+    ``source`` for ``build_gate``, VOZ-AC-B1-18).
+    """
+
+    def __init__(
+        self, *, code: str, where: str, reason: str, hint: str, **context: str
+    ):
         super().__init__(f"{where}: {reason}; {hint}")
         self.code = code
         self.where = where
         self.reason = reason
         self.hint = hint
+        self.context = context
 
     def as_detail(self) -> dict[str, str]:
         return {
@@ -45,6 +52,7 @@ class EffortError(ValueError):
             "where": self.where,
             "reason": self.reason,
             "hint": self.hint,
+            **self.context,
         }
 
 
@@ -56,7 +64,11 @@ class EffortRow:
     temperature: Rule
     temperature_value: float | None  # today's value for this model
     tools_by_chat: Rule
+    top_p: Rule  # over Responses; chat/completions sends it as it did before
     apis: frozenset[str] = field(default=_BOTH_APIS)
+    # Whether chat/completions checks an explicit effort against ``allowed``:
+    # rows that existed before the matrix send it verbatim, as they did.
+    chat_effort_checked: bool = False
 
 
 _NO_REASONING = EffortRow(
@@ -66,6 +78,7 @@ _NO_REASONING = EffortRow(
     temperature="any",
     temperature_value=0.1,
     tools_by_chat="any",
+    top_p="any",
 )
 # Not an OpenAI model this table knows (o-series, OpenRouter catalogue, Azure
 # deployment names): chat/completions keeps today's payload, Responses is
@@ -77,6 +90,7 @@ _UNLISTED = EffortRow(
     temperature="any",
     temperature_value=0.1,
     tools_by_chat="any",
+    top_p="any",
     apis=frozenset({"chat_completions"}),
 )
 _GPT5_ORIGINAL = EffortRow(
@@ -86,6 +100,7 @@ _GPT5_ORIGINAL = EffortRow(
     temperature="never",
     temperature_value=None,
     tools_by_chat="any",
+    top_p="only_with_effort_none",
 )
 # Today's chat/completions rule, kept for the names the globs below cannot
 # read: a fine-tune (``ft:gpt-5-mini:org::id``) or an Azure deployment
@@ -98,6 +113,7 @@ _GPT5_POINT = EffortRow(
     temperature="only_with_effort_none",
     temperature_value=None,
     tools_by_chat="any",
+    top_p="only_with_effort_none",
 )
 _GPT5_6 = EffortRow(
     allowed=frozenset({"none", "low", "medium", "high", "xhigh", "max"}),
@@ -106,6 +122,7 @@ _GPT5_6 = EffortRow(
     temperature="only_with_effort_none",
     temperature_value=None,
     tools_by_chat="any",
+    top_p="only_with_effort_none",
 )
 _GPT6 = EffortRow(
     allowed=frozenset({"none", "low", "medium", "high", "xhigh", "max"}),
@@ -114,6 +131,8 @@ _GPT6 = EffortRow(
     temperature="only_with_effort_none",
     temperature_value=0.1,
     tools_by_chat="only_with_effort_none",
+    top_p="only_with_effort_none",
+    chat_effort_checked=True,
 )
 # ``none`` is an HTTP 400 on these two, so temperature can never travel.
 _GPT6_REASONING_ONLY = EffortRow(
@@ -123,11 +142,9 @@ _GPT6_REASONING_ONLY = EffortRow(
     temperature="only_with_effort_none",
     temperature_value=0.1,
     tools_by_chat="never",
+    top_p="only_with_effort_none",
+    chat_effort_checked=True,
 )
-
-# Rows whose chat/completions effort follows the docs, not a pre-matrix
-# payload: no explicit effort reached them before, so their range binds there.
-_DOC_RANGE_ON_CHAT = (_GPT6, _GPT6_REASONING_ONLY)
 
 # First match wins, so the narrow globs come before the family ones.
 _ROWS: tuple[tuple[tuple[str, ...], EffortRow], ...] = (
@@ -163,7 +180,7 @@ def wire_params(
     *,
     model: str,
     requested_effort: str | None,
-    api: Api = "responses",
+    api: Api,
     requested_verbosity: str | None = None,
     requested_summary: str | None = None,
 ) -> dict[str, Any]:
@@ -176,21 +193,21 @@ def wire_params(
     """
     row = row_for(model)
     if api not in row.apis:
-        raise EffortError(
+        raise KnobRefusal(
             code="api_not_supported",
             where="llm.openai.options.api",
             reason=f"{model} is not in the OpenAI effort matrix, so {api} "
             "cannot declare its reasoning",
             hint="use chat_completions or a model listed in openai_efforts",
         )
-    # The gpt-5 family sends an explicit effort verbatim over chat/completions,
-    # as it did before this table; the documented ranges bind elsewhere.
+    # Over chat/completions only rows that opt in check the documented range;
+    # the others send an explicit effort verbatim, as before this table.
     if (
-        (api == "responses" or row in _DOC_RANGE_ON_CHAT)
+        (api == "responses" or row.chat_effort_checked)
         and requested_effort is not None
         and requested_effort not in row.allowed
     ):
-        raise EffortError(
+        raise KnobRefusal(
             code="knob_out_of_range",
             where=_EFFORT,
             reason=f"{model} does not accept effort {requested_effort!r}; "
@@ -198,7 +215,7 @@ def wire_params(
             hint=f"set {_EFFORT} to one of the accepted values or remove it",
         )
     if requested_verbosity is not None and not row.allowed:
-        raise EffortError(
+        raise KnobRefusal(
             code="knob_out_of_range",
             where="llm.openai.options.verbosity",
             reason=f"{model} does not reason and takes no verbosity",
@@ -206,7 +223,7 @@ def wire_params(
         )
     if api == "chat_completions":
         if requested_summary is not None:
-            raise EffortError(
+            raise KnobRefusal(
                 code="knob_out_of_range",
                 where="llm.openai.options.reasoning.summary",
                 reason="chat/completions carries no reasoning summary",
@@ -244,7 +261,7 @@ def refuse_tools_by_chat(model: str, effort: str | None) -> None:
     rule = row_for(model).tools_by_chat
     if rule == "any" or (rule == "only_with_effort_none" and effort == "none"):
         return
-    raise EffortError(
+    raise KnobRefusal(
         code="knob_out_of_range",
         where="llm.openai.options.api",
         reason=f"{model} takes no tools over chat/completions"

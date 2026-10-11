@@ -26,7 +26,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import LLMService
 
-from api.services.pipecat.openai_efforts import EffortError, wire_params
+from api.services.pipecat.openai_efforts import KnobRefusal, wire_params
 from api.services.pipecat.openai_responses import DograhOpenAIResponsesLLMService
 from api.services.pipecat.service_factory import create_llm_service_from_provider
 from api.tests.service_tuning._transport import chat_payload
@@ -115,20 +115,20 @@ def test_chat_completions_sends_an_explicit_effort_verbatim(model, effort):
     "model", ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "gpt-6.1-sol"]
 )
 def test_reasoning_effort_always_on_the_wire(model):
-    params = wire_params(model=model, requested_effort=None)
+    params = wire_params(model=model, requested_effort=None, api="responses")
     assert params["reasoning"]["effort"] in {"low", "medium", "high", "max", "minimal"}
     assert params["reasoning"]["effort"] != "none"
 
 
 def test_none_is_rejected_where_the_model_forbids_it():
-    with pytest.raises(EffortError) as e:
-        wire_params(model="gpt-6-astra", requested_effort="none")
+    with pytest.raises(KnobRefusal) as e:
+        wire_params(model="gpt-6-astra", requested_effort="none", api="responses")
     assert e.value.code == "knob_out_of_range" and e.value.hint
 
 
 def test_temperature_only_with_effort_none():
     assert "temperature" not in wire_params(
-        model="gpt-6-luna", requested_effort="medium"
+        model="gpt-6-luna", requested_effort="medium", api="responses"
     )
 
 
@@ -158,8 +158,8 @@ def test_responses_gate_is_on():
     ],
 )
 def test_efforts_outside_the_row_fail_with_the_b0_28_shape(model, effort):
-    with pytest.raises(EffortError) as e:
-        wire_params(model=model, requested_effort=effort)
+    with pytest.raises(KnobRefusal) as e:
+        wire_params(model=model, requested_effort=effort, api="responses")
     err = e.value
     assert err.code == "knob_out_of_range"
     assert err.where == "llm.openai.options.reasoning.effort"
@@ -171,21 +171,23 @@ def test_efforts_outside_the_row_fail_with_the_b0_28_shape(model, effort):
     [("gpt-5-mini", "minimal"), ("gpt-5.6-luna", "max"), ("gpt-6-sol", "max")],
 )
 def test_minimal_and_max_live_only_where_the_docs_put_them(model, effort):
-    assert wire_params(model=model, requested_effort=effort) == {
+    assert wire_params(model=model, requested_effort=effort, api="responses") == {
         "reasoning": {"effort": effort}
     }
 
 
 def test_effort_none_carries_todays_temperature():
-    assert wire_params(model="gpt-6-luna", requested_effort="none") == {
+    assert wire_params(
+        model="gpt-6-luna", requested_effort="none", api="responses"
+    ) == {
         "reasoning": {"effort": "none"},
         "temperature": 0.1,
     }
 
 
 def test_a_model_outside_the_matrix_cannot_use_responses():
-    with pytest.raises(EffortError) as e:
-        wire_params(model="gpt-7-nova", requested_effort=None)
+    with pytest.raises(KnobRefusal) as e:
+        wire_params(model="gpt-7-nova", requested_effort=None, api="responses")
     assert e.value.code == "api_not_supported" and e.value.hint
 
 
@@ -328,7 +330,7 @@ def test_responses_takes_top_p_only_with_effort_none():
     with pytest.raises(HTTPException) as info:
         _responses_llm("medium", top_p=0.9)
     detail = info.value.detail
-    assert info.value.status_code == 422 and detail["code"] == "knob_out_of_range"
+    assert info.value.status_code == 400 and detail["code"] == "knob_out_of_range"
     assert detail["where"] == "llm.openai.settings.top_p"
     assert "medium" in detail["reason"] and detail["hint"]
 
@@ -356,9 +358,12 @@ def test_chat_refuses_a_model_that_cannot_take_tools_there(model, options):
             tuning={"llm": {"openai": {"options": options}}},
         )
     detail = info.value.detail
-    assert info.value.status_code == 422 and detail["code"] == "knob_out_of_range"
+    assert info.value.status_code == 400 and detail["code"] == "knob_out_of_range"
     assert detail["where"] == "llm.openai.options.api"
     assert model in detail["reason"] and "responses" in detail["hint"]
+    # astra and 6.1-sol take no tools by chat at any effort ("never"), so the
+    # hint must not offer effort none; luna and sol take them only with none.
+    assert ("to none" in detail["hint"]) is (model in ("gpt-6-luna", "gpt-6-sol"))
 
 
 def test_atlascloud_keeps_todays_per_turn_behaviour_for_tools_over_chat():
@@ -407,6 +412,69 @@ def test_the_responses_gate_stops_stored_workflows_at_run_start(monkeypatch):
     assert info.value.status_code == 422 and detail["code"] == "build_gate"
     assert detail["gate"] == "RESPONSES_API_AVAILABLE"
     assert all(detail[k] for k in ("where", "reason", "hint", "source"))
+
+
+@pytest.mark.parametrize(
+    "model, tuning, status, code",
+    [
+        (
+            "gpt-6-astra",
+            _responses_tuning(reasoning={"effort": "none"}),
+            400,
+            "knob_out_of_range",
+        ),
+        (
+            "gpt-6-astra",
+            {"llm": {"openai": {"options": {"api": "chat_completions"}}}},
+            400,
+            "knob_out_of_range",
+        ),
+        (
+            "gpt-6-luna",
+            {
+                "llm": {
+                    "openai": {
+                        "options": {"api": "responses"},
+                        "settings": {"top_p": 0.9},
+                    }
+                }
+            },
+            400,
+            "knob_out_of_range",
+        ),
+        (
+            "gpt-6-luna",
+            {
+                "llm": {
+                    "openai": {
+                        "options": {"api": "responses"},
+                        "settings": {"temperature": 0.3},
+                    }
+                }
+            },
+            400,
+            "knob_out_of_range",
+        ),
+        (
+            "gpt-6-luna",
+            {
+                "llm": {
+                    "openai": {"options": {"api": "responses"}, "settings": {"seed": 7}}
+                }
+            },
+            400,
+            "knob_not_supported",
+        ),
+        ("gpt-7-nova", _responses_tuning(), 400, "api_not_supported"),
+    ],
+)
+def test_each_refusal_code_leaves_with_one_status(model, tuning, status, code):
+    # One code, one status (build_gate's 422 is pinned by the gate test above).
+    with pytest.raises(HTTPException) as info:
+        create_llm_service_from_provider(
+            provider="openai", model=model, api_key="k", tuning=tuning
+        )
+    assert (info.value.status_code, info.value.detail["code"]) == (status, code)
 
 
 def test_factory_names_the_out_of_range_effort():

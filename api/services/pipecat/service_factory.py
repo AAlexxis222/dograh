@@ -26,7 +26,6 @@ from api.services.configuration.registry import (
     HOPPER_API_BASE_URL,
     ServiceProviders,
 )
-from api.services.pipecat import service_tuning_specs
 from api.services.pipecat.gemini_json_schema_adapter import (
     DograhGeminiJSONSchemaAdapter,
 )
@@ -38,13 +37,11 @@ from api.services.pipecat.minimax_tts import (
 # Module level, unlike the rest of the realtime module's contents, so the
 # branches below name the service class the way every other branch in this
 # file does — and so a test can patch one.
-from api.services.pipecat.openai_efforts import (
-    EffortError,
-    reasons,
-    refuse_tools_by_chat,
-    wire_params,
+from api.services.pipecat.openai_llm import (
+    OPENAI_CHAT_WIRES,
+    build_openai_llm,
+    openai_chat_inputs,
 )
-from api.services.pipecat.openai_responses import DograhOpenAIResponsesLLMService
 from api.services.pipecat.realtime.azure_realtime import DograhAzureRealtimeLLMService
 from api.services.pipecat.realtime.gemini_live import DograhGeminiLiveLLMService
 from api.services.pipecat.realtime.gemini_live_vertex import (
@@ -58,12 +55,14 @@ from api.services.pipecat.realtime.ultravox_realtime import (
 )
 from api.services.pipecat.service_tuning import (
     ALL,
-    EMPTY_PLAN,
     LLMRole,
     build_settings,
     coerce_settings,
     llm_document_for_role,
     tuning_for,
+)
+from api.services.pipecat.service_tuning import (
+    warn_dropped as _warn_dropped,
 )
 from api.services.pipecat.service_tuning_specs import (
     FLUX_SETTINGS,
@@ -135,7 +134,6 @@ from pipecat.services.openai.base_llm import OpenAILLMSettings
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.openai.realtime.events import InputAudioNoiseReduction, Reasoning
 from pipecat.services.openai.realtime.llm import OpenAIRealtimeLLMSettings
-from pipecat.services.openai.responses.llm import OpenAIResponsesReasoningConfig
 from pipecat.services.openai.stt import (
     OpenAIRealtimeSTTService,
     OpenAIRealtimeSTTSettings,
@@ -334,21 +332,6 @@ def _validate_runtime_service_url(url: str, field_name: str) -> None:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-def _warn_dropped(section: str, provider: str, model: str, names, reason: str) -> None:
-    """One run-log line per knob the selected model cannot take (#8).
-
-    The PUT accepts a model-dependent knob because the same document may
-    serve a workflow whose model does use it; when the build drops it, the
-    drop is the only trace, so it is named. ``provider`` is the ``kind.name``
-    path prefix (``stt.deepgram``), ``section`` one of settings/ctor/options.
-    """
-    for name in sorted(names):
-        logger.warning(
-            f"service_tuning: {provider}.{section}.{name} dropped for model "
-            f"{model}: {reason}"
-        )
-
-
 _DEEPGRAM_MULTI_MODEL = "flux-general-multi"
 
 
@@ -397,218 +380,6 @@ def _nova_ctor_allowed() -> frozenset[str]:
     """Nova takes ``base_url``, not ``url``; ``url`` is Flux-only, so the
     shared allow-list minus it is what Nova's constructor may receive."""
     return SPECS[("stt", "deepgram")].ctor_allowed - {"url"}
-
-
-# Wires that carry OpenAI's own models and speak chat/completions through an
-# ``OpenAILLMService`` subclass, so the effort matrix applies (#12). Groq,
-# HuggingFace, Speaches, MiniMax and Sarvam serve their own catalogues, which
-# the matrix does not list.
-_OPENAI_MODEL_WIRES = frozenset(
-    {
-        ServiceProviders.OPENAI.value,
-        ServiceProviders.ATLASCLOUD.value,
-        ServiceProviders.OPENROUTER.value,
-        ServiceProviders.AZURE.value,
-        ServiceProviders.DOGRAH.value,
-    }
-)
-_API_LABELS = {"chat_completions": "chat/completions", "responses": "the Responses API"}
-# Declared on ``OpenAILLMSettings`` but never read by the Responses service
-# (responses/llm.py:378-390 sends only temperature, top_p and the cap).
-_RESPONSES_UNREAD = frozenset({"frequency_penalty", "presence_penalty", "seed"})
-
-
-def _openai_wire(model: str, api: str, options: dict) -> dict:
-    """The matrix's declared knobs for ``model`` over ``api``, with a matrix
-    refusal turned into the run-start 400 every other branch raises."""
-    reasoning = options.get("reasoning") or {}
-    try:
-        return wire_params(
-            model=model,
-            api=api,
-            requested_effort=reasoning.get("effort"),
-            requested_verbosity=options.get("verbosity"),
-            requested_summary=reasoning.get("summary"),
-        )
-    except EffortError as e:
-        raise HTTPException(status_code=400, detail=e.as_detail()) from e
-
-
-def _chat_llm_base(model: str) -> dict:
-    """Base settings for a chat/completions branch that defaults temperature.
-
-    Today's ``temperature: 0.1`` where the effort matrix lets it travel; a
-    reasoning model rejects the field with any effort but ``none``, so the
-    default would start the run and fail every turn (§1.2), and the plan
-    rewrite in ``_openai_llm_plan`` never sees the base kwargs.
-    """
-    wire = wire_params(model=model, requested_effort=None, api="chat_completions")
-    if "temperature" in wire:
-        return {"model": model, "temperature": wire["temperature"]}
-    return {"model": model}
-
-
-def _reject_unread_on_responses(plan) -> None:
-    unread = sorted(_RESPONSES_UNREAD & set(plan.settings))
-    if unread:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "knob_not_supported",
-                "where": f"llm.openai.settings.{unread[0]}",
-                "reason": "the Responses API does not read " + ", ".join(unread),
-                "hint": "remove it or set llm.openai.options.api to chat_completions",
-            },
-        )
-
-
-def _openai_api(plan) -> str:
-    """The api the plan asks for; ``responses`` behind its build gate
-    (VOZ-AC-B1-18), read at build so turning the constant off stops stored
-    workflows too, not only new PUTs."""
-    api = plan.options.get("api", "chat_completions")
-    if api == "responses" and not service_tuning_specs.RESPONSES_API_AVAILABLE:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "build_gate",
-                "where": "llm.openai.options.api",
-                "reason": "the Responses API is turned off in this build",
-                "hint": "set llm.openai.options.api to chat_completions, or "
-                "turn RESPONSES_API_AVAILABLE back on (VOZ-N0-25)",
-                "gate": "RESPONSES_API_AVAILABLE",
-                "source": "api/services/pipecat/service_tuning_specs.py "
-                "RESPONSES_API_AVAILABLE",
-            },
-        )
-    return api
-
-
-def _reject_top_p_without_effort_none(plan, model: str) -> None:
-    """Over Responses a reasoning model takes ``top_p`` only with effort
-    ``none``, like temperature (UV-51d); anything else 400s every turn."""
-    if "top_p" not in plan.settings or not reasons(model):
-        return
-    effort = _openai_wire(model, "responses", plan.options)["reasoning"]["effort"]
-    if effort != "none":
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "knob_out_of_range",
-                "where": "llm.openai.settings.top_p",
-                "reason": f"{model} takes top_p over the Responses API only "
-                f"with effort none, and the effort is {effort!r}",
-                "hint": "remove llm.openai.settings.top_p or set "
-                "llm.openai.options.reasoning.effort to none",
-            },
-        )
-
-
-def _temperature_refused(model: str, api: str) -> HTTPException:
-    reason = f"llm temperature is not accepted by {model} over {_API_LABELS[api]}"
-    if api == "chat_completions":
-        # Today's text, pinned by the chat tests ("exponer ≠ cambiar").
-        detail: str | dict = (
-            f"{reason}; remove llm.*.settings.temperature or choose another model"
-        )
-    else:
-        detail = {
-            "code": "knob_out_of_range",
-            "where": "llm.openai.settings.temperature",
-            "reason": f"{reason} with an effort other than none",
-            "hint": "remove llm.openai.settings.temperature; it travels only "
-            "with llm.openai.options.reasoning.effort none, where the model "
-            "accepts none",
-        }
-    return HTTPException(status_code=400, detail=detail)
-
-
-def _openai_llm_plan(plan, model: str):
-    """Translate an LLM plan into what ``model`` accepts over the plan's api;
-    a no-op for a model that does not reason over chat/completions.
-
-    ``build_chat_completion_params`` sends ``temperature`` and ``max_tokens``
-    verbatim (openai/base_llm.py:356-358), and a reasoning model rejects both
-    over this API: the completion cap has to arrive as
-    ``max_completion_tokens``, and temperature only travels with effort
-    ``none`` (effort matrix). The Responses service reads the cap only as
-    ``max_completion_tokens`` too. The cap is translated (lossless); a
-    temperature the model cannot take fails the run start by name rather than
-    starting a run that silently differs from the document (spec §1.2, R20).
-    An explicitly tuned ``max_completion_tokens`` wins over a translated
-    ``max_tokens``. Returns a copy; the plan is never mutated.
-    """
-    api = _openai_api(plan)
-    if api == "responses":
-        _reject_unread_on_responses(plan)
-        _reject_top_p_without_effort_none(plan, model)
-    elif not reasons(model):
-        return plan
-    if not {"temperature", "max_tokens"} & set(plan.settings):
-        return plan
-    if (
-        "temperature" in plan.settings
-        and reasons(model)
-        and "temperature" not in _openai_wire(model, api, plan.options)
-    ):
-        raise _temperature_refused(model, api)
-    settings = {
-        name: value for name, value in plan.settings.items() if name != "max_tokens"
-    }
-    if "max_tokens" in plan.settings:
-        settings.setdefault("max_completion_tokens", plan.settings["max_tokens"])
-    return replace(plan, settings=settings)
-
-
-def _openai_responses_llm(api_key, model: str, wire: dict, plan, kwargs: dict):
-    """The Responses service with every matrix knob declared (VOZ-BUG-03)."""
-    base: dict[str, Any] = {"model": model}
-    if "temperature" in wire:
-        base["temperature"] = wire["temperature"]
-    if "reasoning" in wire:
-        base["reasoning"] = OpenAIResponsesReasoningConfig(**wire["reasoning"])
-    settings = build_settings(DograhOpenAIResponsesLLMService.Settings, base, plan)
-    if "text" in wire:
-        settings.extra["text"] = wire["text"]
-    return DograhOpenAIResponsesLLMService(api_key=api_key, settings=settings, **kwargs)
-
-
-def _openai_llm(provider: str, model: str, api_key, plan, kwargs: dict):
-    """The OpenAI/Atlas Cloud branch: every impact knob declared from the
-    effort matrix (spec §5.4, VOZ-AC-B1-47). ``extra`` is REGISTRY_OWNED, so
-    the matrix keys are only ever reachable through ``options``, never
-    through ``from_mapping``'s overflow."""
-    options = plan.options
-    if not reasons(model):
-        dropped = {"reasoning", "verbosity"} & set(options)
-        _warn_dropped(
-            "options",
-            f"llm.{provider}",
-            model,
-            dropped,
-            "only a reasoning model takes reasoning_effort/verbosity",
-        )
-        options = {k: v for k, v in options.items() if k not in dropped}
-    api = _openai_api(plan)
-    wire = _openai_wire(model, api, options)
-    if api == "responses":
-        return _openai_responses_llm(api_key, model, wire, plan, kwargs)
-    # The service_tuning row reaches the LLM that carries the workflow's
-    # tools; tool-less builds (voicemail classifier, extraction, QA) get no
-    # row unless their scope opts in, so they are not refused here. Only
-    # ``llm.openai`` declares the options the refusal's hint names, so the
-    # other wires (Atlas Cloud included) keep today's per-turn behaviour.
-    if provider == ServiceProviders.OPENAI.value and plan != EMPTY_PLAN:
-        try:
-            refuse_tools_by_chat(model, wire.get("reasoning_effort"))
-        except EffortError as e:
-            raise HTTPException(status_code=422, detail=e.as_detail()) from e
-    base = {"model": model}
-    if "temperature" in wire:
-        base["temperature"] = wire.pop("temperature")
-    settings = build_settings(OpenAILLMSettings, base, plan)
-    settings.extra.update(wire)
-    return OpenAILLMService(api_key=api_key, settings=settings, **kwargs)
 
 
 def _openai_realtime_stt_base_url(base_url: str) -> str:
@@ -1820,8 +1591,8 @@ def create_llm_service_from_provider(
         + (f", location={vertex_location}" if vertex_location else "")
     )
     plan = tuning_for(tuning, "llm", provider)
-    if provider in _OPENAI_MODEL_WIRES:
-        plan = _openai_llm_plan(plan, model)
+    if provider in OPENAI_CHAT_WIRES:
+        plan, chat_base = openai_chat_inputs(model, plan)
 
     if provider in (
         ServiceProviders.OPENAI.value,
@@ -1835,7 +1606,7 @@ def create_llm_service_from_provider(
         if base_url:
             _validate_runtime_service_url(base_url, "base_url")
             kwargs["base_url"] = base_url
-        return _openai_llm(provider, model, api_key, plan, kwargs)
+        return build_openai_llm(provider, model, api_key, plan, kwargs)
     elif provider == ServiceProviders.GROQ.value:
         return GroqLLMService(
             api_key=api_key,
@@ -1854,7 +1625,7 @@ def create_llm_service_from_provider(
         if base_url:
             _validate_runtime_service_url(base_url, "base_url")
             kwargs["base_url"] = base_url
-        settings = build_settings(OpenRouterLLMSettings, _chat_llm_base(model), plan)
+        settings = build_settings(OpenRouterLLMSettings, chat_base, plan)
         if provider_order:
             # OpenRouter's provider preferences are a request-body field the
             # OpenAI client does not know, so they travel in extra_body.
@@ -1889,7 +1660,7 @@ def create_llm_service_from_provider(
         return AzureLLMService(
             api_key=api_key,
             endpoint=endpoint,
-            settings=build_settings(AzureLLMSettings, _chat_llm_base(model), plan),
+            settings=build_settings(AzureLLMSettings, chat_base, plan),
         )
     elif provider == ServiceProviders.DOGRAH.value:
         return DograhLLMService(
