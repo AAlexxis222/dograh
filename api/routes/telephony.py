@@ -413,7 +413,6 @@ async def _validate_inbound_request(
     if account_field and normalized_data.account_id:
         match = await db_client.find_inbound_route_by_account(
             provider=provider_class.PROVIDER_NAME,
-            account_id_field=account_field,
             account_id=normalized_data.account_id,
             to_number=normalized_data.to_number,
             country_hint=normalized_data.to_country,
@@ -855,17 +854,13 @@ async def handle_inbound_run(request: Request):
 
         # 1. Resolve (config, phone_number) in a single SQL roundtrip that
         # joins telephony_configurations and telephony_phone_numbers and
-        # filters on (provider, credentials[account_id_field], called number
+        # filters on (provider, account_id, called number
         # canonical address, is_active). The phone-number row's existence in
         # the matched config simultaneously identifies the org — we never
         # match a config from one org against a phone owned by another.
-        spec = telephony_registry.get_optional(provider_class.PROVIDER_NAME)
-        account_field = spec.account_id_credential_field if spec else ""
-
         if normalized_data.account_id:
             match = await db_client.find_inbound_route_by_account(
                 provider=provider_class.PROVIDER_NAME,
-                account_id_field=account_field,
                 account_id=normalized_data.account_id,
                 to_number=normalized_data.to_number,
                 country_hint=normalized_data.to_country,
@@ -899,7 +894,6 @@ async def handle_inbound_run(request: Request):
         logger.info(
             f"/inbound/run matched route — org={config.organization_id} "
             f"config={config.id} name={config.name!r} "
-            f"config_{account_field}={(config.credentials or {}).get(account_field)!r} "
             f"webhook_account_id={normalized_data.account_id!r} "
             f"phone={phone_row.id} address={phone_row.address!r} "
             f"inbound_workflow_id={phone_row.inbound_workflow_id}"
