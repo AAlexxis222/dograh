@@ -19,6 +19,7 @@ Importer count is NOT the only axis. In this repo the deciding question is: **is
 | `.github/workflows/` | CI, release automation |
 | `scripts/xpand/call_entrypoint.sh`, `scripts/xpand/require_db_head.sh` | PID 1 of the `call` role, and the start gate of every cell role |
 | `api/services/runtime/cell_startup.py` | the start check of every cell role (api lifespan, and `python -m` from `require_db_head.sh`); a wrong refusal stops every role of the cell |
+| `api/services/workflow/tools/url_guard.py` | the URL guard of every tool egress (custom HTTP tools, transfer resolver, MCP servers) on the call hot path; with `URL_GUARD_ENFORCE=true` (every cell) a wrong block breaks every tool call, a wrong allow reopens SSRF to IMDS / the compose network (VOZ-AC-B5-91) |
 | `api/services/security/redaction.py`, `api/logging_config.py`, `api/services/security/credential_box.py` | every process, every log line: a regression either leaks a secret or phone number to the sinks or slows the call loop; `credential_box` is imported at load by `redaction.py` and `cell_startup.py`, so a broken import (a missing `cryptography` wheel) stops every process |
 
 ## Leaf (while additive and gated)

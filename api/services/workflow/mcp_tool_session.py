@@ -18,10 +18,22 @@ from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.services.mcp_service import MCPClient
 
 from api.services.workflow.tools.mcp_tool import namespace_function_name
+from api.services.workflow.tools.url_guard import check_tool_url, url_guard_enforced
 from api.utils.credential_auth import build_auth_header
 
 if TYPE_CHECKING:
     from api.db.models import ExternalCredentialModel
+
+
+def _guard_mcp_url(url: str) -> None:
+    """An MCP server is a tool (VOZ-AC-B5-91): its URL passes the tool URL guard when the guard is enforced.
+
+    Pre-flight only: Pipecat's MCPClient builds its own HTTP client (no injection point), so the connection
+    resolves the name again and follows redirects; that residual is follow-up VOZ-FU-N0-28-a. With the flag off
+    nothing is checked, as before (MCP never had the legacy DEPLOYMENT_MODE check).
+    """
+    if url_guard_enforced():
+        check_tool_url(url)
 
 
 def build_streamable_http_params(
@@ -125,8 +137,11 @@ class McpToolSession:
         Never raises on a connect failure — a dead/unreachable MCP server
         leaves the session marked unavailable (``available = False``). Genuine
         external cancellation, KeyboardInterrupt, and SystemExit are re-raised
-        (see the CancelledError handling below and ``_degrade``)."""
+        (see the CancelledError handling below and ``_degrade``). A URL the tool
+        URL guard refuses degrades the same way, before any connection."""
         try:
+            # Off the event loop: the guard resolves the host name.
+            await asyncio.to_thread(_guard_mcp_url, self._url)
             params = build_streamable_http_params(
                 url=self._url,
                 credential=self._credential,
@@ -279,8 +294,9 @@ async def discover_mcp_tools(
     sse_read_timeout_secs: int,
 ) -> List[Dict[str, str]]:
     """Open an ephemeral MCP session, list its tools, close it. Returns
-    ``[{name, description}]`` (raw names). Never raises — on any connect
-    failure returns ``[]``."""
+    ``[{name, description}]`` (raw names). Raises ``ToolUrlBlocked`` when the
+    tool URL guard refuses the URL; on any connect failure returns ``[]``."""
+    await asyncio.to_thread(_guard_mcp_url, url)
     session = McpToolSession(
         tool_uuid="discover",
         tool_name="discover",

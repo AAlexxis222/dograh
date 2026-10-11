@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -12,9 +13,13 @@ from loguru import logger
 
 from api.db import db_client
 from api.services.workflow.tools.custom_tool import _resolve_preset_parameters
+from api.services.workflow.tools.url_guard import (
+    ToolUrlBlocked,
+    check_tool_url,
+    pinned_request_target,
+)
 from api.utils.credential_auth import build_auth_header
 from api.utils.template_renderer import render_template
-from api.utils.url_security import validate_user_configured_service_url
 
 
 @dataclass
@@ -281,7 +286,16 @@ async def _execute_http_resolver(
     resolution_id: str,
 ) -> dict[str, Any]:
     url = resolver.get("url", "")
-    validate_user_configured_service_url(url, field_name="config.resolver.url")
+    try:
+        # Off the event loop: the guard resolves the host name.
+        pinned_address = await asyncio.to_thread(
+            check_tool_url, url, "config.resolver.url"
+        )
+    except ToolUrlBlocked as exc:
+        logger.warning(
+            f"Transfer resolver blocked resolution_id={resolution_id}: {exc}"
+        )
+        raise TransferResolutionError(exc.code, str(exc)) from exc
 
     method = "POST"
     headers = dict(resolver.get("headers", {}) or {})
@@ -313,12 +327,13 @@ async def _execute_http_resolver(
 
     try:
         started_at = time.monotonic()
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout_seconds, trust_env=pinned_address is None
+        ) as client:
             response = await client.request(
                 method=method,
-                url=url,
-                headers=headers,
                 json=body,
+                **pinned_request_target(url, headers, pinned_address),
             )
         duration_ms = int((time.monotonic() - started_at) * 1000)
     except httpx.TimeoutException as exc:

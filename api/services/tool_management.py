@@ -27,6 +27,7 @@ from api.services.workflow.tools.mcp_tool import (
     McpDefinitionError,
     validate_mcp_definition,
 )
+from api.services.workflow.tools.url_guard import ToolUrlBlocked
 
 
 class ToolManagementError(ValueError):
@@ -265,6 +266,11 @@ async def refresh_mcp_tool_for_user(
             credential=credential,
             timeout_secs=cfg["timeout_secs"],
             sse_read_timeout_secs=cfg["sse_read_timeout_secs"],
+        )
+    except ToolUrlBlocked as e:
+        logger.warning(f"MCP refresh blocked for tool {tool_uuid}: {e}")
+        return McpRefreshResponse(
+            tool_uuid=tool_uuid, discovered_tools=[], error=str(e)
         )
     except Exception as e:  # noqa: BLE001
         logger.warning(f"MCP refresh discovery failed: {e}")

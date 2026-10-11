@@ -1,11 +1,8 @@
 """Custom tool execution for user-defined HTTP API tools."""
 
 import asyncio
-import ipaddress
 import json
-import os
 import re
-import socket
 from typing import Any
 
 import httpx
@@ -22,13 +19,17 @@ from api.errors.failure import (
     redact_failure_message,
 )
 from api.services.configuration.masking import mask_key
+from api.services.workflow.tools.url_guard import (
+    ToolUrlBlocked,
+    check_tool_url,
+    pinned_request_target,
+)
 from api.utils.credential_auth import build_auth_header
 from api.utils.template_renderer import (
     get_nested_value,
     render_template,
     render_url_template,
 )
-from api.utils.url_security import validate_user_configured_service_url
 
 # Map tool parameter types to JSON schema types
 TYPE_MAP = {
@@ -299,131 +300,6 @@ def render_body_template(template: Any, context: dict[str, Any]) -> Any:
     return render_template(template, context)
 
 
-# VOZ-AC-B5-91 layer 2: the tool URL guard has its own flag, so a cell (DEPLOYMENT_MODE=oss) can enforce it
-# without changing the other branches that mode governs. Read at call time; only the exact value "true" enforces.
-URL_GUARD_FLAG = "URL_GUARD_ENFORCE"
-# Compose service names (docker-compose.yaml): inside the Docker network they resolve to private addresses.
-_INTERNAL_HOSTNAMES = frozenset(
-    {"localhost", "postgres", "redis", "minio", "api", "call", "ui", "nginx", "coturn"}
-)
-_NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
-_BLOCKED_HINT = (
-    "point the tool at a public http(s) endpoint: private, loopback, link-local and internal "
-    "service addresses are not reachable from tools"
-)
-
-
-class ToolUrlBlocked(ValueError):
-    """A tool URL the guard refuses, in the VOZ-AC-B0-28 shape: stable code, what, where, reason, hint."""
-
-    code = "tool_url_blocked"
-    what = "custom tool request blocked before it left the platform"
-
-    def __init__(self, host: str, reason: str):
-        self.where = f"config.url host '{host}'"
-        self.reason = reason
-        self.hint = _BLOCKED_HINT
-        super().__init__(
-            f"code={self.code} what={self.what} where={self.where} "
-            f"reason={reason} hint={self.hint}"
-        )
-
-    def as_result(self) -> dict[str, str]:
-        return {
-            "status": "error",
-            "error": str(self),
-            "code": self.code,
-            "what": self.what,
-            "where": self.where,
-            "reason": self.reason,
-            "hint": self.hint,
-        }
-
-
-def _is_internal_address(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """Anything that is not public unicast: private, loopback, link-local, 100.64.0.0/10, unspecified, multicast.
-
-    IPv4-mapped forms (::ffff:a.b.c.d) are not global in the stdlib (3.11 and 3.13 checked), whatever they carry;
-    NAT64 (64:ff9b::/96) embeds any IPv4 address and a cell has no use for it, so it is blocked whole.
-    """
-    return not ip.is_global or ip.is_multicast or ip in _NAT64_PREFIX
-
-
-def _ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
-    try:
-        return ipaddress.ip_address(host)
-    except ValueError:
-        return None
-
-
-def _tool_url_addresses(url: str) -> tuple[str, list[str]]:
-    """Parse the URL the way the request will, and return its host with every address that host maps to."""
-    try:
-        parsed = httpx.URL(url)
-    except httpx.InvalidURL:
-        raise ToolUrlBlocked("(unparseable)", "the URL cannot be parsed") from None
-    host = parsed.host.rstrip(".")  # httpx already lower-cases it
-    if parsed.scheme not in ("http", "https") or not host:
-        raise ToolUrlBlocked(
-            host or "(none)", f"scheme '{parsed.scheme}' is not http or https"
-        )
-    if host in _INTERNAL_HOSTNAMES:
-        raise ToolUrlBlocked(host, "the host is an internal service name")
-    if _ip_literal(host):
-        return host, [host]
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    try:
-        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    except socket.gaierror:
-        raise ToolUrlBlocked(host, "the host name could not be resolved") from None
-    return host, [str(info[4][0]) for info in infos]
-
-
-def check_tool_url(url: str) -> str | None:
-    """Guard a custom tool URL; return the address the request must connect to, or None to connect as usual.
-
-    URL_GUARD_ENFORCE=true enforces whatever DEPLOYMENT_MODE says: every address the host maps to must be public
-    (one bad record blocks), and the returned one is the address to connect to, so the request does not resolve
-    the name again. Otherwise the pre-existing DEPLOYMENT_MODE-based check runs, unchanged (it raises ValueError).
-    """
-    if os.environ.get(URL_GUARD_FLAG) != "true":
-        validate_user_configured_service_url(url, field_name="config.url")
-        return None
-    host, addresses = _tool_url_addresses(url)
-    if not addresses:
-        raise ToolUrlBlocked(host, "the host name has no address")
-    for address in addresses:
-        ip = _ip_literal(address)
-        if ip is None or _is_internal_address(ip):  # unreadable is not vouched for
-            logger.warning(f"Tool URL guard blocked '{host}': it maps to {address}")
-            raise ToolUrlBlocked(
-                host,
-                "the host maps to a private, loopback, link-local or otherwise internal address",
-            )
-    return addresses[0]
-
-
-def _pinned_request_target(
-    url: str, headers: dict[str, str], address: str | None
-) -> dict[str, Any]:
-    """The url, headers and extensions httpx needs to connect to the validated address without resolving again.
-
-    The Host header and, for https, the SNI name and certificate check stay on the original host name.
-    """
-    if address is None:
-        return {"url": url, "headers": headers}
-    parsed = httpx.URL(url)
-    if not any(name.lower() == "host" for name in headers):
-        headers = {**headers, "Host": parsed.netloc.decode("ascii")}
-    target: dict[str, Any] = {
-        "url": str(parsed.copy_with(host=address)),
-        "headers": headers,
-    }
-    if not _ip_literal(parsed.host):
-        target["extensions"] = {"sni_hostname": parsed.host}
-    return target
-
-
 def _url_rejection(error: ValueError) -> dict[str, Any]:
     if isinstance(error, ToolUrlBlocked):
         return error.as_result()
@@ -630,14 +506,16 @@ async def execute_http_tool(
     try:
         # Redirects are never followed: a 3xx would send the request to a URL the guard has not checked.
         async with httpx.AsyncClient(
-            timeout=timeout_seconds, follow_redirects=False
+            timeout=timeout_seconds,
+            follow_redirects=False,
+            trust_env=pinned_address is None,
         ) as client:
             response = await client.request(
                 method=method,
                 json=None if form_encoded else body,
                 data=serialize_form_body(body) if form_encoded and body else None,
                 params=params,
-                **_pinned_request_target(url, headers, pinned_address),
+                **pinned_request_target(url, headers, pinned_address),
             )
 
             # Try to parse JSON response

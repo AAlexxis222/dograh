@@ -1456,7 +1456,7 @@ class TestTransferResolver:
 
         with (
             patch(
-                "api.services.workflow.tools.transfer_resolver.validate_user_configured_service_url"
+                "api.services.workflow.tools.url_guard.validate_user_configured_service_url"
             ),
             patch(
                 "api.services.workflow.tools.transfer_resolver.httpx.AsyncClient"
@@ -1517,7 +1517,7 @@ class TestTransferResolver:
 
         with (
             patch(
-                "api.services.workflow.tools.transfer_resolver.validate_user_configured_service_url"
+                "api.services.workflow.tools.url_guard.validate_user_configured_service_url"
             ),
             patch(
                 "api.services.workflow.tools.transfer_resolver.httpx.AsyncClient"
@@ -2354,7 +2354,7 @@ class TestCustomToolManagerUnit:
                 new=AsyncMock(return_value=None),
             ),
             patch(
-                "api.services.workflow.tools.transfer_resolver.validate_user_configured_service_url"
+                "api.services.workflow.tools.url_guard.validate_user_configured_service_url"
             ),
             patch(
                 "api.services.workflow.tools.transfer_resolver.httpx.AsyncClient"
@@ -2454,7 +2454,7 @@ class TestCustomToolManagerUnit:
                 new=AsyncMock(return_value=workflow_run),
             ),
             patch(
-                "api.services.workflow.tools.transfer_resolver.validate_user_configured_service_url"
+                "api.services.workflow.tools.url_guard.validate_user_configured_service_url"
             ),
             patch(
                 "api.services.workflow.tools.transfer_resolver.httpx.AsyncClient"

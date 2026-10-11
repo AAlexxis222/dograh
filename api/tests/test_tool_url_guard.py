@@ -1,17 +1,21 @@
-"""VOZ-N0-28: the custom-tool URL guard is enforced by its own flag (VOZ-AC-B5-91, VOZ-AC-B0-30)."""
+"""VOZ-N0-28: the tool URL guard (custom tools, transfer resolver, MCP) is enforced by its own flag (VOZ-AC-B5-91, VOZ-AC-B0-30)."""
 
 import socket
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
-from api.services.workflow.tools.custom_tool import (
-    ToolUrlBlocked,
-    check_tool_url,
-    execute_http_tool,
+from api.services.workflow.mcp_tool_session import McpToolSession, discover_mcp_tools
+from api.services.workflow.tools.custom_tool import execute_http_tool
+from api.services.workflow.tools.transfer_resolver import (
+    TransferResolutionError,
+    resolve_transfer_config,
 )
+from api.services.workflow.tools.url_guard import ToolUrlBlocked, check_tool_url
 
+REAL_GETADDRINFO = socket.getaddrinfo
 PUBLIC_IP = "93.184.216.34"
 PUBLIC_IPV6 = "2606:4700::1111"
 IMDS = "http://169.254.169.254/latest/meta-data/"
@@ -50,6 +54,7 @@ class Wire:
 
     def __init__(self, handler=None):
         self.requests = []
+        self.clients = []  # the keyword arguments of every client built
         self._handler = handler or (lambda request: httpx.Response(200, json={}))
 
     def handle(self, request):
@@ -58,10 +63,13 @@ class Wire:
 
     def patch(self, monkeypatch):
         real_client = httpx.AsyncClient
-        monkeypatch.setattr(
-            "api.services.workflow.tools.custom_tool.httpx.AsyncClient",
-            lambda **kw: real_client(transport=httpx.MockTransport(self.handle), **kw),
-        )
+
+        def client(**kw):
+            self.clients.append(kw)
+            return real_client(transport=httpx.MockTransport(self.handle), **kw)
+
+        # httpx is one module object, so this covers every tool that builds an httpx client.
+        monkeypatch.setattr("httpx.AsyncClient", client)
 
 
 # --- the plan's tests (binding) ---
@@ -168,12 +176,58 @@ def test_flag_off_check_delegates_to_the_legacy_guard(monkeypatch):
         "http://user:pw@postgres:5432/",
         "http://localhost./",
         "http://example.com\\@169.254.169.254/",
+        # deprecated IPv6 forms that embed an internal IPv4 or are site-local: is_global is True for them on 3.13
+        "http://[::169.254.169.254]/",
+        "http://[::a9fe:a9fe]/",
+        "http://[::ffff:0:a9fe:a9fe]/",
+        "http://[fec0::1]/",
+        # 6to4 and Teredo embed an IPv4 address inside 2000::/3
+        "http://[2002:a9fe:a9fe::1]/",
+        "http://[2001::1]/",
+        "http://[::ffff:127.0.0.1]/",
     ],
 )
 def test_other_internal_targets_are_blocked(enforced, url):
     with pytest.raises(ToolUrlBlocked) as e:
         check_tool_url(url)
     assert e.value.code == "tool_url_blocked"
+
+
+def test_an_ipv4_mapped_public_address_is_judged_by_the_ipv4_it_carries(enforced):
+    assert check_tool_url("http://[::ffff:93.184.216.34]/") == "::ffff:93.184.216.34"
+
+
+@pytest.mark.parametrize(
+    "url", ["http:/169.254.169.254/", "http:169.254.169.254", "https:///path"]
+)
+def test_a_url_without_host_says_so_not_that_the_scheme_is_wrong(enforced, url):
+    with pytest.raises(ToolUrlBlocked) as e:
+        check_tool_url(url)
+    assert "no host" in e.value.reason and "scheme" not in e.value.reason
+
+
+def test_a_bad_scheme_names_the_scheme(enforced):
+    with pytest.raises(ToolUrlBlocked) as e:
+        check_tool_url("ftp://api.example.com/")
+    assert "scheme 'ftp'" in e.value.reason
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["a" * 64 + ".example.com", "a..example.com"],  # label too long / empty label
+)
+async def test_a_host_the_resolver_cannot_encode_is_blocked_in_the_b0_28_shape(
+    enforced, monkeypatch, host
+):
+    # The real resolver: it fails while IDNA-encoding the name, before any lookup leaves the machine.
+    monkeypatch.setattr("socket.getaddrinfo", REAL_GETADDRINFO)
+    wire = Wire()
+    wire.patch(monkeypatch)
+    result = await execute_http_tool(_tool(f"http://{host}/"), {})
+    assert wire.requests == []
+    assert result["code"] == "tool_url_blocked"
+    assert result["reason"] == "the host name could not be resolved"
+    assert result["hint"]
 
 
 @pytest.mark.parametrize(
@@ -297,3 +351,227 @@ async def test_a_redirect_to_imds_is_not_followed(enforced, monkeypatch):
     result = await execute_http_tool(_tool("https://api.example.com/go"), {})
     assert len(wire.requests) == 1  # the second hop never leaves
     assert result["status"] == "error" and result["status_code"] == 302
+
+
+async def test_the_pinned_request_ignores_proxy_env_and_the_unpinned_one_keeps_it(
+    monkeypatch,
+):
+    # An env proxy would tunnel to the pinned IP, and httpcore's tunnel ignores sni_hostname: the cert check fails.
+    wire = Wire()
+    wire.patch(monkeypatch)
+    monkeypatch.setenv("URL_GUARD_ENFORCE", "true")
+    await execute_http_tool(_tool("https://api.example.com/x"), {})
+    monkeypatch.delenv("URL_GUARD_ENFORCE")
+    monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "oss")
+    await execute_http_tool(_tool("https://api.example.com/x"), {})
+    pinned, unpinned = wire.clients
+    assert pinned["trust_env"] is False
+    assert unpinned.get("trust_env", True) is True
+
+
+# --- the transfer resolver is a tool too (VOZ-AC-B5-91, fix r1 item 6) ---
+
+
+def _resolve_transfer(url):
+    return resolve_transfer_config(
+        tool=SimpleNamespace(tool_uuid="tr-1"),
+        config={
+            "destination_source": "dynamic",
+            "destination": "",
+            "timeout": 30,
+            "resolver": {"type": "http", "url": url, "timeout_ms": 3000},
+        },
+        arguments={},
+        call_context_vars={},
+        gathered_context_vars={},
+        organization_id=None,
+        workflow_run_id=None,
+    )
+
+
+def _transfer_wire():
+    return Wire(
+        lambda request: httpx.Response(
+            200, json={"transfer_context": {"destination": "+14155550123"}}
+        )
+    )
+
+
+@pytest.mark.parametrize("url", [IMDS, "http://redis:6379"])
+async def test_transfer_resolver_to_an_internal_target_is_blocked_before_the_wire(
+    enforced, monkeypatch, url
+):
+    wire = _transfer_wire()
+    wire.patch(monkeypatch)
+    with pytest.raises(TransferResolutionError) as e:
+        await _resolve_transfer(url)
+    assert wire.requests == []
+    assert e.value.reason == "tool_url_blocked"
+    assert "config.resolver.url" in e.value.message and "hint=" in e.value.message
+
+
+async def test_transfer_resolver_connects_to_the_validated_ip(enforced, monkeypatch):
+    wire = _transfer_wire()
+    wire.patch(monkeypatch)
+    resolved = await _resolve_transfer("https://crm.example.com/resolve")
+    assert resolved.destination == "+14155550123"
+    (request,) = wire.requests
+    assert str(request.url) == f"https://{PUBLIC_IP}/resolve"
+    assert request.headers["host"] == "crm.example.com"
+    assert request.extensions["sni_hostname"] == "crm.example.com"
+    (client,) = wire.clients
+    assert client["trust_env"] is False and not client.get("follow_redirects")
+
+
+async def test_transfer_resolver_flag_off_oss_reaches_imds_unchanged(monkeypatch):
+    monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
+    monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "oss")
+    wire = _transfer_wire()
+    wire.patch(monkeypatch)
+    await _resolve_transfer(IMDS)
+    (request,) = wire.requests
+    assert str(request.url) == IMDS and "sni_hostname" not in request.extensions
+
+
+async def test_transfer_resolver_flag_off_saas_keeps_the_legacy_error(monkeypatch):
+    monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
+    monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "saas")
+    wire = _transfer_wire()
+    wire.patch(monkeypatch)
+    with pytest.raises(ValueError, match="config.resolver.url must resolve") as e:
+        await _resolve_transfer(IMDS)
+    assert not isinstance(e.value, TransferResolutionError)
+    assert wire.requests == []
+
+
+# --- MCP servers are tools too (VOZ-AC-B5-91, fix r1 item 6): pre-flight check, no pinning ---
+
+
+@pytest.fixture
+def mcp_clients(monkeypatch):
+    """Stands in for Pipecat's MCPClient: records the params of every connection attempt."""
+    built = []
+
+    class FakeMcpClient:
+        def __init__(self, params, tools_filter=None):
+            built.append(params)
+            self._active_session = object()
+
+        async def start(self):
+            pass
+
+        async def get_tools_schema(self):
+            echo = SimpleNamespace(
+                name="echo", description="Echo", properties={}, required=[]
+            )
+            return SimpleNamespace(standard_tools=[echo])
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "api.services.workflow.mcp_tool_session.MCPClient", FakeMcpClient
+    )
+    return built
+
+
+def _mcp_session(url):
+    return McpToolSession(
+        tool_uuid="mcp-1",
+        tool_name="Probe MCP",
+        url=url,
+        credential=None,
+        tools_filter=[],
+        timeout_secs=5,
+        sse_read_timeout_secs=5,
+    )
+
+
+@pytest.mark.parametrize("url", [IMDS, "http://redis:6379"])
+async def test_mcp_call_start_to_an_internal_target_degrades_without_connecting(
+    enforced, mcp_clients, url
+):
+    session = _mcp_session(url)
+    await (
+        session.start_managed()
+    )  # the call-start path (pipecat_engine): it must not raise
+    try:
+        assert session.available is False and session.function_schemas() == []
+        assert mcp_clients == []
+    finally:
+        await session.close_managed()
+
+
+async def test_mcp_call_start_to_a_public_server_connects_unchanged(
+    enforced, mcp_clients
+):
+    session = _mcp_session("https://mcp.example.com/mcp")
+    await session.start()
+    try:
+        assert session.available is True
+        (params,) = mcp_clients
+        assert (
+            params.url == "https://mcp.example.com/mcp"
+        )  # pre-flight only: not pinned
+    finally:
+        await session.close()
+
+
+@pytest.mark.parametrize("mode", ["oss", "saas"])
+async def test_mcp_flag_off_connects_as_today(monkeypatch, mcp_clients, mode):
+    # MCP had no URL check in any mode, so flag off adds none (not even the legacy saas one).
+    monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
+    monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", mode)
+    session = _mcp_session(IMDS)
+    await session.start()
+    try:
+        assert session.available is True
+        assert [p.url for p in mcp_clients] == [IMDS]
+    finally:
+        await session.close()
+
+
+@pytest.mark.parametrize("url", [IMDS, "http://redis:6379"])
+async def test_mcp_discovery_of_an_internal_target_returns_the_b0_28_error(
+    enforced, mcp_clients, url
+):
+    with pytest.raises(ToolUrlBlocked) as e:
+        await discover_mcp_tools(
+            url=url, credential=None, timeout_secs=5, sse_read_timeout_secs=5
+        )
+    assert e.value.code == "tool_url_blocked" and e.value.hint
+    assert mcp_clients == []
+
+
+async def test_mcp_discovery_of_a_public_server_is_unchanged(enforced, mcp_clients):
+    tools = await discover_mcp_tools(
+        url="https://mcp.example.com/mcp",
+        credential=None,
+        timeout_secs=5,
+        sse_read_timeout_secs=5,
+    )
+    assert tools == [{"name": "echo", "description": "Echo"}]
+
+
+async def test_mcp_refresh_reports_the_block_and_keeps_the_cache(
+    enforced, monkeypatch, mcp_clients
+):
+    from api.services import tool_management
+
+    tool = SimpleNamespace(
+        tool_uuid="tu-mcp",
+        category="mcp",
+        definition={"schema_version": 1, "type": "mcp", "config": {"url": IMDS}},
+    )
+    monkeypatch.setattr(
+        tool_management.db_client, "get_tool_by_uuid", AsyncMock(return_value=tool)
+    )
+    update = AsyncMock()
+    monkeypatch.setattr(tool_management.db_client, "update_tool", update)
+    response = await tool_management.refresh_mcp_tool_for_user(
+        "tu-mcp", SimpleNamespace(selected_organization_id=1)
+    )
+    assert response.discovered_tools == []
+    assert "code=tool_url_blocked" in response.error and "hint=" in response.error
+    update.assert_not_awaited()
+    assert mcp_clients == []
