@@ -18,7 +18,11 @@ from collections.abc import Sequence
 from loguru import logger
 
 from api.services.pipecat.openai_efforts import row_for
-from pipecat.frames.frames import BotStoppedSpeakingFrame, Frame
+from pipecat.frames.frames import (
+    BotStoppedSpeakingFrame,
+    Frame,
+    FunctionCallsFromLLMInfoFrame,
+)
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import FunctionCallFromLLM
@@ -66,7 +70,13 @@ class DograhOpenAIResponsesLLMService(OpenAIResponsesHttpLLMService):
         drop pipecat's shared function-call group. Unspeakable text never
         produces the ``BotStoppedSpeakingFrame`` that releases it, so it does
         not count; speculative calls must stay cancellable, so they run.
+        The batch is announced first, so the llm span records a transition
+        that runs after the span has closed (service_decorators.py:999-1006).
         """
+        await self.push_frame(
+            FunctionCallsFromLLMInfoFrame(function_calls=list(function_calls)),
+            direction=FrameDirection.DOWNSTREAM,
+        )
         if (
             not self._speculation_gate.is_speculating
             and has_alnum(self._response_text)

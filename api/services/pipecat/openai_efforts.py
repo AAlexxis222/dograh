@@ -15,14 +15,12 @@ Presets, not this table, change production defaults (VOZ-D13).
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fnmatch import fnmatchcase
 from typing import Any, Literal
 
 Api = Literal["chat_completions", "responses"]
 # When a knob may travel: always, only next to ``effort: "none"``, or never.
-# ``tools_by_chat`` is declared for the row's readers; whether a turn carries
-# tools is only known per request, so the factory does not enforce it.
 Rule = Literal["any", "only_with_effort_none", "never"]
 
 _BOTH_APIS: frozenset[str] = frozenset({"chat_completions", "responses"})
@@ -89,6 +87,10 @@ _GPT5_ORIGINAL = EffortRow(
     temperature_value=None,
     tools_by_chat="any",
 )
+# Today's chat/completions rule, kept for the names the globs below cannot
+# read: a fine-tune (``ft:gpt-5-mini:org::id``) or an Azure deployment
+# (``prod-gpt-5``). Responses is refused rather than guessed.
+_GPT5_BY_NAME = replace(_GPT5_ORIGINAL, apis=frozenset({"chat_completions"}))
 _GPT5_POINT = EffortRow(
     allowed=frozenset({"none", "low", "medium", "high", "xhigh"}),
     default="medium",
@@ -135,11 +137,17 @@ _ROWS: tuple[tuple[tuple[str, ...], EffortRow], ...] = (
 
 
 def row_for(model: str) -> EffortRow:
-    """The row for ``model``; an OpenRouter-style ``vendor/`` prefix is ignored."""
-    name = model.rsplit("/", 1)[-1].lower()
+    """The row for ``model``; an OpenRouter-style ``vendor/`` prefix is ignored.
+
+    Case-sensitive, as today's ``"gpt-5" in model`` rule: an unread name that
+    contains ``gpt-5`` keeps the gpt-5 row on chat/completions.
+    """
+    name = model.rsplit("/", 1)[-1]
     for patterns, row in _ROWS:
         if any(fnmatchcase(name, pattern) for pattern in patterns):
             return row
+    if "gpt-5" in model and "gpt-5-chat" not in model:
+        return _GPT5_BY_NAME
     return _UNLISTED
 
 
@@ -171,7 +179,13 @@ def wire_params(
             "cannot declare its reasoning",
             hint="use chat_completions or a model listed in openai_efforts",
         )
-    if requested_effort is not None and requested_effort not in row.allowed:
+    # Chat/completions sends an explicit effort verbatim, as it did before
+    # this table: the documented ranges bind the Responses path only.
+    if (
+        api == "responses"
+        and requested_effort is not None
+        and requested_effort not in row.allowed
+    ):
         raise EffortError(
             code="knob_out_of_range",
             where=_EFFORT,
@@ -215,3 +229,22 @@ def wire_params(
     ):
         params["temperature"] = row.temperature_value
     return params
+
+
+def refuse_tools_by_chat(model: str, effort: str | None) -> None:
+    """Raise where ``model`` takes no tools over chat/completions with ``effort``.
+
+    The API answers a tool-carrying turn there with a 400 (UV-51d), so the
+    run fails at start instead of on every turn.
+    """
+    rule = row_for(model).tools_by_chat
+    if rule == "any" or (rule == "only_with_effort_none" and effort == "none"):
+        return
+    raise EffortError(
+        code="knob_out_of_range",
+        where="llm.openai.options.api",
+        reason=f"{model} takes no tools over chat/completions"
+        + (f" with effort {effort!r}" if rule == "only_with_effort_none" else ""),
+        hint="set llm.openai.options.api to responses"
+        + (f" or {_EFFORT} to none" if rule == "only_with_effort_none" else ""),
+    )

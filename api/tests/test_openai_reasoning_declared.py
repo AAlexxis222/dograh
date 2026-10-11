@@ -18,7 +18,10 @@ from openai.types.responses import (
     ResponseOutputItemDoneEvent,
     ResponseTextDeltaEvent,
 )
-from pipecat.frames.frames import BotStoppedSpeakingFrame
+from pipecat.frames.frames import (
+    BotStoppedSpeakingFrame,
+    FunctionCallsFromLLMInfoFrame,
+)
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import LLMService
@@ -61,6 +64,14 @@ TODAY_CHAT = [
     ("azure", "gpt-4.1", _AZURE, {"temperature": 0.1}),
     ("dograh", "gpt-5-mini", {}, {}),
     ("dograh", "gpt-4.1", {}, {}),
+    # Today's rule is a case-sensitive substring of the whole name: fine-tunes,
+    # vendor prefixes and Azure deployment names carry the gpt-5 row too.
+    ("openai", "ft:gpt-5-mini:org:x:1", {}, _GPT5_TODAY),
+    ("openai", "openai/gpt-5", {}, _GPT5_TODAY),
+    ("openrouter", "openai/gpt-5", {}, {}),
+    ("azure", "prod-gpt-5", _AZURE, {}),
+    ("azure", "acme-gpt-5-mini", _AZURE, {}),
+    ("azure", "GPT-5", _AZURE, {"temperature": 0.1}),
 ]
 
 
@@ -70,6 +81,31 @@ def test_chat_completions_keeps_todays_impact_knobs(provider, model, kwargs, exp
         provider=provider, model=model, api_key="k", **kwargs
     )
     assert _impact_knobs(chat_payload(llm)) == expected
+
+
+# (model, explicit effort) -> what chat/completions sends today: the effort
+# travels verbatim; the matrix only validates the Responses path.
+TODAY_CHAT_EXPLICIT = [
+    ("gpt-5.1", "minimal"),
+    ("gpt-5.4-mini", "minimal"),
+    ("gpt-5.6-luna", "minimal"),
+    ("gpt-5", "xhigh"),
+    ("gpt-5", "none"),
+]
+
+
+@pytest.mark.parametrize("model, effort", TODAY_CHAT_EXPLICIT)
+def test_chat_completions_sends_an_explicit_effort_verbatim(model, effort):
+    llm = create_llm_service_from_provider(
+        provider="openai",
+        model=model,
+        api_key="k",
+        tuning={"llm": {"openai": {"options": {"reasoning": {"effort": effort}}}}},
+    )
+    assert _impact_knobs(chat_payload(llm)) == {
+        "reasoning_effort": effort,
+        "verbosity": "low",
+    }
 
 
 # --- the effort matrix (plan Step 1, binding) -------------------------------
@@ -273,20 +309,73 @@ async def test_responses_wire_takes_the_cap_and_an_explicit_temperature_with_non
 
 
 @pytest.mark.parametrize(
-    "settings, where",
+    "settings, code, where",
     [
-        ({"temperature": 0.3}, None),
-        ({"seed": 7}, "llm.openai.settings.seed"),
+        # temperature next to an effort other than none
+        ({"temperature": 0.3}, "knob_out_of_range", "llm.openai.settings.temperature"),
+        ({"seed": 7}, "knob_not_supported", "llm.openai.settings.seed"),
     ],
 )
-def test_responses_refuses_knobs_it_would_not_honour(settings, where):
+def test_responses_refuses_knobs_it_would_not_honour(settings, code, where):
     with pytest.raises(HTTPException) as info:
         _responses_llm("medium", **settings)
     detail = info.value.detail
-    if where is None:  # temperature next to an effort other than none
-        assert "not accepted by gpt-6-luna over the Responses API" in detail
-    else:
-        assert detail["code"] == "knob_not_supported" and detail["where"] == where
+    assert detail["code"] == code and detail["where"] == where
+    assert all(detail[k] for k in ("reason", "hint"))
+
+
+def test_responses_takes_top_p_only_with_effort_none():
+    with pytest.raises(HTTPException) as info:
+        _responses_llm("medium", top_p=0.9)
+    detail = info.value.detail
+    assert info.value.status_code == 422 and detail["code"] == "knob_out_of_range"
+    assert detail["where"] == "llm.openai.settings.top_p"
+    assert "medium" in detail["reason"] and detail["hint"]
+
+
+async def test_responses_sends_top_p_with_effort_none():
+    assert (await _one_turn(_responses_llm("none", top_p=0.9)))["top_p"] == 0.9
+
+
+@pytest.mark.parametrize(
+    "model, options",
+    [
+        ("gpt-6-astra", {"api": "chat_completions"}),
+        ("gpt-6.1-sol", {"reasoning": {"effort": "none"}}),
+        ("gpt-6-luna", {"verbosity": "low"}),
+        ("gpt-6-sol", {"reasoning": {"effort": "low"}}),
+    ],
+)
+def test_chat_refuses_a_model_that_cannot_take_tools_there(model, options):
+    # The service_tuning row reaches the LLM that carries the workflow's tools.
+    with pytest.raises(HTTPException) as info:
+        create_llm_service_from_provider(
+            provider="openai",
+            model=model,
+            api_key="k",
+            tuning={"llm": {"openai": {"options": options}}},
+        )
+    detail = info.value.detail
+    assert info.value.status_code == 422 and detail["code"] == "knob_out_of_range"
+    assert detail["where"] == "llm.openai.options.api"
+    assert model in detail["reason"] and "responses" in detail["hint"]
+
+
+def test_the_responses_gate_stops_stored_workflows_at_run_start(monkeypatch):
+    from api.services.pipecat import service_tuning_specs
+
+    monkeypatch.setattr(service_tuning_specs, "RESPONSES_API_AVAILABLE", False)
+    with pytest.raises(HTTPException) as info:
+        create_llm_service_from_provider(
+            provider="openai",
+            model="gpt-6-luna",
+            api_key="k",
+            tuning=_responses_tuning(),
+        )
+    detail = info.value.detail
+    assert info.value.status_code == 422 and detail["code"] == "build_gate"
+    assert detail["gate"] == "RESPONSES_API_AVAILABLE"
+    assert all(detail[k] for k in ("where", "reason", "hint", "source"))
 
 
 def test_factory_names_the_out_of_range_effort():
@@ -386,3 +475,28 @@ async def test_a_new_response_discards_a_transition_never_released():
         await _one_turn(llm, [_text("Perdone, repito.")])
         await llm.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
         run.assert_not_awaited()
+
+
+async def test_a_speculative_transition_runs_at_once_to_stay_cancellable():
+    llm = _service()
+    llm._speculation_gate.begin_speculation(True)
+    with patch.object(LLMService, "run_function_calls", new_callable=AsyncMock) as run:
+        await _one_turn(llm, [_text("Le paso con ventas."), *_call("transition", "1")])
+        assert _names(run) == [["transition"]]
+
+
+async def test_a_deferred_transition_is_announced_to_the_llm_span():
+    llm = _service()
+    with patch.object(LLMService, "run_function_calls", new_callable=AsyncMock):
+        await _one_turn(llm, [_text("Le paso con ventas."), *_call("transition", "1")])
+    announced = [
+        (
+            [fc.function_name for fc in call.args[0].function_calls],
+            call.kwargs.get(
+                "direction", (*call.args[1:], FrameDirection.DOWNSTREAM)[0]
+            ),
+        )
+        for call in llm.push_frame.await_args_list
+        if isinstance(call.args[0], FunctionCallsFromLLMInfoFrame)
+    ]
+    assert announced == [(["transition"], FrameDirection.DOWNSTREAM)]

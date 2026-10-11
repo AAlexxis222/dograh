@@ -120,9 +120,7 @@ def test_speechmatics_extra_params_stays_closed():
 
 
 def test_enum_typed_setting_checks_the_enum_values():
-    _validate(
-        {"stt": {"speechmatics": {"settings": {"turn_detection_mode": "external"}}}}
-    )
+    _validate({"stt": {"speechmatics": {"settings": {"turn_detection_mode": "external"}}}})
     for field, value in (
         # An unhashable value must not raise TypeError out of the membership
         # check, and a bad mode must not reach TurnDetectionMode(...) in the

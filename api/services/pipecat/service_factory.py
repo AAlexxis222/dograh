@@ -26,6 +26,7 @@ from api.services.configuration.registry import (
     HOPPER_API_BASE_URL,
     ServiceProviders,
 )
+from api.services.pipecat import service_tuning_specs
 from api.services.pipecat.gemini_json_schema_adapter import (
     DograhGeminiJSONSchemaAdapter,
 )
@@ -37,7 +38,12 @@ from api.services.pipecat.minimax_tts import (
 # Module level, unlike the rest of the realtime module's contents, so the
 # branches below name the service class the way every other branch in this
 # file does — and so a test can patch one.
-from api.services.pipecat.openai_efforts import EffortError, reasons, wire_params
+from api.services.pipecat.openai_efforts import (
+    EffortError,
+    reasons,
+    refuse_tools_by_chat,
+    wire_params,
+)
 from api.services.pipecat.openai_responses import DograhOpenAIResponsesLLMService
 from api.services.pipecat.realtime.azure_realtime import DograhAzureRealtimeLLMService
 from api.services.pipecat.realtime.gemini_live import DograhGeminiLiveLLMService
@@ -52,6 +58,7 @@ from api.services.pipecat.realtime.ultravox_realtime import (
 )
 from api.services.pipecat.service_tuning import (
     ALL,
+    EMPTY_PLAN,
     LLMRole,
     build_settings,
     coerce_settings,
@@ -456,7 +463,64 @@ def _reject_unread_on_responses(plan) -> None:
 
 
 def _openai_api(plan) -> str:
-    return plan.options.get("api", "chat_completions")
+    """The api the plan asks for; ``responses`` behind its build gate
+    (VOZ-AC-B1-18), read at build so turning the constant off stops stored
+    workflows too, not only new PUTs."""
+    api = plan.options.get("api", "chat_completions")
+    if api == "responses" and not service_tuning_specs.RESPONSES_API_AVAILABLE:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "build_gate",
+                "where": "llm.openai.options.api",
+                "reason": "the Responses API is turned off in this build",
+                "hint": "set llm.openai.options.api to chat_completions, or "
+                "turn RESPONSES_API_AVAILABLE back on (VOZ-N0-25)",
+                "gate": "RESPONSES_API_AVAILABLE",
+                "source": "api/services/pipecat/service_tuning_specs.py "
+                "RESPONSES_API_AVAILABLE",
+            },
+        )
+    return api
+
+
+def _reject_top_p_without_effort_none(plan, model: str) -> None:
+    """Over Responses a reasoning model takes ``top_p`` only with effort
+    ``none``, like temperature (UV-51d); anything else 400s every turn."""
+    if "top_p" not in plan.settings or not reasons(model):
+        return
+    effort = _openai_wire(model, "responses", plan.options)["reasoning"]["effort"]
+    if effort != "none":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "knob_out_of_range",
+                "where": "llm.openai.settings.top_p",
+                "reason": f"{model} takes top_p over the Responses API only "
+                f"with effort none, and the effort is {effort!r}",
+                "hint": "remove llm.openai.settings.top_p or set "
+                "llm.openai.options.reasoning.effort to none",
+            },
+        )
+
+
+def _temperature_refused(model: str, api: str) -> HTTPException:
+    reason = f"llm temperature is not accepted by {model} over {_API_LABELS[api]}"
+    if api == "chat_completions":
+        # Today's text, pinned by the chat tests ("exponer ≠ cambiar").
+        detail: str | dict = (
+            f"{reason}; remove llm.*.settings.temperature or choose another model"
+        )
+    else:
+        detail = {
+            "code": "knob_out_of_range",
+            "where": "llm.openai.settings.temperature",
+            "reason": f"{reason} with an effort other than none",
+            "hint": "remove llm.openai.settings.temperature; it travels only "
+            "with llm.openai.options.reasoning.effort none, where the model "
+            "accepts none",
+        }
+    return HTTPException(status_code=400, detail=detail)
 
 
 def _openai_llm_plan(plan, model: str):
@@ -477,6 +541,7 @@ def _openai_llm_plan(plan, model: str):
     api = _openai_api(plan)
     if api == "responses":
         _reject_unread_on_responses(plan)
+        _reject_top_p_without_effort_none(plan, model)
     elif not reasons(model):
         return plan
     if not {"temperature", "max_tokens"} & set(plan.settings):
@@ -486,14 +551,7 @@ def _openai_llm_plan(plan, model: str):
         and reasons(model)
         and "temperature" not in _openai_wire(model, api, plan.options)
     ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"llm temperature is not accepted by {model} over "
-                f"{_API_LABELS[api]}; remove llm.*.settings.temperature or "
-                "choose another model"
-            ),
-        )
+        raise _temperature_refused(model, api)
     settings = {
         name: value for name, value in plan.settings.items() if name != "max_tokens"
     }
@@ -535,6 +593,14 @@ def _openai_llm(provider: str, model: str, api_key, plan, kwargs: dict):
     wire = _openai_wire(model, api, options)
     if api == "responses":
         return _openai_responses_llm(api_key, model, wire, plan, kwargs)
+    # The service_tuning row reaches the LLM that carries the workflow's
+    # tools; tool-less builds (voicemail classifier, extraction, QA) get no
+    # row unless their scope opts in, so they are not refused here.
+    if plan != EMPTY_PLAN:
+        try:
+            refuse_tools_by_chat(model, wire.get("reasoning_effort"))
+        except EffortError as e:
+            raise HTTPException(status_code=422, detail=e.as_detail()) from e
     base = {"model": model}
     if "temperature" in wire:
         base["temperature"] = wire.pop("temperature")
