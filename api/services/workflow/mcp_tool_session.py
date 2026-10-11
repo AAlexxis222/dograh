@@ -21,48 +21,25 @@ from mcp.client.session_group import StreamableHttpParameters
 from mcp.client.streamable_http import streamable_http_client
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 
+from api.services.security.egress_guard import ToolUrlBlocked, guard_egress
 from api.services.workflow.tools.mcp_tool import namespace_function_name
-from api.services.workflow.tools.url_guard import (
-    PinnedTransport,
-    check_tool_url,
-    url_guard_enforced,
-)
 from api.utils.credential_auth import build_auth_header
 
 if TYPE_CHECKING:
     from api.db.models import ExternalCredentialModel
 
 
-def _guard_mcp_url(url: str) -> str | None:
-    """An MCP server is a tool (VOZ-AC-B5-91): its URL passes the tool URL guard when the guard is enforced.
-
-    Returns the validated address the connection is pinned to. With the flag off nothing is checked and nothing
-    is pinned, as before (MCP never had the legacy DEPLOYMENT_MODE check).
-    """
-    return check_tool_url(url) if url_guard_enforced() else None
+_MCP_URL_HINT = (
+    "point the MCP server URL at a public http(s) endpoint: private, loopback, link-local and "
+    "internal service addresses are not reachable from tools"
+)
 
 
-def _mcp_http_client(
-    params: StreamableHttpParameters, address: str | None
-) -> httpx2.AsyncClient:
-    """The HTTP client the MCP transport runs on.
-
-    Guarded (an address): pinned to it, no redirects, no env settings; the SDK itself follows only redirects
-    that stay on the endpoint's origin, and PinnedTransport refuses any other host. Not guarded: the client
-    Pipecat's MCPClient built before.
-    """
-    timeout = httpx2.Timeout(params.timeout, read=params.sse_read_timeout)
-    if address is None:
-        return httpx2.AsyncClient(
-            headers=params.headers, timeout=timeout, follow_redirects=True
-        )
-    return httpx2.AsyncClient(
-        headers=params.headers,
-        timeout=timeout,
-        follow_redirects=False,
-        trust_env=False,
-        transport=PinnedTransport(httpx2.URL(params.url).host, address),
-    )
+def _sole_cause(error: BaseException) -> BaseException:
+    """The one exception a group of one wraps, at any depth: a group names neither the type nor the cause."""
+    while isinstance(error, BaseExceptionGroup) and len(error.exceptions) == 1:
+        error = error.exceptions[0]
+    return error
 
 
 def build_streamable_http_params(
@@ -118,6 +95,8 @@ class McpToolSession:
         # namespaced LLM name -> original MCP tool name
         self._name_map: Dict[str, str] = {}
         self.available: bool = False
+        # Set when the egress guard refused the URL at start(): discovery raises it instead of checking again.
+        self.blocked: ToolUrlBlocked | None = None
         self._owner_task: asyncio.Task | None = None
         self._ready: asyncio.Future | None = None
         self._stop = asyncio.Event()
@@ -167,11 +146,15 @@ class McpToolSession:
         Never raises on a connect failure — a dead/unreachable MCP server
         leaves the session marked unavailable (``available = False``). Genuine
         external cancellation, KeyboardInterrupt, and SystemExit are re-raised
-        (see the CancelledError handling below and ``_degrade``). A URL the tool
-        URL guard refuses degrades the same way, before any connection."""
+        (see the CancelledError handling below and ``_degrade``). A URL the egress
+        guard refuses degrades the same way, before any connection, and is kept
+        in ``blocked``."""
         try:
-            # Off the event loop: the guard resolves the host name.
-            address = await asyncio.to_thread(_guard_mcp_url, self._url)
+            # An MCP server is a tool (VOZ-AC-B5-91). MCP never had the legacy DEPLOYMENT_MODE check, so with the
+            # guard off nothing is checked or pinned, as before.
+            target = await guard_egress(
+                self._url, field="config.url", hint=_MCP_URL_HINT, legacy_check=False
+            )
             params = build_streamable_http_params(
                 url=self._url,
                 credential=self._credential,
@@ -179,7 +162,14 @@ class McpToolSession:
                 sse_read_timeout_secs=self._sse_read_timeout_secs,
             )
             self._exit_stack = stack = AsyncExitStack()
-            client = await stack.enter_async_context(_mcp_http_client(params, address))
+            client = await stack.enter_async_context(
+                target.httpx2_client(
+                    headers=params.headers,
+                    timeout=httpx2.Timeout(
+                        params.timeout, read=params.sse_read_timeout
+                    ),
+                )
+            )
             read_stream, write_stream = await stack.enter_async_context(
                 streamable_http_client(
                     params.url,
@@ -217,6 +207,9 @@ class McpToolSession:
             )
         except (KeyboardInterrupt, SystemExit):
             raise
+        except ToolUrlBlocked as e:
+            self.blocked = e
+            await self._degrade(e)
         except asyncio.CancelledError as e:
             # A dead/unreachable MCP server may not surface as a plain
             # Exception here. The real failure is httpx.ConnectError, but
@@ -236,9 +229,9 @@ class McpToolSession:
                 raise
             await self._degrade(e)
         except Exception as e:  # noqa: BLE001 — see _degrade docstring
-            # The connect failure surfaced directly (an MCPError, a refused
-            # guard, an HTTP error) instead of via the anyio cancel-scope
-            # artifact above: degrade gracefully.
+            # The connect failure surfaced directly (an MCPError, an HTTP
+            # error) instead of via the anyio cancel-scope artifact above:
+            # degrade gracefully.
             await self._degrade(e)
 
     async def _degrade(self, e: BaseException) -> None:
@@ -252,11 +245,14 @@ class McpToolSession:
         self._name_map = {}
         # Self-contained cleanup: the transport may be open when a later step
         # (initialize, list_tools) failed. Closing it also exits the anyio task
-        # group whose cancel scope fired, before anything else is awaited.
-        await self.close()
+        # group whose cancel scope fired, before anything else is awaited, and
+        # that exit raises the real cause (ConnectError, ConnectTimeout, a
+        # certificate mismatch) when ``e`` is only the cancel-scope artifact.
+        closing_error = await self._close_stack()
+        cause = _sole_cause(e if isinstance(e, Exception) else (closing_error or e))
         logger.warning(
             f"MCP session unavailable for tool '{self._tool_name}' "
-            f"({self._tool_uuid}) at {self._url}: {e!r}. "
+            f"({self._tool_uuid}) at {self._url}: {cause!r}. "
             f"Call proceeds without these tools."
         )
 
@@ -311,14 +307,21 @@ class McpToolSession:
                 text += content.text
         return text or "Sorry, the MCP tool returned no content."
 
-    async def close(self) -> None:
+    async def _close_stack(self) -> Exception | None:
+        """Close the connection; return what closing it raised (None if nothing)."""
         stack, self._exit_stack, self._session = self._exit_stack, None, None
         if stack is None:
-            return
+            return None
         try:
             await stack.aclose()
         except Exception as e:
-            logger.warning(f"Error closing MCP session {self._tool_uuid}: {e}")
+            return e
+        return None
+
+    async def close(self) -> None:
+        error = await self._close_stack()
+        if error is not None:
+            logger.warning(f"Error closing MCP session {self._tool_uuid}: {error}")
 
 
 async def discover_mcp_tools(
@@ -330,8 +333,7 @@ async def discover_mcp_tools(
 ) -> List[Dict[str, str]]:
     """Open an ephemeral MCP session, list its tools, close it. Returns
     ``[{name, description}]`` (raw names). Raises ``ToolUrlBlocked`` when the
-    tool URL guard refuses the URL; on any connect failure returns ``[]``."""
-    await asyncio.to_thread(_guard_mcp_url, url)
+    egress guard refuses the URL; on any connect failure returns ``[]``."""
     session = McpToolSession(
         tool_uuid="discover",
         tool_name="discover",
@@ -343,6 +345,8 @@ async def discover_mcp_tools(
     )
     await session.start()
     try:
+        if session.blocked is not None:
+            raise session.blocked
         if not session.available:
             return []
         return session.discovered_tools()

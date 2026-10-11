@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -12,14 +11,16 @@ import httpx
 from loguru import logger
 
 from api.db import db_client
+from api.services.security.egress_guard import ToolUrlBlocked, guard_egress
 from api.services.workflow.tools.custom_tool import _resolve_preset_parameters
-from api.services.workflow.tools.url_guard import (
-    ToolUrlBlocked,
-    check_tool_url,
-    pinned_request_target,
-)
 from api.utils.credential_auth import build_auth_header
 from api.utils.template_renderer import render_template
+
+
+_RESOLVER_URL_HINT = (
+    "point the transfer resolver at a public http(s) endpoint: private, loopback, link-local and "
+    "internal service addresses are not reachable from tools"
+)
 
 
 @dataclass
@@ -287,11 +288,12 @@ async def _execute_http_resolver(
 ) -> dict[str, Any]:
     url = resolver.get("url", "")
     try:
-        # Off the event loop: the guard resolves the host name.
-        pinned_address = await asyncio.to_thread(
-            check_tool_url, url, "config.resolver.url"
+        target = await guard_egress(
+            url, field="config.resolver.url", hint=_RESOLVER_URL_HINT
         )
     except ToolUrlBlocked as exc:
+        if not exc.enforced:
+            raise  # guard off: the legacy DEPLOYMENT_MODE refusal keeps its pre-existing path (a ValueError)
         logger.warning(
             f"Transfer resolver blocked resolution_id={resolution_id}: {exc}"
         )
@@ -327,13 +329,9 @@ async def _execute_http_resolver(
 
     try:
         started_at = time.monotonic()
-        async with httpx.AsyncClient(
-            timeout=timeout_seconds, trust_env=pinned_address is None
-        ) as client:
+        async with target.httpx_client(timeout=timeout_seconds) as client:
             response = await client.request(
-                method=method,
-                json=body,
-                **pinned_request_target(url, headers, pinned_address),
+                method=method, url=url, headers=headers, json=body
             )
         duration_ms = int((time.monotonic() - started_at) * 1000)
     except httpx.TimeoutException as exc:

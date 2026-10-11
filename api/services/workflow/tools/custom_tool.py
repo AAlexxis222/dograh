@@ -1,6 +1,5 @@
 """Custom tool execution for user-defined HTTP API tools."""
 
-import asyncio
 import json
 import re
 from typing import Any
@@ -19,11 +18,7 @@ from api.errors.failure import (
     redact_failure_message,
 )
 from api.services.configuration.masking import mask_key
-from api.services.workflow.tools.url_guard import (
-    ToolUrlBlocked,
-    check_tool_url,
-    pinned_request_target,
-)
+from api.services.security.egress_guard import ToolUrlBlocked, guard_egress
 from api.utils.credential_auth import build_auth_header
 from api.utils.template_renderer import (
     get_nested_value,
@@ -300,10 +295,25 @@ def render_body_template(template: Any, context: dict[str, Any]) -> Any:
     return render_template(template, context)
 
 
-def _url_rejection(error: ValueError) -> dict[str, Any]:
-    if isinstance(error, ToolUrlBlocked):
-        return error.as_result()
-    return {"status": "error", "error": f"URL validation failed: {error!s}"}
+_URL_HINT = (
+    "point the tool at a public http(s) endpoint: private, loopback, link-local and internal "
+    "service addresses are not reachable from tools"
+)
+
+
+def _url_rejection(error: ToolUrlBlocked) -> dict[str, Any]:
+    # Guard off: the legacy DEPLOYMENT_MODE refusal, in its pre-existing shape.
+    if not error.enforced:
+        return {"status": "error", "error": f"URL validation failed: {error!s}"}
+    return {
+        "status": "error",
+        "error": str(error),
+        "code": error.code,
+        "what": error.what,
+        "where": error.where,
+        "reason": error.reason,
+        "hint": error.hint,
+    }
 
 
 async def execute_http_tool(
@@ -469,9 +479,8 @@ async def execute_http_tool(
         )
 
     try:
-        # Off the event loop: the guard resolves the host name.
-        pinned_address = await asyncio.to_thread(check_tool_url, url)
-    except ValueError as e:
+        target = await guard_egress(url, field="config.url", hint=_URL_HINT)
+    except ToolUrlBlocked as e:
         logger.error(f"Custom tool '{tool.name}' URL validation failed: {e}")
         return build_result(_url_rejection(e))
 
@@ -504,18 +513,14 @@ async def execute_http_tool(
             f"Resolved preset parameters for '{tool.name}': {list(preset_arguments.keys())}"
         )
     try:
-        # Redirects are never followed: a 3xx would send the request to a URL the guard has not checked.
-        async with httpx.AsyncClient(
-            timeout=timeout_seconds,
-            follow_redirects=False,
-            trust_env=pinned_address is None,
-        ) as client:
+        async with target.httpx_client(timeout=timeout_seconds) as client:
             response = await client.request(
                 method=method,
+                url=url,
+                headers=headers,
                 json=None if form_encoded else body,
                 data=serialize_form_body(body) if form_encoded and body else None,
                 params=params,
-                **pinned_request_target(url, headers, pinned_address),
             )
 
             # Try to parse JSON response

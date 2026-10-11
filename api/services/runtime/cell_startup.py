@@ -9,6 +9,7 @@ import sys
 
 from api.services.runtime.cell_state import parse_call_k_p
 from api.services.security import credential_box
+from api.services.security.egress_flag import URL_GUARD_FLAG, url_guard_enforced
 
 # Levels at or above INFO. Anything else (DEBUG, TRACE, numbers, unknown names, unset) can log caller text.
 _SAFE_LOG_LEVELS = {"INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"}
@@ -57,14 +58,15 @@ def assert_cell_startup_config(where: str = "api.app") -> None:
         raise CellStartupError(
             e.code, where, f"{e.where}: {e.reason}", e.hint
         ) from None
-    # VOZ-AC-B5-91 / B0-30: a tool must never reach IMDS or the compose network. The guard runs only on the exact value
-    # "true" (api/services/workflow/tools/custom_tool.py), so anything else is a cell with the control off.
-    if os.environ.get("URL_GUARD_ENFORCE") != "true":
+    # VOZ-AC-B5-91 / B0-30: a tool must never reach IMDS or the compose network. The egress guard
+    # (api/services/security/egress_guard.py) enforces only under the rule in egress_flag.py, so anything else is a
+    # cell with the control off.
+    if not url_guard_enforced():
         raise CellStartupError(
             "url_guard_not_enforced",
             where,
-            "URL_GUARD_ENFORCE is not exactly 'true', so custom tools could reach cloud metadata (IMDS) and the Docker network",
-            "set URL_GUARD_ENFORCE=true in the cell env (docker-compose.cell.yaml sets it for every role)",
+            f"{URL_GUARD_FLAG} is not exactly 'true', so tools could reach cloud metadata (IMDS) and the Docker network",
+            f"set {URL_GUARD_FLAG}=true in the cell env (docker-compose.cell.yaml sets it for every role)",
         )
     # Durations are not checked here: the gate in scripts/xpand/require_db_head.sh owns them for every role.
 
