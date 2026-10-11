@@ -228,6 +228,11 @@ class TelephonyConfigurationModel(Base):
     name = Column(String(64), nullable=False)
     provider = Column(String(32), nullable=False)
     credentials = Column(JSON, nullable=False, default=dict)
+    # Plaintext routing key, filled from ``credentials`` by the db client on every save
+    # (``routing_account_id``): inbound dispatch must not query inside ``credentials``,
+    # which is encrypted whole. An identifier, not a secret. NULL for providers with no
+    # account concept (ARI) and for credentials that do not carry the field yet.
+    account_id = Column(Text, nullable=True)
     is_default_outbound = Column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
@@ -264,6 +269,9 @@ class TelephonyConfigurationModel(Base):
             "organization_id", "name", name="uq_telephony_configurations_org_name"
         ),
         Index("ix_telephony_configurations_org", "organization_id"),
+        Index(
+            "ix_telephony_configurations_provider_account_id", "provider", "account_id"
+        ),
         Index(
             "uq_telephony_configurations_default",
             "organization_id",

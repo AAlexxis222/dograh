@@ -26,6 +26,7 @@ if SENTRY_DSN and (
 
 
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,11 +41,18 @@ from api.services.configuration.cascade import (
     WorkflowDefinitionMissingError,
     WorkflowDefinitionNotVisibleError,
 )
+from api.services.configuration.credential_refs import (
+    CredentialRedacted,
+    CredentialRefUnresolved,
+    CredentialValueRefused,
+)
+from api.services.configuration.masking import MaskedSecretUnmatched
 from api.services.pipecat.tracing_config import (
     handle_langfuse_sync,
     load_all_org_langfuse_credentials,
 )
 from api.services.pipecat.tts_cache.runtime import close_speech_cache
+from api.services.runtime.cell_startup import assert_cell_startup_config
 from api.services.telephony.providers.twilio.region import RegionError
 from api.services.worker_sync.manager import (
     WorkerSyncManager,
@@ -60,6 +68,7 @@ mcp_app = mcp.http_app(path="/", stateless_http=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    assert_cell_startup_config()
     async with mcp_app.lifespan(app):
         # warmup arq pool
         await get_arq_redis()
@@ -191,6 +200,43 @@ async def handle_twilio_region_error(
             },
         },
     )
+
+
+def _named_error(status_code: int, exc: Any) -> JSONResponse:
+    """VOZ-AC-B0-28 body, the shape of the region handler above. ``exc`` carries
+    ``code``/``where``/``reason``/``hint`` (one NamedError base: VOZ-FU-B028-base)."""
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "detail": f"{exc.code}: {exc.reason}. {exc.hint}",
+            "error": {
+                "code": exc.code,
+                "reason": exc.reason,
+                "hint": exc.hint,
+                "where": exc.where,
+            },
+        },
+    )
+
+
+@app.exception_handler(MaskedSecretUnmatched)
+async def handle_masked_secret_unmatched(
+    _request: Request, exc: MaskedSecretUnmatched
+) -> JSONResponse:
+    """A masked secret sent back with nothing stored behind it: never stored."""
+    return _named_error(422, exc)
+
+
+@app.exception_handler(CredentialRefUnresolved)
+@app.exception_handler(CredentialRedacted)
+@app.exception_handler(CredentialValueRefused)
+async def handle_run_credential_error(
+    _request: Request,
+    exc: CredentialRefUnresolved | CredentialRedacted | CredentialValueRefused,
+) -> JSONResponse:
+    """A run's credential is unavailable, or a snapshot would store one: fail closed (VOZ-AC-B0-30)."""
+    logger.error("run credential error: {}", exc)
+    return _named_error(500, exc)
 
 
 # Configure CORS.

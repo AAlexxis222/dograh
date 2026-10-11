@@ -19,7 +19,7 @@ from api.services.configuration.cascade import (
     merge_configuration_documents,
     normalize_root_nulls,
     resolve_effective_workflow_configurations,
-    run_configurations_for,
+    run_config_with_credentials,
 )
 from api.services.configuration.default_configurations import (
     DefaultConfigurationsResponse,
@@ -275,9 +275,9 @@ def test_run_configurations_for_prefers_frozen_and_falls_back_to_pinned():
         definition=SimpleNamespace(workflow_configurations={"a": 2}),
     )
     orphan = SimpleNamespace(effective_configurations=None, definition=None)
-    assert run_configurations_for(frozen) == {"a": 1}
-    assert run_configurations_for(legacy) == {"a": 2}
-    assert run_configurations_for(orphan) == {}
+    assert run_config_with_credentials(frozen) == {"a": 1}
+    assert run_config_with_credentials(legacy) == {"a": 2}
+    assert run_config_with_credentials(orphan) == {}
 
 
 @pytest.mark.asyncio
