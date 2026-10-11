@@ -1,6 +1,7 @@
 """Single unit that knows the MCP protocol + credentials.
 
-Wraps the vendored Pipecat ``MCPClient`` for connection/session, builds
+Drives the MCP SDK's streamable-HTTP transport and ``ClientSession`` on an
+HTTP client it builds itself (so the tool URL guard can pin it), builds
 streamable-HTTP params from a Dograh credential, exposes namespaced
 ``FunctionSchema``s, and proxies tool calls. Connection failures degrade
 (``available = False``) instead of raising — the call must survive a
@@ -10,30 +11,58 @@ dead MCP server.
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
+import httpx2
 from loguru import logger
+from mcp.client.session import ClientSession
 from mcp.client.session_group import StreamableHttpParameters
+from mcp.client.streamable_http import streamable_http_client
 from pipecat.adapters.schemas.function_schema import FunctionSchema
-from pipecat.services.mcp_service import MCPClient
 
 from api.services.workflow.tools.mcp_tool import namespace_function_name
-from api.services.workflow.tools.url_guard import check_tool_url, url_guard_enforced
+from api.services.workflow.tools.url_guard import (
+    PinnedTransport,
+    check_tool_url,
+    url_guard_enforced,
+)
 from api.utils.credential_auth import build_auth_header
 
 if TYPE_CHECKING:
     from api.db.models import ExternalCredentialModel
 
 
-def _guard_mcp_url(url: str) -> None:
+def _guard_mcp_url(url: str) -> str | None:
     """An MCP server is a tool (VOZ-AC-B5-91): its URL passes the tool URL guard when the guard is enforced.
 
-    Pre-flight only: Pipecat's MCPClient builds its own HTTP client (no injection point), so the connection
-    resolves the name again and follows redirects; that residual is follow-up VOZ-FU-N0-28-a. With the flag off
-    nothing is checked, as before (MCP never had the legacy DEPLOYMENT_MODE check).
+    Returns the validated address the connection is pinned to. With the flag off nothing is checked and nothing
+    is pinned, as before (MCP never had the legacy DEPLOYMENT_MODE check).
     """
-    if url_guard_enforced():
-        check_tool_url(url)
+    return check_tool_url(url) if url_guard_enforced() else None
+
+
+def _mcp_http_client(
+    params: StreamableHttpParameters, address: str | None
+) -> httpx2.AsyncClient:
+    """The HTTP client the MCP transport runs on.
+
+    Guarded (an address): pinned to it, no redirects, no env settings; the SDK itself follows only redirects
+    that stay on the endpoint's origin, and PinnedTransport refuses any other host. Not guarded: the client
+    Pipecat's MCPClient built before.
+    """
+    timeout = httpx2.Timeout(params.timeout, read=params.sse_read_timeout)
+    if address is None:
+        return httpx2.AsyncClient(
+            headers=params.headers, timeout=timeout, follow_redirects=True
+        )
+    return httpx2.AsyncClient(
+        headers=params.headers,
+        timeout=timeout,
+        follow_redirects=False,
+        trust_env=False,
+        transport=PinnedTransport(httpx2.URL(params.url).host, address),
+    )
 
 
 def build_streamable_http_params(
@@ -76,14 +105,15 @@ class McpToolSession:
         self._url = url
         self._credential = credential
         # An empty list is intentionally treated as "no filter (expose all
-        # tools)" — Pipecat's MCPClient applies a filter only when this is a
-        # non-empty list, so [] and None are equivalent ("all tools").
+        # tools)": the filter applies only when this is a non-empty list, so
+        # [] and None are equivalent ("all tools").
         self._tools_filter = tools_filter or None
         self._timeout_secs = timeout_secs
         self._sse_read_timeout_secs = sse_read_timeout_secs
 
-        self._client: Optional[MCPClient] = None
-        self._session: Any = None  # mcp.ClientSession (read once after start)
+        # Transport, HTTP client and ClientSession, closed together (in the task that opened them).
+        self._exit_stack: Optional[AsyncExitStack] = None
+        self._session: Any = None  # mcp.ClientSession
         self._schemas: List[FunctionSchema] = []
         # namespaced LLM name -> original MCP tool name
         self._name_map: Dict[str, str] = {}
@@ -141,33 +171,45 @@ class McpToolSession:
         URL guard refuses degrades the same way, before any connection."""
         try:
             # Off the event loop: the guard resolves the host name.
-            await asyncio.to_thread(_guard_mcp_url, self._url)
+            address = await asyncio.to_thread(_guard_mcp_url, self._url)
             params = build_streamable_http_params(
                 url=self._url,
                 credential=self._credential,
                 timeout_secs=self._timeout_secs,
                 sse_read_timeout_secs=self._sse_read_timeout_secs,
             )
-            self._client = MCPClient(params, tools_filter=self._tools_filter)
-            await self._client.start()
-            # Single, isolated touch of Pipecat internals (vendored submodule).
-            self._session = self._client._active_session
-            tools_schema = await self._client.get_tools_schema()
+            self._exit_stack = stack = AsyncExitStack()
+            client = await stack.enter_async_context(_mcp_http_client(params, address))
+            read_stream, write_stream = await stack.enter_async_context(
+                streamable_http_client(
+                    params.url,
+                    http_client=client,
+                    terminate_on_close=params.terminate_on_close,
+                )
+            )
+            session = await stack.enter_async_context(
+                ClientSession(read_stream, write_stream)
+            )
+            await session.initialize()
+            listed = await session.list_tools()
 
             fallback = self._tool_uuid[:8] if self._tool_uuid else "server"
-            for fs in tools_schema.standard_tools:
+            for tool in listed.tools:
+                if self._tools_filter and tool.name not in self._tools_filter:
+                    continue
                 ns_name = namespace_function_name(
-                    self._tool_name, fs.name, fallback=fallback
+                    self._tool_name, tool.name, fallback=fallback
                 )
-                self._name_map[ns_name] = fs.name
+                self._name_map[ns_name] = tool.name
                 self._schemas.append(
                     FunctionSchema(
                         name=ns_name,
-                        description=fs.description,
-                        properties=fs.properties,
-                        required=fs.required,
+                        description=tool.description,
+                        properties=tool.input_schema.get("properties", {}),
+                        required=tool.input_schema.get("required", []),
                     )
                 )
+            self._session = session
             self.available = True
             logger.info(
                 f"MCP session ready for tool '{self._tool_name}' "
@@ -176,8 +218,8 @@ class McpToolSession:
         except (KeyboardInterrupt, SystemExit):
             raise
         except asyncio.CancelledError as e:
-            # Empirically, a dead/unreachable MCP server does NOT surface as a
-            # plain Exception here. The real failure is httpx.ConnectError, but
+            # A dead/unreachable MCP server may not surface as a plain
+            # Exception here. The real failure is httpx.ConnectError, but
             # anyio's streamablehttp_client task group, while tearing down that
             # ConnectError, re-surfaces it to our frame as an *internal*
             # cancel-scope CancelledError carrying the signature message
@@ -194,30 +236,24 @@ class McpToolSession:
                 raise
             await self._degrade(e)
         except Exception as e:  # noqa: BLE001 — see _degrade docstring
-            # Defensive: if a future Pipecat/httpx version surfaces the connect
-            # failure directly (e.g. httpx.ConnectError) instead of via the
-            # anyio cancel-scope artifact above, still degrade gracefully.
+            # The connect failure surfaced directly (an MCPError, a refused
+            # guard, an HTTP error) instead of via the anyio cancel-scope
+            # artifact above: degrade gracefully.
             await self._degrade(e)
 
     async def _degrade(self, e: BaseException) -> None:
-        """Mark this session unavailable and tear down any dangling client so
-        start() leaves self._client either fully usable or None. The contract
+        """Mark this session unavailable and tear down a half-open connection so
+        start() leaves the session either fully usable or closed. The contract
         requires graceful degradation on any *connect* failure (never raising
         for a dead MCP server) while genuine external cancellation /
         KeyboardInterrupt / SystemExit are re-raised by the caller."""
         self.available = False
         self._schemas = []
         self._name_map = {}
-        # Self-contained cleanup: _client.start() may have succeeded before a
-        # later step (e.g. get_tools_schema()) failed, leaving an open client.
-        if self._client is not None:
-            try:
-                await self._client.close()
-            except Exception:
-                pass
-            finally:
-                self._client = None
-                self._session = None
+        # Self-contained cleanup: the transport may be open when a later step
+        # (initialize, list_tools) failed. Closing it also exits the anyio task
+        # group whose cancel scope fired, before anything else is awaited.
+        await self.close()
         logger.warning(
             f"MCP session unavailable for tool '{self._tool_name}' "
             f"({self._tool_uuid}) at {self._url}: {e!r}. "
@@ -276,14 +312,13 @@ class McpToolSession:
         return text or "Sorry, the MCP tool returned no content."
 
     async def close(self) -> None:
-        if self._client is not None:
-            try:
-                await self._client.close()
-            except Exception as e:
-                logger.warning(f"Error closing MCP session {self._tool_uuid}: {e}")
-            finally:
-                self._client = None
-                self._session = None
+        stack, self._exit_stack, self._session = self._exit_stack, None, None
+        if stack is None:
+            return
+        try:
+            await stack.aclose()
+        except Exception as e:
+            logger.warning(f"Error closing MCP session {self._tool_uuid}: {e}")
 
 
 async def discover_mcp_tools(

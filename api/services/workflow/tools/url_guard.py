@@ -10,6 +10,7 @@ import socket
 from typing import Any
 
 import httpx
+import httpx2  # the httpx line the MCP SDK is built on
 from loguru import logger
 
 from api.utils.url_security import validate_user_configured_service_url
@@ -87,11 +88,12 @@ def _tool_url_addresses(url: str, field: str) -> tuple[str, list[str]]:
     """Parse the URL the way the request will, and return its host with every address that host maps to."""
     try:
         parsed = httpx.URL(url)
-    except httpx.InvalidURL:
+        # httpx decodes punycode when the host is read: an invalid A-label raises IDNAError (a UnicodeError) here.
+        host = parsed.host.rstrip(".")  # httpx already lower-cases it
+    except (httpx.InvalidURL, UnicodeError):
         raise ToolUrlBlocked(
             "(unparseable)", "the URL cannot be parsed", field
         ) from None
-    host = parsed.host.rstrip(".")  # httpx already lower-cases it
     if parsed.scheme not in ("http", "https"):
         raise ToolUrlBlocked(
             host or "(none)", f"scheme '{parsed.scheme}' is not http or https", field
@@ -147,7 +149,8 @@ def pinned_request_target(
 
     The Host header and, for https, the SNI name and certificate check stay on the original host name. The client
     that sends a pinned request must be built with trust_env=False: an env proxy would tunnel to the IP, and
-    httpcore's tunnel ignores sni_hostname, so the certificate check would fail.
+    httpcore's tunnel ignores sni_hostname, so the certificate check would fail. trust_env=False also turns off
+    SSL_CERT_FILE / SSL_CERT_DIR and .netrc (httpx 0.28); no cell sets them today.
     """
     if address is None:
         return {"url": url, "headers": headers}
@@ -161,3 +164,40 @@ def pinned_request_target(
     if not _ip_literal(parsed.host):
         target["extensions"] = {"sni_hostname": parsed.host}
     return target
+
+
+class PinnedTransport(httpx2.AsyncBaseTransport):
+    """The transport of a long-lived httpx2 client (the MCP SDK's): every request goes to the validated address.
+
+    The per-request form of pinned_request_target: the Host header stays as the client built it (the host name)
+    and, for a name host, SNI and the certificate check stay on it. A request for any other host is refused, so
+    no redirect can take the client elsewhere whatever the SDK does. No env settings (trust_env=False, see
+    pinned_request_target).
+    """
+
+    def __init__(self, host: str, address: str):
+        self._host = host
+        self._address = address
+        self._inner = httpx2.AsyncHTTPTransport(trust_env=False)
+
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        if request.url.host != self._host:
+            raise httpx2.ConnectError(
+                f"'{request.url.host}' is not the validated tool host '{self._host}'",
+                request=request,
+            )
+        extensions = dict(request.extensions)
+        if not _ip_literal(self._host):
+            extensions["sni_hostname"] = self._host
+        # A new request object: the client keeps the original (host name URL) to judge redirects against.
+        pinned = httpx2.Request(
+            request.method,
+            request.url.copy_with(host=self._address),
+            headers=request.headers,
+            stream=request.stream,
+            extensions=extensions,
+        )
+        return await self._inner.handle_async_request(pinned)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
