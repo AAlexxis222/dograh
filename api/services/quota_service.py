@@ -27,7 +27,7 @@ from api.services.configuration.cascade import (
     WorkflowDefinitionMissingError,
     WorkflowDefinitionNotVisibleError,
     load_effective_workflow_configurations,
-    run_configurations_for,
+    run_config_with_credentials,
 )
 from api.services.configuration.registry import ServiceProviders
 from api.services.managed_model_services import (
@@ -760,7 +760,7 @@ async def authorize_workflow_run_start(
                     error_code="workflow_run_not_found",
                     error_message="Workflow run not found",
                 )
-            workflow_configurations = run_configurations_for(workflow_run)
+            workflow_configurations = run_config_with_credentials(workflow_run)
         else:
             # Pre-run authorization (campaign start): resolve what the runs
             # will freeze, from the selected definition or else the published one.

@@ -44,6 +44,11 @@ esac
 """
 
 
+# A valid credential master key (32 zero bytes): these tests are about the schema gate, and without a key the start
+# gate adds its own plaintext warning line to stderr (pinned on its own below).
+TEST_MASTER_KEY = "test=" + "A" * 43 + "="
+
+
 @pytest.fixture
 def alembic_env(tmp_path):
     """Env that points the scripts at a fake alembic whose DB is at `current` and whose code has `heads`."""
@@ -60,6 +65,7 @@ def alembic_env(tmp_path):
             "FAKE_HEADS": heads,
             "FAKE_AHEAD": ahead,
             "FAKE_CURRENT_ERROR": current_error,
+            "CREDENTIALS_MASTER_KEY": TEST_MASTER_KEY,
         }
 
     make.log = log
@@ -309,3 +315,45 @@ def test_drain_never_reading_the_counter_fails_closed():
 @posix_only
 def test_drain_default_proceeds_when_the_counter_is_unreadable():
     assert _drain(1, fail_closed=False).returncode == 0
+
+
+@posix_only
+def test_drain_flag_is_cleared_at_start_and_set_on_term(tmp_path, alembic_env):
+    # active-calls reports draining = this file exists: stale at start would report draining forever.
+    flag = tmp_path / "draining"
+    flag.touch()
+    seen = tmp_path / "seen.log"
+    env = {
+        **alembic_env(),
+        "DRAIN_FLAG_FILE": str(flag),
+        "DRAIN_CMD": f"test -e {flag} && echo flag_set_before_drain > {seen}",
+        "CALL_CMD": "sleep 60",
+    }
+    p = subprocess.Popen(["bash", str(SCRIPT)], env=env)
+    time.sleep(0.5)
+    assert not flag.exists()
+    p.send_signal(signal.SIGTERM)
+    p.wait(timeout=10)
+    assert seen.read_text().strip() == "flag_set_before_drain"
+    assert flag.exists()
+
+
+@posix_only
+def test_require_db_head_runs_the_cell_startup_check_before_alembic(alembic_env):
+    # arq and coordinators never run the api lifespan: this gate is where they refuse DEBUG logs (VOZ-AC-B6-52).
+    env = {**alembic_env(), "CELL_ROLE": "arq", "DOGRAH_DEVOPS_SECRET": "s", "LOG_LEVEL": "DEBUG"}
+    r = subprocess.run(["bash", str(REQUIRE_HEAD), "arq"], env=env, capture_output=True, text=True)
+    assert r.returncode == 1
+    for key in ("code=log_level_debug_in_cell", "where=arq", "reason=", "hint="):
+        assert key in r.stderr, r.stderr
+    assert not alembic_env.log.exists()
+
+
+@posix_only
+def test_require_db_head_says_when_credentials_are_stored_in_clear(alembic_env):
+    # VOZ-N0-24c: outside a cell and without a key, every role starts and logs one named plaintext warning.
+    env = {k: v for k, v in alembic_env().items() if k not in ("CREDENTIALS_MASTER_KEY", "CELL_ROLE")}
+    r = subprocess.run(["bash", str(REQUIRE_HEAD), "call"], env=env, capture_output=True, text=True, check=False)
+    assert r.returncode == 0, r.stderr
+    (line,) = r.stderr.strip().splitlines()
+    assert re.fullmatch(r"code=credentials_at_rest_plaintext where=call reason=\S.* hint=\S.*", line), line

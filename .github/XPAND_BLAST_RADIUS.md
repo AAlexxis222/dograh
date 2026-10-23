@@ -17,11 +17,15 @@ Importer count is NOT the only axis. In this repo the deciding question is: **is
 | `api/services/workflow/` (64), `telephony/` (56), `configuration/` (35), `auth/` (24), `api/utils` (49) | shared by most routes; telephony = real calls to real people |
 | `docker-compose*.yaml`, `deploy/`, `nginx/`, `api/Dockerfile` | deploy and capacity (`max_conns`, grace periods) |
 | `.github/workflows/` | CI, release automation |
+| `scripts/xpand/call_entrypoint.sh`, `scripts/xpand/require_db_head.sh` | PID 1 of the `call` role, and the start gate of every cell role |
+| `api/services/runtime/cell_startup.py` | the start check of every cell role (api lifespan, and `python -m` from `require_db_head.sh`); a wrong refusal stops every role of the cell |
+| `api/services/security/credential_documents.py` (the rule: leaves, AAD, encoding, fail closed) + `api/db/credentials_at_rest.py` (its ORM wiring, registered by `api/db/__init__.py`) + `api/services/security/secret_surfaces.py` | ORM events on every model with a registered secret column (workflows, definitions, runs, org/user configurations, telephony configurations, tools, credentials, webhook deliveries, integrations, templates): every load decrypts, every flush encrypts. A bug is an outage (a call or route that cannot read its credentials) or a leak (plaintext written); a change to the registry or to the leaf encoding/AAD after tokens exist strands them (needs a migration). Raw SQL on those columns must seal/unseal: `api/tests/test_credentials_at_rest_guard.py` |
+| `api/services/security/redaction.py`, `api/logging_config.py`, `api/services/security/credential_box.py` | every process, every log line: a regression either leaks a secret or phone number to the sinks or slows the call loop; `credential_box` is imported at load by `redaction.py` and `cell_startup.py`, so a broken import (a missing `cryptography` wheel) stops every process |
 
 ## Leaf (while additive and gated)
 
 - New `adapters/<provider>/`, new engines running in **shadow**, new presets that are not the platform default (once those mechanisms exist, see below).
-- `evals/`, `docs/`, `api/tests/`, `scripts/xpand/`.
+- `evals/`, `docs/`, `api/tests/`, `scripts/xpand/` (except the two trunk files above).
 
 ## Gating mechanisms
 

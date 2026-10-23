@@ -10,6 +10,11 @@ DRAIN_CMD="${DRAIN_CMD:-DRAIN_FAIL_CLOSED=true scripts/drain_web.sh}"
 # VOZ-AC-B5-44: refuse to serve calls on a database whose schema is behind this image.
 "$(dirname "${BASH_SOURCE[0]}")/require_db_head.sh" "${CELL_ROLE:-call}" || exit 1
 
+# /api/v1/health/active-calls reports draining = this file exists. Cleared at start so a restart is not stuck draining.
+DRAIN_FLAG_FILE="${DRAIN_FLAG_FILE:-/tmp/xpand_draining}"
+export DRAIN_FLAG_FILE
+rm -f "$DRAIN_FLAG_FILE"
+
 bash -c "$CALL_CMD" &
 child=$!
 
@@ -17,6 +22,7 @@ on_term() {
   # Reentrancy: a repeated TERM must neither re-run the drain nor re-signal uvicorn (a second TERM forces its exit
   # and skips the lifespan shutdown).
   trap '' TERM INT
+  touch "$DRAIN_FLAG_FILE"
   bash -c "$DRAIN_CMD"
   local drain_status=$?
   kill -TERM "$child" 2>/dev/null
