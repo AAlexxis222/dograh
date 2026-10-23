@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 
@@ -6,7 +6,10 @@ from api.services.call_concurrency import (
     CallConcurrencyLimitError,
     CallConcurrencyService,
 )
-from api.services.call_concurrency.rate_limiter import ConcurrentSlotAcquisition
+from api.services.call_concurrency.slots import (
+    ConcurrentSlotAcquisition,
+    SlotBackendError,
+)
 
 
 @pytest.mark.asyncio
@@ -15,13 +18,11 @@ async def test_acquire_org_slot_logs_post_acquire_count_and_limit():
 
     with (
         patch("api.services.call_concurrency.service.db_client") as mock_db,
-        patch(
-            "api.services.call_concurrency.service.rate_limiter"
-        ) as mock_rate_limiter,
+        patch("api.services.call_concurrency.service.slot_store") as mock_slot_store,
         patch("api.services.call_concurrency.service.logger") as mock_logger,
     ):
         mock_db.get_configuration = AsyncMock(return_value=None)
-        mock_rate_limiter.try_acquire_concurrent_slot_details = AsyncMock(
+        mock_slot_store.acquire_slot = AsyncMock(
             return_value=ConcurrentSlotAcquisition(
                 slot_id="slot-123",
                 active_count=7,
@@ -34,8 +35,13 @@ async def test_acquire_org_slot_logs_post_acquire_count_and_limit():
     assert slot.slot_id == "slot-123"
     assert slot.max_concurrent == 10
     assert slot.source == "test_source"
-    mock_rate_limiter.try_acquire_concurrent_slot_details.assert_awaited_once_with(
-        199, 10, scope_key=None, scope_max_concurrent=None
+    mock_slot_store.acquire_slot.assert_awaited_once_with(
+        org_id=199,
+        attempt_id=ANY,
+        max_concurrent=10,
+        scope_key=None,
+        scope_max_concurrent=None,
+        outbound_carrier=None,
     )
     mock_logger.info.assert_called_once()
     log_message = mock_logger.info.call_args.args[0]
@@ -51,21 +57,17 @@ async def test_acquire_org_slot_logs_warning_when_limit_reached():
 
     with (
         patch("api.services.call_concurrency.service.db_client") as mock_db,
-        patch(
-            "api.services.call_concurrency.service.rate_limiter"
-        ) as mock_rate_limiter,
+        patch("api.services.call_concurrency.service.slot_store") as mock_slot_store,
         patch("api.services.call_concurrency.service.logger") as mock_logger,
     ):
         mock_db.get_configuration = AsyncMock(return_value=None)
-        mock_rate_limiter.try_acquire_concurrent_slot_details = AsyncMock(
-            return_value=None
-        )
-        mock_rate_limiter.get_concurrent_count = AsyncMock(return_value=12)
+        mock_slot_store.acquire_slot = AsyncMock(return_value=None)
+        mock_slot_store.get_concurrent_count = AsyncMock(return_value=12)
 
         with pytest.raises(CallConcurrencyLimitError):
             await service.acquire_org_slot(199, source="test_source", timeout=0)
 
-    mock_rate_limiter.get_concurrent_count.assert_awaited_once_with(199)
+    mock_slot_store.get_concurrent_count.assert_awaited_once_with(199)
     mock_logger.warning.assert_called_once()
     log_message = mock_logger.warning.call_args.args[0]
     assert "Concurrent call limit reached for org 199" in log_message
@@ -89,17 +91,13 @@ async def test_acquire_org_slot_fires_usage_event_per_org_member_when_limit_reac
 
     with (
         patch("api.services.call_concurrency.service.db_client") as mock_db,
-        patch(
-            "api.services.call_concurrency.service.rate_limiter"
-        ) as mock_rate_limiter,
+        patch("api.services.call_concurrency.service.slot_store") as mock_slot_store,
         patch("api.services.call_concurrency.service.capture_event") as mock_capture,
     ):
         mock_db.get_configuration = AsyncMock(return_value=None)
         mock_db.get_organization_users = AsyncMock(return_value=members)
-        mock_rate_limiter.try_acquire_concurrent_slot_details = AsyncMock(
-            return_value=None
-        )
-        mock_rate_limiter.get_concurrent_count = AsyncMock(return_value=10)
+        mock_slot_store.acquire_slot = AsyncMock(return_value=None)
+        mock_slot_store.get_concurrent_count = AsyncMock(return_value=10)
 
         with pytest.raises(CallConcurrencyLimitError):
             await service.acquire_org_slot(199, source="webrtc", timeout=0)
@@ -121,20 +119,18 @@ async def test_acquire_org_slot_fires_usage_event_per_org_member_when_limit_reac
 
 
 @pytest.mark.asyncio
-async def test_acquire_org_slot_passes_scope_to_rate_limiter():
+async def test_acquire_org_slot_passes_scope_to_slot_store():
     service = CallConcurrencyService()
 
     with (
         patch("api.services.call_concurrency.service.db_client") as mock_db,
-        patch(
-            "api.services.call_concurrency.service.rate_limiter"
-        ) as mock_rate_limiter,
+        patch("api.services.call_concurrency.service.slot_store") as mock_slot_store,
     ):
         mock_db.get_configuration = AsyncMock(return_value=None)
-        mock_rate_limiter.try_acquire_concurrent_slot_details = AsyncMock(
+        mock_slot_store.acquire_slot = AsyncMock(
             return_value=ConcurrentSlotAcquisition(slot_id="slot-123", active_count=1)
         )
-        mock_rate_limiter.store_workflow_slot_mapping_if_absent = AsyncMock(
+        mock_slot_store.store_workflow_slot_mapping_if_absent = AsyncMock(
             return_value=True
         )
 
@@ -147,11 +143,21 @@ async def test_acquire_org_slot_passes_scope_to_rate_limiter():
         await service.bind_workflow_run(slot, 501)
 
     assert slot.scope_key == "campaign:42"
-    mock_rate_limiter.try_acquire_concurrent_slot_details.assert_awaited_once_with(
-        199, 10, scope_key="campaign:42", scope_max_concurrent=3
+    mock_slot_store.acquire_slot.assert_awaited_once_with(
+        org_id=199,
+        attempt_id=ANY,
+        max_concurrent=10,
+        scope_key="campaign:42",
+        scope_max_concurrent=3,
+        outbound_carrier=None,
     )
-    mock_rate_limiter.store_workflow_slot_mapping_if_absent.assert_awaited_once_with(
-        501, 199, "slot-123", scope_key="campaign:42"
+    mock_slot_store.store_workflow_slot_mapping_if_absent.assert_awaited_once_with(
+        501,
+        199,
+        "slot-123",
+        scope_key="campaign:42",
+        max_concurrent=10,
+        scope_max_concurrent=3,
     )
 
 
@@ -159,55 +165,52 @@ async def test_acquire_org_slot_passes_scope_to_rate_limiter():
 async def test_release_workflow_run_slot_keeps_mapping_on_redis_error():
     service = CallConcurrencyService()
 
-    with patch(
-        "api.services.call_concurrency.service.rate_limiter"
-    ) as mock_rate_limiter:
-        mock_rate_limiter.get_workflow_slot_mapping = AsyncMock(
+    with patch("api.services.call_concurrency.service.slot_store") as mock_slot_store:
+        mock_slot_store.get_workflow_slot_mapping = AsyncMock(
             return_value=(11, "slot-1", None)
         )
-        # None = Redis error during release (vs False = slot already gone)
-        mock_rate_limiter.release_concurrent_slot = AsyncMock(return_value=None)
-        mock_rate_limiter.delete_workflow_slot_mapping = AsyncMock()
+        # A backend error during release (vs False = slot already gone).
+        # The funnel is one atomic script: on error it changed nothing, so the
+        # mapping is still there for a retry (Redis-level proof:
+        # test_slots_redis_time.py).
+        mock_slot_store.release_slot = AsyncMock(
+            side_effect=SlotBackendError("redis down")
+        )
 
         released = await service.release_workflow_run_slot(501)
 
     assert released is False
-    mock_rate_limiter.release_concurrent_slot.assert_awaited_once_with(
-        11, "slot-1", scope_key=None
+    mock_slot_store.release_slot.assert_awaited_once_with(
+        org_id=11, attempt_id="slot-1", scope_key=None, workflow_run_id=501
     )
-    mock_rate_limiter.delete_workflow_slot_mapping.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_release_workflow_run_slot_deletes_mapping_when_slot_already_gone():
+    """The mapping goes in the same funnel call as the slot (workflow_run_id
+    passed), also when the slot had already expired."""
     service = CallConcurrencyService()
 
-    with patch(
-        "api.services.call_concurrency.service.rate_limiter"
-    ) as mock_rate_limiter:
-        mock_rate_limiter.get_workflow_slot_mapping = AsyncMock(
+    with patch("api.services.call_concurrency.service.slot_store") as mock_slot_store:
+        mock_slot_store.get_workflow_slot_mapping = AsyncMock(
             return_value=(11, "slot-1", "campaign:42")
         )
-        mock_rate_limiter.release_concurrent_slot = AsyncMock(return_value=False)
-        mock_rate_limiter.delete_workflow_slot_mapping = AsyncMock(return_value=True)
+        mock_slot_store.release_slot = AsyncMock(return_value=False)
 
         released = await service.release_workflow_run_slot(501)
 
     assert released is False
-    mock_rate_limiter.release_concurrent_slot.assert_awaited_once_with(
-        11, "slot-1", scope_key="campaign:42"
+    mock_slot_store.release_slot.assert_awaited_once_with(
+        org_id=11, attempt_id="slot-1", scope_key="campaign:42", workflow_run_id=501
     )
-    mock_rate_limiter.delete_workflow_slot_mapping.assert_awaited_once_with(501)
 
 
 @pytest.mark.asyncio
 async def test_unregister_active_call_never_raises():
     service = CallConcurrencyService()
 
-    with patch(
-        "api.services.call_concurrency.service.rate_limiter"
-    ) as mock_rate_limiter:
-        mock_rate_limiter.get_workflow_slot_mapping = AsyncMock(
+    with patch("api.services.call_concurrency.service.slot_store") as mock_slot_store:
+        mock_slot_store.get_workflow_slot_mapping = AsyncMock(
             side_effect=RuntimeError("redis down")
         )
 
@@ -223,6 +226,7 @@ async def test_unregister_active_call_never_raises():
 import os  # noqa: E402
 import uuid  # noqa: E402
 
+from api.services.call_concurrency import keys  # noqa: E402
 from api.services.call_concurrency.rate_limiter import RateLimiter  # noqa: E402
 
 requires_redis = pytest.mark.skipif(
@@ -236,20 +240,20 @@ def _unique_org_id() -> int:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failed_operation", ["zremrangebyscore", "zcard"])
-async def test_strict_org_count_propagates_storage_errors(failed_operation):
+async def test_strict_org_count_propagates_storage_errors():
     from redis.exceptions import ConnectionError as RedisConnectionError
 
     rl = RateLimiter()
     redis_client = AsyncMock()
-    getattr(redis_client, failed_operation).side_effect = RedisConnectionError(
-        "redis unavailable"
-    )
-    rl._get_redis = AsyncMock(return_value=redis_client)
+    # Purge + count run in one script on Redis's clock.
+    redis_client.eval.side_effect = RedisConnectionError("redis unavailable")
+    rl.slots._get_redis = AsyncMock(return_value=redis_client)
 
-    with pytest.raises(RedisConnectionError):
+    with pytest.raises(SlotBackendError):
+        await rl.slots.get_concurrent_count(42)
+    # The upstream name keeps the contract of its flag.
+    with pytest.raises(SlotBackendError):
         await rl.get_concurrent_count(42, raise_on_error=True)
-    # Admission logging keeps its existing fallback behavior.
     assert await rl.get_concurrent_count(42) == 0
 
 
@@ -257,8 +261,6 @@ async def test_strict_org_count_propagates_storage_errors(failed_operation):
 @pytest.mark.asyncio
 async def test_org_count_spans_workers_excludes_other_orgs_and_stale_slots():
     import time
-
-    from api.services.call_concurrency.rate_limiter import FLEET_CONCURRENT_KEY
 
     first_worker, second_worker = RateLimiter(), RateLimiter()
     org_a, org_b = uuid.uuid4().int, uuid.uuid4().int
@@ -275,8 +277,9 @@ async def test_org_count_spans_workers_excludes_other_orgs_and_stale_slots():
             assert slot
             slots.append((org, slot.slot_id))
 
+        # Score = expiry in Redis time: a member that expired a slot_ttl ago.
         await redis_client.zadd(
-            f"concurrent_calls:{org_a}",
+            keys.org_key(org_a),
             {"stale": time.time() - first_worker.stale_call_timeout - 1},
         )
         assert await first_worker.get_concurrent_count(org_a, raise_on_error=True) == 2
@@ -284,11 +287,9 @@ async def test_org_count_spans_workers_excludes_other_orgs_and_stale_slots():
         await second_worker.release_concurrent_slot(*slots[0])
         assert await first_worker.get_concurrent_count(org_a, raise_on_error=True) == 1
     finally:
-        for org, slot_id in slots:
-            await redis_client.zrem(FLEET_CONCURRENT_KEY, f"{org}:{slot_id}")
-        await redis_client.delete(
-            f"concurrent_calls:{org_a}", f"concurrent_calls:{org_b}"
-        )
+        for _org, slot_id in slots:
+            await redis_client.zrem(keys.fleet_key(), slot_id)
+        await redis_client.delete(keys.org_key(org_a), keys.org_key(org_b))
         await first_worker.close()
         await second_worker.close()
 
@@ -301,8 +302,8 @@ async def test_scoped_acquisition_enforces_scope_limit_independently_of_org():
     rl = RateLimiter()
     org_id = _unique_org_id()
     scope = f"campaign:{org_id}"
-    org_key = f"concurrent_calls:{org_id}"
-    scope_key_full = f"concurrent_calls:{scope}"
+    org_key = keys.org_key(org_id)
+    scope_key_full = keys.scope_key(scope)
     redis_client = await rl._get_redis()
 
     try:
@@ -388,14 +389,12 @@ async def test_fleet_count_tracks_acquire_and_release_without_double_count():
         slots = []
         assert await rl.get_fleet_concurrent_count() == baseline
     finally:
-        from api.services.call_concurrency.rate_limiter import FLEET_CONCURRENT_KEY
-
-        for org_id, slot_id, _scope in slots:  # only on assertion failure
-            await redis_client.zrem(FLEET_CONCURRENT_KEY, f"{org_id}:{slot_id}")
+        for _org_id, slot_id, _scope in slots:  # only on assertion failure
+            await redis_client.zrem(keys.fleet_key(), slot_id)
         await redis_client.delete(
-            f"concurrent_calls:{org_a}",
-            f"concurrent_calls:{org_b}",
-            f"concurrent_calls:{scope}",
+            keys.org_key(org_a),
+            keys.org_key(org_b),
+            keys.scope_key(scope),
         )
         await rl.close()
 
@@ -406,8 +405,8 @@ async def test_org_limit_still_binds_scoped_acquisition():
     rl = RateLimiter()
     org_id = _unique_org_id()
     scope = f"campaign:{org_id}"
-    org_key = f"concurrent_calls:{org_id}"
-    scope_key_full = f"concurrent_calls:{scope}"
+    org_key = keys.org_key(org_id)
+    scope_key_full = keys.scope_key(scope)
     redis_client = await rl._get_redis()
 
     try:

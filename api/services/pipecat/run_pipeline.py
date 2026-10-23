@@ -1,4 +1,6 @@
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Optional
 
@@ -397,6 +399,19 @@ def _create_realtime_user_turn_config(provider: str, model: str | None = None):
     return local_vad_turn_config(enable_interruptions=True)
 
 
+@asynccontextmanager
+async def _call_lifetime(workflow_run_id: int) -> AsyncIterator[None]:
+    """The lifetime of one call on this worker. It is registered before any async setup, so deploy drains see calls
+    that are still resolving DB/config/transport state; its slot is claimed, renewed per call and released
+    (hold_run_slot); it is unregistered at the end."""
+    register_worker_active_call(workflow_run_id)
+    try:
+        async with call_concurrency.hold_run_slot(workflow_run_id):
+            yield
+    finally:
+        unregister_worker_active_call(workflow_run_id)
+
+
 async def run_pipeline_telephony(
     websocket,
     *,
@@ -408,10 +423,8 @@ async def run_pipeline_telephony(
     transport_kwargs: dict,
 ) -> None:
     """Run a pipeline for any telephony provider."""
-    # Register before any async setup so deploy drains see calls that are still
-    # resolving DB/config/transport state.
-    register_worker_active_call(workflow_run_id)
-    try:
+    # The WS is accepted.
+    async with _call_lifetime(workflow_run_id):
         await _run_pipeline_telephony_impl(
             websocket,
             provider_name=provider_name,
@@ -421,11 +434,6 @@ async def run_pipeline_telephony(
             call_id=call_id,
             transport_kwargs=transport_kwargs,
         )
-    finally:
-        try:
-            await call_concurrency.unregister_active_call(workflow_run_id)
-        finally:
-            unregister_worker_active_call(workflow_run_id)
 
 
 async def _run_pipeline_telephony_impl(
@@ -552,10 +560,7 @@ async def run_pipeline_smallwebrtc(
     organization_id: int | None = None,
 ) -> None:
     """Run pipeline for WebRTC connections."""
-    # Register before any async setup so deploy drains see calls that are still
-    # resolving DB/config/transport state.
-    register_worker_active_call(workflow_run_id)
-    try:
+    async with _call_lifetime(workflow_run_id):
         await _run_pipeline_smallwebrtc_impl(
             webrtc_connection,
             workflow_id,
@@ -565,11 +570,6 @@ async def run_pipeline_smallwebrtc(
             user_provider_id=user_provider_id,
             organization_id=organization_id,
         )
-    finally:
-        try:
-            await call_concurrency.unregister_active_call(workflow_run_id)
-        finally:
-            unregister_worker_active_call(workflow_run_id)
 
 
 async def _run_pipeline_smallwebrtc_impl(
@@ -664,8 +664,7 @@ async def _run_pipeline(
     run_configurations: dict | None = None,
 ) -> None:
     """Run the pipeline with active-call drain accounting."""
-    register_worker_active_call(workflow_run_id)
-    try:
+    async with _call_lifetime(workflow_run_id):
         await _run_pipeline_impl(
             transport,
             workflow_id,
@@ -679,11 +678,6 @@ async def _run_pipeline(
             organization_id=organization_id,
             run_configurations=run_configurations,
         )
-    finally:
-        try:
-            await call_concurrency.unregister_active_call(workflow_run_id)
-        finally:
-            unregister_worker_active_call(workflow_run_id)
 
 
 async def _run_pipeline_impl(

@@ -1,35 +1,35 @@
 import time
 import uuid
-from dataclasses import dataclass
 from typing import Optional
 
 import redis.asyncio as aioredis
 from loguru import logger
 
 from api.constants import REDIS_URL
+from api.services.call_concurrency import keys
+from api.services.call_concurrency.slots import (
+    ConcurrentSlotAcquisition,
+    SlotBackendError,
+    SlotStore,
+    slot_store,
+)
 from api.services.runtime.durations import Durations, cell_durations
-
-# Fleet-wide mirror of every live slot ("<org_id>:<slot_id>", scored by acquire
-# time), maintained by the acquire/release paths alongside the per-org sets so
-# the autoscaling scrape (get_fleet_concurrent_count) is a single ZCOUNT instead
-# of a keyspace scan. Deliberately outside the "concurrent_calls:" prefix so it
-# can never collide with an org or scope counter key.
-FLEET_CONCURRENT_KEY = "concurrent_calls_fleet"
-
-
-@dataclass(frozen=True)
-class ConcurrentSlotAcquisition:
-    slot_id: str
-    active_count: int
 
 
 class RateLimiter:
-    """Sliding window rate limiter to enforce strict per-second limits and concurrent call limits"""
+    """Sliding window rate limiter to enforce strict per-second limits, plus caller-ID rotation.
 
-    def __init__(self, durations: Durations | None = None):
+    The call slots live in ``slots.SlotStore`` (``self.slots``); the upstream slot methods below forward to it.
+    """
+
+    def __init__(
+        self, durations: Durations | None = None, *, slots: SlotStore | None = None
+    ):
         self.redis_client: Optional[aioredis.Redis] = None
-        # The slot outlives the longest call by the slot margin (durations.py): never purged mid-call.
-        self.stale_call_timeout = (durations or cell_durations()).slot_ttl
+        self.durations = durations or cell_durations()
+        # compat: the upstream name of slot_ttl (the slot outlives the longest call by the slot margin).
+        self.stale_call_timeout = self.durations.slot_ttl
+        self.slots = slots or SlotStore(self.durations)
 
     async def _get_redis(self) -> aioredis.Redis:
         """Get or create Redis connection"""
@@ -121,9 +121,11 @@ class RateLimiter:
     async def try_acquire_concurrent_slot(
         self, organization_id: int, max_concurrent: int = 20
     ) -> Optional[str]:
-        """
-        Try to acquire a concurrent call slot.
-        Returns a unique slot_id if successful, None if limit reached.
+        """compat: prefer acquire_slot/release_slot (slots.SlotStore).
+
+        Try to acquire a concurrent call slot. Returns a unique slot_id if
+        successful, None if limit reached; raises ``SlotBackendError`` when
+        Redis cannot answer.
         """
         acquisition = await self.try_acquire_concurrent_slot_details(
             organization_id, max_concurrent
@@ -138,206 +140,87 @@ class RateLimiter:
         scope_key: str | None = None,
         scope_max_concurrent: int | None = None,
     ) -> Optional[ConcurrentSlotAcquisition]:
+        """compat: prefer acquire_slot/release_slot (slots.SlotStore); this one
+        cannot pass the outbound carrier, so an outbound call gets the inbound
+        pending lease.
+
+        Acquire a concurrent call slot under a fresh attempt id. Returns the
+        slot_id and post-acquire active count if successful, or None if the
+        limit is reached; raises ``SlotBackendError`` when Redis cannot answer.
         """
-        Try to acquire a concurrent call slot.
-        Returns the slot_id and post-acquire active count if successful,
-        or None if the limit is reached.
-
-        When ``scope_key``/``scope_max_concurrent`` are provided, the slot is
-        also registered in a secondary counter (``concurrent_calls:<scope_key>``,
-        e.g. ``campaign:<id>``) and acquisition additionally requires that
-        counter to be below ``scope_max_concurrent``. Both counters are
-        updated atomically. The scope-scoped slot must be released with the
-        same ``scope_key``.
-
-        Every successful acquisition is also mirrored into the fleet-wide set
-        (FLEET_CONCURRENT_KEY) in the same atomic script — see
-        get_fleet_concurrent_count. Scope entries are not mirrored: a scoped
-        call already has exactly one fleet member via its org slot.
-        """
-        redis_client = await self._get_redis()
-
-        concurrent_key = f"concurrent_calls:{organization_id}"
-        scope_concurrent_key = f"concurrent_calls:{scope_key}" if scope_key else ""
-        now = time.time()
-        stale_cutoff = now - self.stale_call_timeout
-
-        # Lua script for atomic operation across the org counter and the
-        # optional scope counter (empty scope key = org-only acquisition).
-        lua_script = """
-        local key = KEYS[1]
-        local scope_key = KEYS[2]
-        local fleet_key = KEYS[3]
-        local now = tonumber(ARGV[1])
-        local max_concurrent = tonumber(ARGV[2])
-        local stale_cutoff = tonumber(ARGV[3])
-        local slot_id = ARGV[4]
-        local scope_max_concurrent = tonumber(ARGV[5])
-        local fleet_member = ARGV[6]
-        local slot_ttl = tonumber(ARGV[7])
-
-        -- Remove stale entries (older than the stale-call timeout)
-        redis.call('ZREMRANGEBYSCORE', key, 0, stale_cutoff)
-
-        -- Get current count
-        local current_count = redis.call('ZCARD', key)
-
-        if current_count >= max_concurrent then
-            return nil
-        end
-
-        if scope_key ~= '' then
-            redis.call('ZREMRANGEBYSCORE', scope_key, 0, stale_cutoff)
-            if redis.call('ZCARD', scope_key) >= scope_max_concurrent then
-                return nil
-            end
-            redis.call('ZADD', scope_key, now, slot_id)
-            redis.call('EXPIRE', scope_key, slot_ttl)
-        end
-
-        redis.call('ZADD', key, now, slot_id)
-        redis.call('EXPIRE', key, slot_ttl)
-
-        -- Mirror the slot into the fleet-wide set (autoscaling signal); stale
-        -- members are pruned here since no other write path touches this key.
-        redis.call('ZREMRANGEBYSCORE', fleet_key, 0, stale_cutoff)
-        redis.call('ZADD', fleet_key, now, fleet_member)
-        redis.call('EXPIRE', fleet_key, slot_ttl)
-        return {slot_id, current_count + 1}
-        """
-
-        # Generate unique slot ID (timestamp + random component)
-        slot_id = f"{int(now * 1000)}_{uuid.uuid4().hex[:8]}"
-
-        try:
-            result = await redis_client.eval(
-                lua_script,
-                3,
-                concurrent_key,
-                scope_concurrent_key,
-                FLEET_CONCURRENT_KEY,
-                now,
-                max_concurrent,
-                stale_cutoff,
-                slot_id,
-                scope_max_concurrent if scope_max_concurrent is not None else 0,
-                f"{organization_id}:{slot_id}",
-                self.stale_call_timeout,
-            )
-            if not result:
-                return None
-
-            acquired_slot_id, active_count = result
-            return ConcurrentSlotAcquisition(
-                slot_id=str(acquired_slot_id),
-                active_count=int(active_count),
-            )
-        except Exception as e:
-            logger.error(f"Concurrent limiter error: {e}")
-            return None
+        return await self.slots.acquire_slot(
+            org_id=organization_id,
+            attempt_id=keys.new_attempt_id(),
+            max_concurrent=max_concurrent,
+            scope_key=scope_key,
+            scope_max_concurrent=scope_max_concurrent,
+        )
 
     async def release_concurrent_slot(
         self,
         organization_id: int,
         slot_id: str,
         scope_key: str | None = None,
-    ) -> bool | None:
-        """
-        Release a concurrent call slot (and its scope counter entry, if any).
-        Returns True if the slot was released, False if it was already gone
-        (released/stale-expired), or None on a Redis error — callers that
-        track cleanup state should keep it around for retry when None.
-        """
-        if not slot_id:
-            return False
+    ) -> bool:
+        """compat: prefer acquire_slot/release_slot (slots.SlotStore).
 
-        redis_client = await self._get_redis()
-        concurrent_key = f"concurrent_calls:{organization_id}"
-
-        try:
-            removed = await redis_client.zrem(concurrent_key, slot_id)
-            await redis_client.zrem(
-                FLEET_CONCURRENT_KEY, f"{organization_id}:{slot_id}"
-            )
-            if scope_key:
-                await redis_client.zrem(f"concurrent_calls:{scope_key}", slot_id)
-            if removed:
-                logger.debug(
-                    f"Released concurrent slot {slot_id} for org {organization_id}"
-                )
-            return bool(removed)
-        except Exception as e:
-            logger.error(f"Error releasing concurrent slot: {e}")
-            return None
+        Release a slot through the funnel: True if released, False if it was
+        already gone; raises ``SlotBackendError`` when Redis cannot answer.
+        """
+        return await self.slots.release_slot(
+            org_id=organization_id, attempt_id=slot_id, scope_key=scope_key
+        )
 
     async def get_concurrent_count(
         self, organization_id: int, *, raise_on_error: bool = False
     ) -> int:
-        """
-        Get current number of active concurrent calls for an organization.
-        Automatically cleans up stale entries.
+        """compat: prefer slots.SlotStore.get_concurrent_count, which always
+        raises ``SlotBackendError`` when Redis cannot answer.
 
-        Public status reads set ``raise_on_error`` so an unavailable count is
-        not reported as zero. The default preserves existing admission logging.
+        Active calls of an organization. Keeps the upstream contract of its
+        flag: ``raise_on_error`` raises the backend error, the default logs it
+        and reads 0.
         """
-        redis_client = await self._get_redis()
-        concurrent_key = f"concurrent_calls:{organization_id}"
-
         try:
-            # Clean up stale entries first
-            stale_cutoff = time.time() - self.stale_call_timeout
-            await redis_client.zremrangebyscore(concurrent_key, 0, stale_cutoff)
-
-            # Get current count
-            count = await redis_client.zcard(concurrent_key)
-            return count
-        except Exception as e:
+            return await self.slots.get_concurrent_count(organization_id)
+        except SlotBackendError as e:
             logger.error(f"Error getting concurrent count: {e}")
             if raise_on_error:
                 raise
             return 0
 
     async def get_fleet_concurrent_count(self) -> int:
-        """Total active calls across every org — the fleet-wide autoscaling signal.
+        """compat: prefer slots.SlotStore.get_fleet_concurrent_count.
 
-        One ZCOUNT over FLEET_CONCURRENT_KEY, the fleet-wide mirror the
-        acquire/release paths maintain alongside the per-org counters — no
-        keyspace scan, no per-org fan-out, and scrape cost is independent of
-        whatever else lives in this (shared) Redis. Counting by score (not
-        ZCARD) excludes slots older than stale_call_timeout without writing, so
-        an orphaned call can't keep the metric high and block scale-down,
-        matching the org counters' stale semantics.
-
-        Unlike the sibling methods, Redis errors are NOT swallowed here: for an
-        autoscaling signal, 0 is the most aggressive scale-down instruction, so
-        a failed read must surface as an error (the autoscale-metric endpoint
-        turns it into a 503) rather than masquerade as an idle fleet.
+        Total active calls across every org; raises ``SlotBackendError`` when
+        Redis cannot answer (an idle fleet must not be reported on an error).
         """
-        redis_client = await self._get_redis()
-        stale_cutoff = time.time() - self.stale_call_timeout
-        return await redis_client.zcount(FLEET_CONCURRENT_KEY, stale_cutoff, "+inf")
+        return await self.slots.get_fleet_concurrent_count()
 
     async def store_workflow_slot_mapping(
-        self, workflow_run_id: int, organization_id: int, slot_id: str
+        self,
+        workflow_run_id: int,
+        organization_id: int,
+        slot_id: str,
+        *,
+        scope_key: str | None = None,
+        max_concurrent: int | None = None,
+        scope_max_concurrent: int | None = None,
     ) -> bool:
-        """
-        Store the mapping between workflow_run_id and its concurrent slot.
-        Used for cleanup when calls complete.
-        """
-        redis_client = await self._get_redis()
-        mapping_key = f"workflow_slot_mapping:{workflow_run_id}"
+        """compat: prefer acquire_slot/release_slot (slots.SlotStore).
 
-        try:
-            # Store as a hash with TTL
-            await redis_client.hset(
-                mapping_key, mapping={"org_id": organization_id, "slot_id": slot_id}
-            )
-            # Set expiry to match stale timeout
-            await redis_client.expire(mapping_key, self.stale_call_timeout)
-            return True
-        except Exception as e:
-            logger.error(f"Error storing workflow slot mapping: {e}")
-            return False
+        Bind a run to its slot through the if-absent writer (False when the
+        run already has a mapping). Pass the admission limits, or a late claim
+        of this run re-adds its slot without re-checking them.
+        """
+        return await self.slots.store_workflow_slot_mapping_if_absent(
+            workflow_run_id,
+            organization_id,
+            slot_id,
+            scope_key,
+            max_concurrent=max_concurrent,
+            scope_max_concurrent=scope_max_concurrent,
+        )
 
     async def store_workflow_slot_mapping_if_absent(
         self,
@@ -345,72 +228,33 @@ class RateLimiter:
         organization_id: int,
         slot_id: str,
         scope_key: str | None = None,
+        *,
+        max_concurrent: int | None = None,
+        scope_max_concurrent: int | None = None,
     ) -> bool:
+        """compat: prefer acquire_slot/release_slot (slots.SlotStore).
+
+        Bind a run to its slot unless a mapping already exists (False then);
+        raises ``SlotBackendError`` when Redis cannot answer.
         """
-        Store the workflow_run_id -> concurrent slot mapping only if no mapping
-        already exists. This prevents duplicate public/WebRTC starts for the
-        same workflow run from overwriting the cleanup pointer.
-        """
-        redis_client = await self._get_redis()
-        mapping_key = f"workflow_slot_mapping:{workflow_run_id}"
-
-        lua_script = """
-        local key = KEYS[1]
-        local org_id = ARGV[1]
-        local slot_id = ARGV[2]
-        local ttl = tonumber(ARGV[3])
-        local scope_key = ARGV[4]
-
-        if redis.call('EXISTS', key) == 1 then
-            return 0
-        end
-
-        redis.call('HSET', key, 'org_id', org_id, 'slot_id', slot_id)
-        if scope_key ~= '' then
-            redis.call('HSET', key, 'scope_key', scope_key)
-        end
-        redis.call('EXPIRE', key, ttl)
-        return 1
-        """
-
-        try:
-            stored = await redis_client.eval(
-                lua_script,
-                1,
-                mapping_key,
-                organization_id,
-                slot_id,
-                self.stale_call_timeout,
-                scope_key or "",
-            )
-            return bool(stored)
-        except Exception as e:
-            logger.error(f"Error storing workflow slot mapping if absent: {e}")
-            return False
+        return await self.slots.store_workflow_slot_mapping_if_absent(
+            workflow_run_id,
+            organization_id,
+            slot_id,
+            scope_key,
+            max_concurrent=max_concurrent,
+            scope_max_concurrent=scope_max_concurrent,
+        )
 
     async def get_workflow_slot_mapping(
         self, workflow_run_id: int
     ) -> Optional[tuple[int, str, str | None]]:
-        """
-        Get the concurrent slot mapping for a workflow run.
-        Returns (organization_id, slot_id, scope_key) or None if not found;
-        scope_key is None for slots acquired without a scope counter.
-        """
-        redis_client = await self._get_redis()
-        mapping_key = f"workflow_slot_mapping:{workflow_run_id}"
+        """compat: prefer acquire_slot/release_slot (slots.SlotStore).
 
-        try:
-            mapping = await redis_client.hgetall(mapping_key)
-            if mapping and "org_id" in mapping and "slot_id" in mapping:
-                return (
-                    int(mapping["org_id"]),
-                    mapping["slot_id"],
-                    mapping.get("scope_key") or None,
-                )
-            return None
-        except Exception as e:
-            logger.error(f"Error getting workflow slot mapping: {e}")
-            return None
+        (organization_id, slot_id, scope_key) of the run, or None when it has
+        no mapping; raises ``SlotBackendError`` when Redis cannot answer.
+        """
+        return await self.slots.get_workflow_slot_mapping(workflow_run_id)
 
     async def reconcile_workflow_slot_mapping(
         self,
@@ -420,42 +264,17 @@ class RateLimiter:
         slot_id: str | None = None,
         scope_key: str | None = None,
     ) -> None:
-        """Durable cleanup, including after the workflow mapping's TTL expires.
+        """compat: prefer acquire_slot/release_slot (slots.SlotStore).
 
-        Errors propagate so the DB cleanup marker stays pending until every
-        counter and the mapping have been cleared. Repeating cleanup is safe.
+        Durable cleanup of a run's slots and mapping; raises (``SlotBackendError``
+        on a backend error) so the DB cleanup marker stays pending.
         """
-        redis_client = await self._get_redis()
-        mapping_key = f"workflow_slot_mapping:{workflow_run_id}"
-        mapping = await redis_client.hgetall(mapping_key)
-        slots = {(slot_id, scope_key)} if slot_id else set()
-        if mapping:
-            if int(mapping["org_id"]) != organization_id:
-                raise ValueError(
-                    f"Slot mapping organization mismatch for run {workflow_run_id}"
-                )
-            slots.add((mapping["slot_id"], mapping.get("scope_key") or None))
-        for reserved_slot_id, reserved_scope in slots:
-            released = await self.release_concurrent_slot(
-                organization_id, reserved_slot_id, scope_key=reserved_scope
-            )
-            if released is None:
-                raise ConnectionError(f"Slot cleanup failed for run {workflow_run_id}")
-        await redis_client.delete(mapping_key)
-
-    async def delete_workflow_slot_mapping(self, workflow_run_id: int) -> bool:
-        """
-        Delete the workflow slot mapping after releasing the slot.
-        """
-        redis_client = await self._get_redis()
-        mapping_key = f"workflow_slot_mapping:{workflow_run_id}"
-
-        try:
-            deleted = await redis_client.delete(mapping_key)
-            return bool(deleted)
-        except Exception as e:
-            logger.error(f"Error deleting workflow slot mapping: {e}")
-            return False
+        await self.slots.reconcile_workflow_slot_mapping(
+            workflow_run_id,
+            organization_id=organization_id,
+            slot_id=slot_id,
+            scope_key=scope_key,
+        )
 
     async def select_from_number(
         self,
@@ -484,11 +303,12 @@ class RateLimiter:
             return numbers[0]
 
     async def close(self):
-        """Close Redis connection"""
+        """Close Redis connections (this limiter's and its slot store's)"""
         if self.redis_client:
             await self.redis_client.close()
             self.redis_client = None
+        await self.slots.close()
 
 
-# Global rate limiter instance
-rate_limiter = RateLimiter()
+# Global rate limiter instance; its slot methods share the global slot store.
+rate_limiter = RateLimiter(slots=slot_store)

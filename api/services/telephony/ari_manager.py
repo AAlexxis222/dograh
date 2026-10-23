@@ -100,6 +100,17 @@ def _log_ari_failure(
     )
 
 
+def _refusal_hangup_note(
+    error: CallConcurrencyLimitError, organization_id: int, channel_id: str
+) -> str:
+    """The line logged when an inbound channel is hung up because admission refused it; it names the true
+    reason (a full org, or the slot backend down)."""
+    return (
+        f"[ARI org={organization_id}] Call admission refused "
+        f"({error.reason}); hanging up inbound channel {channel_id}"
+    )
+
+
 class ARIConnection:
     """Manages a single ARI WebSocket connection for an organization."""
 
@@ -953,10 +964,9 @@ class ARIConnection:
                     source="ari_inbound",
                     timeout=0,
                 )
-            except CallConcurrencyLimitError:
+            except CallConcurrencyLimitError as e:
                 logger.warning(
-                    f"[ARI org={self.organization_id}] Concurrent call limit "
-                    f"reached; hanging up inbound channel {channel_id}"
+                    _refusal_hangup_note(e, self.organization_id, channel_id)
                 )
                 await self._delete_channel(channel_id)
                 return
