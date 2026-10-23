@@ -12,6 +12,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Literal, TypeVar
 
+from loguru import logger
+
 from pipecat.services.settings import ServiceSettings
 
 ALL = "_all"
@@ -57,6 +59,21 @@ def build_settings(
     if not plan.settings:
         return settings_cls(**base)
     return settings_cls.from_mapping({**base, **plan.settings})
+
+
+def warn_dropped(section: str, provider: str, model: str, names, reason: str) -> None:
+    """One run-log line per knob the selected model cannot take (#8).
+
+    The PUT accepts a model-dependent knob because the same document may
+    serve a workflow whose model does use it; when the build drops it, the
+    drop is the only trace, so it is named. ``provider`` is the ``kind.name``
+    path prefix (``stt.deepgram``), ``section`` one of settings/ctor/options.
+    """
+    for name in sorted(names):
+        logger.warning(
+            f"service_tuning: {provider}.{section}.{name} dropped for model "
+            f"{model}: {reason}"
+        )
 
 
 def coerce_settings(

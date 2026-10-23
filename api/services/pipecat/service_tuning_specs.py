@@ -886,13 +886,12 @@ def _type_ok(settings_classes: tuple[type, ...], name: str, value: Any) -> bool:
     return not found_field
 
 
-RESPONSES_API_AVAILABLE = False
+RESPONSES_API_AVAILABLE = True
 """Whether this build can serve the OpenAI Responses API.
 
-The Responses service needs the node-transition deferral ported to it before
-it can replace chat completions; until that lands, both knobs that only exist
-there (``options.api="responses"`` and ``options.reasoning.summary``) are named
-422s rather than a silent downgrade or a knob that reaches nothing.
+On since the node-transition deferral was ported to the Responses service
+(``openai_responses.py``, VOZ-BUG-03). ``options.reasoning.summary`` still
+needs ``options.api="responses"``: chat completions has no summary to carry.
 """
 
 PROVIDER_TURN_DETECTION_AVAILABLE = False
@@ -1072,7 +1071,7 @@ _OPENAI_STT_API_FIELDS = {
 }
 _OPENAI_APIS = frozenset({"chat_completions", "responses"})
 _REASONING_KEYS = {
-    "effort": frozenset({"none", "minimal", "low", "medium", "high", "xhigh"}),
+    "effort": frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"}),
     "summary": frozenset({"auto", "concise", "detailed"}),
 }
 _VERBOSITIES = frozenset({"low", "medium", "high"})
@@ -1118,13 +1117,13 @@ def _validate_openai_llm_options(options: dict[str, Any]) -> list[str]:
                 path = f"llm.openai.options.reasoning.{name}"
                 if name not in _REASONING_KEYS:
                     errors.append(f"{path}: unknown key")
-                elif name == "summary" and not RESPONSES_API_AVAILABLE:
+                elif name == "summary" and options.get("api") != "responses":
                     # A chat-completions payload has no reasoning summary; only
                     # the Responses API does. Accepting it would be a knob that
                     # reaches nothing (§1.2).
                     errors.append(
-                        f"{path}: not available in this build "
-                        "(Responses API not ported)"
+                        f"{path}: only the Responses API carries a reasoning "
+                        "summary; set llm.openai.options.api to responses"
                     )
                 else:
                     error = _one_of(path, value, _REASONING_KEYS[name])
