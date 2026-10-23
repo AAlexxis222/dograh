@@ -7,11 +7,22 @@ import { useCallback, useState } from 'react';
 import { createWorkflowApiV1WorkflowCreateDefinitionPost } from '@/client/sdk.gen';
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { detailFromError } from '@/lib/apiError';
 import { useAuth } from '@/lib/auth';
 import logger from '@/lib/logger';
 import { getRandomId } from '@/lib/utils';
 
 import { WorkflowData } from '../flow/types';
+
+async function parseWorkflowFile(file: File): Promise<WorkflowData> {
+    const workflowData: WorkflowData = JSON.parse(await file.text());
+    if (!workflowData.workflow_definition?.nodes ||
+        !workflowData.workflow_definition?.edges ||
+        !workflowData.workflow_definition?.viewport) {
+        throw new Error('Invalid workflow data structure');
+    }
+    return workflowData;
+}
 
 export function UploadWorkflowButton() {
     const router = useRouter();
@@ -22,15 +33,7 @@ export function UploadWorkflowButton() {
 
     const handleFileUpload = useCallback(async (file: File) => {
         try {
-            const text = await file.text();
-            const workflowData: WorkflowData = JSON.parse(text);
-
-            if (!workflowData.workflow_definition?.nodes ||
-                !workflowData.workflow_definition?.edges ||
-                !workflowData.workflow_definition?.viewport) {
-                throw new Error('Invalid workflow data structure');
-            }
-
+            const workflowData = await parseWorkflowFile(file);
             if (!user) return;
             const accessToken = await getAccessToken();
             const response = await createWorkflowApiV1WorkflowCreateDefinitionPost({
@@ -43,6 +46,12 @@ export function UploadWorkflowButton() {
                 },
             });
 
+            // The client returns { error } instead of throwing: show the server's
+            // reason and hint (e.g. a masked header value to type again).
+            if (response.error) {
+                setError(detailFromError(response.error, 'Failed to upload workflow.'));
+                return;
+            }
             if (response.data?.id) {
                 router.push(`/workflow/${response.data.id}`);
                 setIsOpen(false);
