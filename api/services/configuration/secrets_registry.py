@@ -4,8 +4,11 @@ Masking (API responses), the organization-level PUT (422 on any secret) and,
 eventually, secret merging read from this one list. Paths use ``*`` for one
 level and ``**`` for any depth; either may pass through a list (broadcast
 over every item, no index recorded in the path — ``find_secret_paths``
-dedupes). A schema field marked ``json_schema_extra={"secret": True}`` must
-appear here (guarded by test_workflow_configuration_secrets_registry.py).
+dedupes; ``iter_concrete_leaves`` in api/services/security/secret_walk.py records it,
+one path per leaf). A schema field marked ``json_schema_extra={"secret": True}`` must
+appear in ``SECRET_PATHS``, which derives from the single registry in
+api/services/security/secret_surfaces.py (guarded by
+test_workflow_configuration_secrets_registry.py).
 
 ``find_secret_paths`` and ``mask_secrets`` disagree on non-scalar values by
 design: a registered path holding a dict or a number is reported as a secret
@@ -19,24 +22,11 @@ import copy
 from collections.abc import Iterator
 from typing import Any
 
-SECRET_LEAF_NAMES: tuple[str, ...] = (
-    "api_key",
-    "credentials",
-    "aws_access_key",
-    "aws_secret_key",
-    "aws_session_token",
+from api.services.security.secret_surfaces import (
+    SECRET_LEAF_NAMES,
+    WORKFLOW_CONFIGURATION_SECRET_PATHS,
 )
-
-# The ``model_overrides`` sections merge.py restores real secrets into
-# (MODEL_OVERRIDE_FIELDS in masking.py is an alias of this); a section outside
-# this list (e.g. "embeddings") is never unmasked on merge, so it must never be
-# masked either. The rule holds for ``model_overrides`` only:
-# ``model_configuration_v2_override`` is masked below and merge.py does not
-# restore it, so a masked value sent back on that section would be stored as
-# the mask string. What stops that today is the explicit masked-value check in
-# ai_model_configuration.py, not the merger. Unifying the two descriptions of
-# the secret set is a tracked follow-up.
-MODEL_OVERRIDE_SECTIONS: tuple[str, ...] = ("llm", "tts", "stt", "realtime")
+from api.services.security.secret_walk import iter_leaves
 
 # Key names the write surfaces refuse on top of the registered secret leaves.
 # Configuration documents accept unknown keys, so a credential can arrive under
@@ -48,57 +38,9 @@ REJECTED_SECRET_NAMES: tuple[str, ...] = (
     "api_keys",
 )
 
-SECRET_PATHS: tuple[tuple[str, ...], ...] = tuple(
-    [
-        ("model_overrides", section, leaf)
-        for section in MODEL_OVERRIDE_SECTIONS
-        for leaf in SECRET_LEAF_NAMES
-    ]
-    + [("model_configuration_v2_override", "**", leaf) for leaf in SECRET_LEAF_NAMES]
-    + [("voicemail_detection", "api_key")]
-    + [("service_tuning", "*", "*", "ctor", "url")]
-    # Later PRs append: ("turn", "analyzer", "url")
-)
-
-
-def _iter_leaves(
-    node: Any, pattern: tuple[str, ...], path: tuple[str, ...]
-) -> Iterator[tuple[tuple[str, ...], dict[str, Any], str]]:
-    """Yield ``(path, container, key)`` for every leaf ``container[key]``
-    matched by ``pattern`` under ``node``. A list encountered anywhere before
-    the leaf is broadcast over (each item walked with the same remaining
-    pattern and the same path)."""
-    if not pattern:
-        return
-    if isinstance(node, list):
-        for item in node:
-            yield from _iter_leaves(item, pattern, path)
-        return
-    if not isinstance(node, dict):
-        return
-
-    head, rest = pattern[0], pattern[1:]
-    if head == "**":
-        for key, child in node.items():
-            if rest and key == rest[0]:
-                if len(rest) == 1:
-                    yield (path + (key,), node, key)
-                else:
-                    yield from _iter_leaves(child, rest[1:], path + (key,))
-            # "**" keeps matching at any depth below this key too.
-            yield from _iter_leaves(child, pattern, path + (key,))
-    elif head == "*":
-        if not rest:
-            for key in node:
-                yield (path + (key,), node, key)
-        else:
-            for key, child in node.items():
-                yield from _iter_leaves(child, rest, path + (key,))
-    elif head in node:
-        if not rest:
-            yield (path + (head,), node, head)
-        else:
-            yield from _iter_leaves(node[head], rest, path + (head,))
+# Paths inside a workflow configuration document: the ones the single registry of
+# secret surfaces declares for every column that stores that document.
+SECRET_PATHS: tuple[tuple[str, ...], ...] = WORKFLOW_CONFIGURATION_SECRET_PATHS
 
 
 def _find_non_empty(
@@ -107,7 +49,7 @@ def _find_non_empty(
     found: list[tuple[str, ...]] = []
     if isinstance(document, dict):
         for pattern in patterns:
-            for path, container, key in _iter_leaves(document, pattern, ()):
+            for path, container, key in iter_leaves(document, pattern, ()):
                 if container[key] not in (None, "", [], {}):
                     found.append(path)
     return sorted(set(found))
@@ -199,7 +141,7 @@ def mask_secrets(document: dict[str, Any] | None) -> dict[str, Any] | None:
         return document
     masked = copy.deepcopy(document)
     for pattern in SECRET_PATHS:
-        for _path, container, key in _iter_leaves(masked, pattern, ()):
+        for _path, container, key in iter_leaves(masked, pattern, ()):
             value = container[key]
             if isinstance(value, str):
                 container[key] = mask_key(value)
