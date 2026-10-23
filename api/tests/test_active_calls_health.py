@@ -1,0 +1,324 @@
+"""VOZ-N0-22: a cell refuses to start without the devops secret, and active-calls reports the drain fields."""
+
+import base64
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from loguru import logger
+
+import api.app as api_app
+from api.app import assert_cell_startup_config
+from api.routes import main as main_routes
+from api.services.observability import loop_lag
+from api.services.runtime import cell_state
+from api.services.security import credential_box
+
+SECRET = "test-dograh-devops-secret"
+MASTER_KEY = "k1=" + base64.b64encode(os.urandom(32)).decode()
+
+
+@pytest.fixture
+def client(monkeypatch, tmp_path):
+    monkeypatch.setattr("api.constants.DOGRAH_DEVOPS_SECRET", SECRET)
+    # Never read the real default flag path: a box that ran the entrypoint leaves it behind.
+    monkeypatch.setenv("DRAIN_FLAG_FILE", str(tmp_path / "default_flag"))
+    monkeypatch.delenv("CALL_K_P", raising=False)
+    app = FastAPI()
+    app.add_api_route(
+        "/api/v1/health/active-calls",
+        main_routes.active_calls,
+        methods=["GET"],
+        response_model=main_routes.ActiveCallsResponse,
+    )
+    return TestClient(app)
+
+
+def _get(client):
+    return client.get(
+        "/api/v1/health/active-calls",
+        headers={main_routes.DOGRAH_DEVOPS_SECRET_HEADER: SECRET},
+    )
+
+
+def test_active_calls_reports_drain_fields(client):
+    body = _get(client).json()
+    assert {"active_calls", "lag_p99_ms", "draining", "k_p"} <= body.keys()
+    assert body["draining"] is False
+    assert body["k_p"] == 4
+
+
+def test_draining_follows_the_flag_file(client, monkeypatch, tmp_path):
+    flag = tmp_path / "draining"
+    monkeypatch.setenv("DRAIN_FLAG_FILE", str(flag))
+    assert _get(client).json()["draining"] is False
+    flag.touch()
+    assert _get(client).json()["draining"] is True
+
+
+def test_k_p_comes_from_env_and_falls_back_outside_a_cell(client, monkeypatch):
+    monkeypatch.setenv("CALL_K_P", "7")
+    assert _get(client).json()["k_p"] == 7
+    monkeypatch.setenv("CALL_K_P", "zero")
+    assert _get(client).json()["k_p"] == 4
+
+
+@pytest.fixture
+def cell_env(monkeypatch):
+    monkeypatch.setenv("CELL_ROLE", "call")
+    monkeypatch.setenv("DOGRAH_DEVOPS_SECRET", SECRET)
+    monkeypatch.setenv("LOG_LEVEL", "INFO")
+    monkeypatch.setenv("CREDENTIALS_MASTER_KEY", MASTER_KEY)
+    monkeypatch.setenv("URL_GUARD_ENFORCE", "true")
+    monkeypatch.delenv("CALL_K_P", raising=False)
+
+
+def test_startup_passes_with_a_valid_cell_config(cell_env):
+    assert_cell_startup_config()
+
+
+def test_startup_fails_named_without_devops_secret_in_cell(cell_env, monkeypatch):
+    monkeypatch.delenv("DOGRAH_DEVOPS_SECRET", raising=False)
+    with pytest.raises(RuntimeError, match="code=devops_secret_missing") as e:
+        assert_cell_startup_config()
+    for key in ("where=", "reason=", "hint="):
+        assert key in str(e.value)
+
+
+def test_startup_fails_closed_on_empty_devops_secret_in_cell(cell_env, monkeypatch):
+    monkeypatch.setenv("DOGRAH_DEVOPS_SECRET", "")
+    with pytest.raises(RuntimeError, match="code=devops_secret_missing"):
+        assert_cell_startup_config()
+
+
+@pytest.mark.parametrize(
+    "level", ["DEBUG", "debug", "TRACE", "trace", "VERBOSE", "10", ""]
+)
+def test_startup_refuses_any_level_below_info_in_cell(cell_env, monkeypatch, level):
+    monkeypatch.setenv("LOG_LEVEL", level)
+    with pytest.raises(RuntimeError, match="code=log_level_debug_in_cell"):
+        assert_cell_startup_config()
+
+
+@pytest.mark.parametrize("level", ["INFO", "success", "Warning", "ERROR", "critical"])
+def test_startup_allows_info_and_above_in_cell(cell_env, monkeypatch, level):
+    monkeypatch.setenv("LOG_LEVEL", level)
+    assert_cell_startup_config()
+
+
+def test_startup_refuses_unset_log_level_in_cell(cell_env, monkeypatch):
+    # api/constants.py defaults an unset LOG_LEVEL to DEBUG.
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    with pytest.raises(RuntimeError, match="code=log_level_debug_in_cell"):
+        assert_cell_startup_config()
+
+
+@pytest.mark.parametrize("value", ["abc", "0", "-3"])
+def test_startup_refuses_bad_k_p_in_cell(cell_env, monkeypatch, value):
+    monkeypatch.setenv("CALL_K_P", value)
+    with pytest.raises(RuntimeError, match="code=call_k_p_invalid"):
+        assert_cell_startup_config()
+
+
+@pytest.mark.parametrize(
+    ("value", "reason"),
+    [
+        (None, "env: CREDENTIALS_MASTER_KEY is missing"),
+        ("k1=" + base64.b64encode(b"short").decode(), "bytes, need 32"),
+    ],
+    ids=["missing", "short"],
+)
+def test_startup_refuses_a_missing_or_invalid_master_key_in_cell(
+    cell_env, monkeypatch, value, reason
+):
+    # VOZ-AC-B6-16: a cell never starts unable to read its credentials.
+    if value is None:
+        monkeypatch.delenv("CREDENTIALS_MASTER_KEY")
+    else:
+        monkeypatch.setenv("CREDENTIALS_MASTER_KEY", value)
+    with pytest.raises(RuntimeError) as e:
+        assert_cell_startup_config("call")
+    message = str(e.value)
+    for key in ("code=credentials_master_key_invalid where=call ", reason, "hint="):
+        assert key in message, message
+
+
+@pytest.mark.parametrize("value", [None, "", "false", "True", "1", "true "])
+def test_startup_refuses_a_cell_that_does_not_enforce_the_url_guard(
+    cell_env, monkeypatch, value
+):
+    # VOZ-AC-B5-91 / B0-30: only the exact value the guard honours passes.
+    if value is None:
+        monkeypatch.delenv("URL_GUARD_ENFORCE")
+    else:
+        monkeypatch.setenv("URL_GUARD_ENFORCE", value)
+    with pytest.raises(RuntimeError) as e:
+        assert_cell_startup_config("call")
+    message = str(e.value)
+    for key in (
+        "code=url_guard_not_enforced where=call ",
+        "URL_GUARD_ENFORCE",
+        "reason=",
+        "hint=set URL_GUARD_ENFORCE=true",
+    ):
+        assert key in message, message
+
+
+def test_startup_validates_the_master_key_without_touching_the_loader_cache(
+    cell_env, monkeypatch
+):
+    # The check reads the environment as it is now: a key cached earlier must neither hide a bad env nor be cleared.
+    credential_box.load_keys.cache_clear()
+    try:
+        credential_box.load_keys()  # primes the cache from the valid cell env
+        monkeypatch.delenv("CREDENTIALS_MASTER_KEY")
+        with pytest.raises(RuntimeError, match="code=credentials_master_key_invalid"):
+            assert_cell_startup_config("call")
+        assert credential_box.load_keys.cache_info().currsize == 1
+    finally:
+        credential_box.load_keys.cache_clear()
+
+
+def test_startup_is_a_noop_outside_a_cell(monkeypatch):
+    monkeypatch.delenv("CELL_ROLE", raising=False)
+    monkeypatch.delenv("DOGRAH_DEVOPS_SECRET", raising=False)
+    monkeypatch.delenv("CREDENTIALS_MASTER_KEY", raising=False)
+    monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    assert_cell_startup_config()
+
+
+def test_p99_is_the_99th_percentile_and_the_route_returns_it(client, monkeypatch):
+    monkeypatch.setattr(loop_lag, "_samples", [float(i) for i in range(1, 101)])
+    lag = loop_lag.stats()
+    assert (lag["p95_ms"], lag["p99_ms"]) == (95.0, 99.0)
+    body = _get(client).json()
+    assert (body["loop_lag_p95_ms"], body["lag_p99_ms"]) == (95.0, 99.0)
+
+
+def _run_module(role, **env):
+    cell_vars = {
+        "CELL_ROLE",
+        "LOG_LEVEL",
+        "DOGRAH_DEVOPS_SECRET",
+        "CALL_K_P",
+        "CREDENTIALS_MASTER_KEY",
+        "URL_GUARD_ENFORCE",
+    }
+    base = {k: v for k, v in os.environ.items() if k not in cell_vars}
+    return subprocess.run(
+        [sys.executable, "-m", "api.services.runtime.cell_startup", role],
+        env={**base, **env},
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("role", ["arq", "coordinators"])
+def test_roles_without_lifespan_refuse_debug_logs_via_the_module(role):
+    # arq and coordinators never run the FastAPI lifespan; require_db_head.sh runs this module for every role.
+    r = _run_module(
+        role, CELL_ROLE=role, DOGRAH_DEVOPS_SECRET=SECRET, LOG_LEVEL="TRACE"
+    )
+    assert r.returncode == 1
+    for key in (f"code=log_level_debug_in_cell where={role} ", "reason=", "hint="):
+        assert key in r.stderr, r.stderr
+
+
+def test_module_passes_in_a_valid_cell_and_outside_a_cell():
+    ok = _run_module(
+        "arq",
+        CELL_ROLE="arq",
+        DOGRAH_DEVOPS_SECRET=SECRET,
+        LOG_LEVEL="INFO",
+        CREDENTIALS_MASTER_KEY=MASTER_KEY,
+        URL_GUARD_ENFORCE="true",
+    )
+    assert (ok.returncode, ok.stderr) == (0, "")
+    assert _run_module("arq").returncode == 0
+
+
+@pytest.mark.parametrize("role", ["api", "call", "arq", "coordinators"])
+def test_module_refuses_every_cell_role_without_the_url_guard(role):
+    r = _run_module(
+        role,
+        CELL_ROLE=role,
+        DOGRAH_DEVOPS_SECRET=SECRET,
+        LOG_LEVEL="INFO",
+        CREDENTIALS_MASTER_KEY=MASTER_KEY,
+    )
+    assert r.returncode == 1
+    assert f"code=url_guard_not_enforced where={role} " in r.stderr, r.stderr
+
+
+def test_module_refuses_a_cell_without_the_master_key():
+    r = _run_module(
+        "arq", CELL_ROLE="arq", DOGRAH_DEVOPS_SECRET=SECRET, LOG_LEVEL="INFO"
+    )
+    assert r.returncode == 1
+    assert "code=credentials_master_key_invalid where=arq " in r.stderr, r.stderr
+
+
+def test_module_refuses_a_master_key_with_a_non_ascii_char_without_a_traceback():
+    # A zero-width space pasted with the key: the B0-28 line, never a raw traceback, never the key text.
+    key = MASTER_KEY.partition("=")[2]
+    r = _run_module(
+        "arq",
+        CELL_ROLE="arq",
+        DOGRAH_DEVOPS_SECRET=SECRET,
+        LOG_LEVEL="INFO",
+        CREDENTIALS_MASTER_KEY=f"{MASTER_KEY}\u200b",
+    )
+    assert r.returncode == 1
+    assert "code=credentials_master_key_invalid where=arq " in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+    assert key not in r.stderr
+
+
+def test_drain_flag_default_is_the_same_in_python_and_the_entrypoint():
+    # A drift would make the endpoint report draining=false forever, with no error.
+    script = (
+        Path(__file__).resolve().parents[2] / "scripts/xpand/call_entrypoint.sh"
+    ).read_text()
+    match = re.search(r'DRAIN_FLAG_FILE="\$\{DRAIN_FLAG_FILE:-([^}]+)\}"', script)
+    assert match, "call_entrypoint.sh no longer sets the DRAIN_FLAG_FILE default"
+    assert match.group(1) == cell_state.DEFAULT_DRAIN_FLAG_FILE
+
+
+def test_invalid_k_p_outside_a_cell_warns_once_not_per_poll(monkeypatch):
+    warnings = []
+    monkeypatch.setattr(logger, "warning", warnings.append)
+    cell_state._resolve_call_k_p.cache_clear()
+    monkeypatch.setenv("CALL_K_P", "zero")
+    assert [cell_state.call_k_p() for _ in range(3)] == [4, 4, 4]
+    assert len(warnings) == 1
+
+
+def test_lifespan_runs_the_cell_startup_check(cell_env, monkeypatch):
+    # Defence in depth behind the shell gate: the api lifespan refuses to start by itself.
+    monkeypatch.delenv("DOGRAH_DEVOPS_SECRET")
+    with (
+        pytest.raises(RuntimeError, match="code=devops_secret_missing"),
+        TestClient(api_app.app),
+    ):
+        pass
+
+
+def test_the_start_gate_module_does_not_load_loguru():
+    # require_db_head.sh runs it with whatever python is on PATH, in and out of a cell.
+    code = "import sys, api.services.runtime.cell_startup; sys.exit('loguru' in sys.modules or 'fastapi' in sys.modules)"
+    r = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert r.returncode == 0, r.stderr
