@@ -210,3 +210,11 @@ entries:
     replacement: null
     source_url: https://docs.lmnt.com/
     read_at: 2026-11-05
+  - provider: groq
+    kind: llm
+    model_or_feature: llama-3.3-70b-versatile
+    date: 2026-08-16   # free and developer tiers; committed-spend enterprise customers are not affected
+    effect: shutdown
+    replacement: openai/gpt-oss-120b   # the vendor page also names qwen/qwen3.6-27b
+    source_url: https://console.groq.com/docs/deprecations
+    read_at: 2026-11-05

@@ -41,7 +41,7 @@ def test_soniox_stt_configuration_exposes_defaults_and_languages():
     assert config.provider == ServiceProviders.SONIOX
     assert config.model == "stt-rt-v6"
     assert config.language == "multi"
-    assert SONIOX_STT_MODELS == ("stt-rt-v5",)
+    assert SONIOX_STT_MODELS == ("stt-rt-v6", "stt-rt-v5")
     assert "multi" in SONIOX_STT_LANGUAGES
     assert "hi" in SONIOX_STT_LANGUAGES
     assert language_schema["examples"] == list(SONIOX_STT_LANGUAGES)

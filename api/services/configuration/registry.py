@@ -549,7 +549,7 @@ class GroqLLMService(BaseLLMConfiguration):
     model_config = GROQ_PROVIDER_MODEL_CONFIG
     provider: Literal[ServiceProviders.GROQ] = ServiceProviders.GROQ
     model: str = Field(
-        default="llama-3.3-70b-versatile",
+        default="openai/gpt-oss-120b",
         description="Groq-hosted model identifier.",
         json_schema_extra={"examples": GROQ_MODELS, "allow_custom_input": True},
     )

@@ -1,4 +1,4 @@
-SONIOX_STT_MODELS = ("stt-rt-v5",)
+SONIOX_STT_MODELS = ("stt-rt-v6", "stt-rt-v5")   # v5 stays listed until its removal on 2026-12-15
 
 SONIOX_STT_LANGUAGES = (
     "multi",
