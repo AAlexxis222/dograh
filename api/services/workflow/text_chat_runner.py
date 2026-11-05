@@ -38,7 +38,7 @@ from pipecat.utils.run_context import set_current_org_id
 from api.db import db_client
 from api.enums import WorkflowRunMode, WorkflowRunState
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
-from api.services.configuration.cascade import run_configurations_for
+from api.services.configuration.cascade import run_config_with_credentials
 from api.services.configuration.registry import ServiceProviders
 from api.services.pipecat.audio_config import create_audio_config
 from api.services.pipecat.pipeline_builder import create_pipeline_task
@@ -511,7 +511,7 @@ async def execute_text_chat_pending_turn(
     set_current_org_id(workflow.organization_id)
 
     run_definition = workflow_run.definition
-    run_configs = run_configurations_for(workflow_run)
+    run_configs = run_config_with_credentials(workflow_run)
 
     from api.services.configuration.ai_model_configuration import (
         get_effective_ai_model_configuration_for_workflow,
@@ -963,7 +963,7 @@ async def extract_text_chat_final_variables(
         # the turn path does for every other text-chat span.
         set_current_org_id(organization_id)
 
-        run_configs = run_configurations_for(workflow_run)
+        run_configs = run_config_with_credentials(workflow_run)
         user_config = await get_effective_ai_model_configuration_for_workflow(
             organization_id=organization_id,
             workflow_configurations=run_configs,

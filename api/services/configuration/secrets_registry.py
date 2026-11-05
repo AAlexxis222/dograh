@@ -18,7 +18,6 @@ and lists of strings.
 
 from __future__ import annotations
 
-import copy
 from collections.abc import Iterator
 from typing import Any
 
@@ -133,20 +132,10 @@ def find_unregistered_secret_named_paths(
 def mask_secrets(document: dict[str, Any] | None) -> dict[str, Any] | None:
     """Copy of ``document`` with every registered secret masked. A secret
     value that is not a string, or a list of strings, is left untouched
-    (e.g. a malformed ``api_key: 123``) rather than raised on. An empty or
-    ``None`` document is returned unchanged rather than copied."""
-    from api.services.configuration.masking import mask_key  # circular at import time
+    (e.g. a malformed ``api_key: 123``) rather than raised on, and so is a
+    credential reference or redaction a run stores instead of a value
+    (credential_refs.py). An empty or ``None`` document is returned unchanged
+    rather than copied."""
+    from api.services.configuration.masking import mask_paths  # circular at import time
 
-    if not document:
-        return document
-    masked = copy.deepcopy(document)
-    for pattern in SECRET_PATHS:
-        for _path, container, key in iter_leaves(masked, pattern, ()):
-            value = container[key]
-            if isinstance(value, str):
-                container[key] = mask_key(value)
-            elif isinstance(value, list) and all(
-                isinstance(item, str) for item in value
-            ):
-                container[key] = [mask_key(item) for item in value]
-    return masked
+    return mask_paths(document, SECRET_PATHS)

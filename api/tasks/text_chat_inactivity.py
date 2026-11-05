@@ -18,7 +18,7 @@ from api.constants import (
 from api.db import db_client
 from api.db.models import WorkflowRunTextSessionModel
 from api.enums import WorkflowRunMode
-from api.services.configuration.cascade import run_configurations_for
+from api.services.configuration.cascade import run_config_without_credentials
 from api.services.workflow.text_chat_session_service import (
     TextChatSessionRevisionConflictError,
     complete_text_chat_session,
@@ -49,17 +49,18 @@ async def sweep_inactive_text_chat_sessions(_ctx) -> None:
             break
 
         for text_session in inactive_sessions:
-            inactivity_deadline = _text_chat_inactivity_deadline(
-                text_session,
-                inactivity_timeout_seconds=_text_chat_inactivity_timeout_seconds(
-                    text_session
-                ),
-            )
-            if inactivity_deadline > completed_at:
-                continue
-
             run_id = text_session.workflow_run_id
+            # One bad session is logged and retried on the next sweep; it must
+            # not stop the sessions after it.
             try:
+                inactivity_deadline = _text_chat_inactivity_deadline(
+                    text_session,
+                    inactivity_timeout_seconds=_text_chat_inactivity_timeout_seconds(
+                        text_session
+                    ),
+                )
+                if inactivity_deadline > completed_at:
+                    continue
                 await _enqueue_inactive_text_chat_completion(
                     run_id=run_id,
                     expected_revision=text_session.revision,
@@ -67,7 +68,9 @@ async def sweep_inactive_text_chat_sessions(_ctx) -> None:
                 )
                 enqueued_count += 1
             except Exception as e:  # noqa: BLE001 - retry on the next sweep
-                logger.error(f"Failed to enqueue inactive text chat {run_id}: {e}")
+                logger.error(
+                    f"Inactive text chat {run_id} skipped until the next sweep: {e}"
+                )
 
             if enqueued_count >= TEXT_CHAT_INACTIVITY_SWEEP_ENQUEUE_LIMIT:
                 break
@@ -148,7 +151,7 @@ def _text_chat_inactivity_timeout_seconds(
     text_session: WorkflowRunTextSessionModel,
 ) -> int:
     """Resolve the timeout from the configuration frozen on this run."""
-    configurations = run_configurations_for(text_session.workflow_run)
+    configurations = run_config_without_credentials(text_session.workflow_run)
 
     configured_timeout = configurations.get(
         "text_chat_inactivity_timeout_seconds",

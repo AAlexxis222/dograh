@@ -819,7 +819,7 @@ async def test_hangup_strategy_ends_the_customer_leg_without_writing_the_lead(
     )
     monkeypatch.setattr(
         db_client,
-        "get_workflow_run_configurations",
+        "get_workflow_run_config_without_credentials",
         AsyncMock(
             return_value={
                 "external_pbx_field_mappings": [
@@ -1078,7 +1078,7 @@ def _patch_writeback(monkeypatch, run, mappings):
     )
     monkeypatch.setattr(
         db_client,
-        "get_workflow_run_configurations",
+        "get_workflow_run_config_without_credentials",
         AsyncMock(return_value={"external_pbx_field_mappings": mappings}),
     )
     monkeypatch.setattr(

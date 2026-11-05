@@ -34,8 +34,8 @@ from api.services.tool_management import (
     ToolManagementError,
     build_tool_response,
     create_tool_for_user,
+    prepare_tool_definition_update,
     refresh_mcp_tool_for_user,
-    validate_tool_references,
 )
 from api.services.tool_management import (
     populate_discovered_tools as _populate_discovered_tools,
@@ -377,14 +377,10 @@ async def update_tool(
 
     definition = None
     if request.definition:
-        definition = request.definition.model_dump()
         try:
-            await validate_tool_references(
-                definition,
-                organization_id=user.selected_organization_id,
-            )
-            definition = await _populate_discovered_tools(
-                definition,
+            definition = await prepare_tool_definition_update(
+                request.definition.model_dump(),
+                tool_uuid=tool_uuid,
                 organization_id=user.selected_organization_id,
             )
         except ToolManagementError as e:

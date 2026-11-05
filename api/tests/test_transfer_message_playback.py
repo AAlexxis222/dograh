@@ -186,7 +186,7 @@ async def test_external_pbx_transfer_waits_for_message_playback():
             AsyncMock(return_value=workflow_run),
         ),
         patch(
-            "api.services.workflow.pipecat_engine_custom_tools.db_client.get_workflow_run_configurations",
+            "api.services.workflow.pipecat_engine_custom_tools.db_client.get_workflow_run_config_without_credentials",
             AsyncMock(return_value={"external_pbx_field_mappings": []}),
         ),
         patch(
@@ -254,7 +254,7 @@ async def test_external_pbx_transfer_without_message_does_not_wait():
             AsyncMock(return_value=workflow_run),
         ),
         patch(
-            "api.services.workflow.pipecat_engine_custom_tools.db_client.get_workflow_run_configurations",
+            "api.services.workflow.pipecat_engine_custom_tools.db_client.get_workflow_run_config_without_credentials",
             AsyncMock(return_value={"external_pbx_field_mappings": []}),
         ),
         patch(
@@ -420,7 +420,7 @@ class TestTransferDispositionRace:
                 AsyncMock(return_value=workflow_run),
             ),
             patch(
-                "api.services.workflow.pipecat_engine_custom_tools.db_client.get_workflow_run_configurations",
+                "api.services.workflow.pipecat_engine_custom_tools.db_client.get_workflow_run_config_without_credentials",
                 AsyncMock(return_value={"external_pbx_field_mappings": []}),
             ),
             patch(
@@ -489,7 +489,7 @@ class TestTransferDispositionRace:
                 AsyncMock(return_value=workflow_run),
             ),
             patch(
-                "api.services.workflow.pipecat_engine_custom_tools.db_client.get_workflow_run_configurations",
+                "api.services.workflow.pipecat_engine_custom_tools.db_client.get_workflow_run_config_without_credentials",
                 AsyncMock(return_value={"external_pbx_field_mappings": []}),
             ),
             patch(

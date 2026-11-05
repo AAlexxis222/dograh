@@ -141,8 +141,10 @@ async def sync_external_pbx_call_record(workflow_run_id: int) -> None:
 
         disposition = _disposition_of(gathered)
 
-        workflow_configurations = await db_client.get_workflow_run_configurations(
-            workflow_run_id, organization_id
+        workflow_configurations = (
+            await db_client.get_workflow_run_config_without_credentials(
+                workflow_run_id, organization_id
+            )
         )
         field_updates = {
             # Every call reports its outcome. The workflow's own mappings are

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from pipecat.processors.aggregators.llm_context import LLMSpecificMessage
+from pipecat.tests import MockLLMService
 from pipecat.utils.enums import EndTaskReason
 
 from api.db.models import OrganizationModel, UserModel, organization_users_association
@@ -27,7 +28,6 @@ from api.services.workflow.text_chat_session_service import (
 )
 from api.tasks.function_names import FunctionNames
 from api.tests.integrations._run_pipeline_helpers import USER_CONFIGURATION
-from pipecat.tests import MockLLMService
 
 
 def _log_texts(logs: dict | None, event_type: str) -> list[str]:
@@ -1758,7 +1758,7 @@ async def test_final_extraction_llm_carries_the_runs_service_tuning(
 
     with (
         patch(
-            "api.services.workflow.text_chat_runner.run_configurations_for",
+            "api.services.workflow.text_chat_runner.run_config_with_credentials",
             return_value={"service_tuning": tuning},
         ),
         patch("api.services.workflow.text_chat_runner.create_llm_service", create_llm),
