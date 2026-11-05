@@ -236,9 +236,7 @@ def test_model_override_wrapper_preserves_openai_base_url():
         )
     )
 
-    with patch(
-        "api.services.pipecat.service_factory.OpenAILLMService"
-    ) as openai_service:
+    with patch("api.services.pipecat.openai_llm.OpenAILLMService") as openai_service:
         result = create_llm_service_with_model_override(
             config,
             "grok-3-fast",

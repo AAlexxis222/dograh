@@ -12,6 +12,7 @@ Importer count is NOT the only axis. In this repo the deciding question is: **is
 |---|---|
 | `pipecat/` (submodule → dograh-hq/pipecat) | every call runs through it; a bump is a dependency upgrade of the whole media path |
 | `api/services/pipecat/run_pipeline.py`, `pipeline_builder.py`, `event_handlers.py`, `service_factory.py` | call hot path, every call (importers 8 / 2 / 1 / 3); `pipeline_builder` also feeds `workflow/text_chat_runner.py`, so text chat too |
+| `api/services/pipecat/openai_llm.py`, `openai_efforts.py` | build every OpenAI and Atlas Cloud LLM and translate the plan for OpenRouter, Azure and Dograh (called from `service_factory.py`); `openai_responses.py` stays leaf while `api: responses` is opt-in |
 | `api/services/pipecat/service_tuning_specs.py` | holds the build gates (`*_AVAILABLE`, l.886-1017) and is a G0 conflict file |
 | `api/db/models` (65) + `api/alembic/versions/` | schema; a migration is a **one-way door** (one head in the fork, `a7c2e9d41b06`; it becomes two heads against upstream at G0: VOZ-UNV-B9-06) |
 | `api/services/workflow/` (64), `telephony/` (56), `configuration/` (35), `auth/` (24), `api/utils` (49) | shared by most routes; telephony = real calls to real people |

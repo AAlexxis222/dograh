@@ -31,7 +31,7 @@ def test_service_factory_classifies_constructor_failure_and_reraises(monkeypatch
 def test_service_factory_tags_success_with_authoritative_ownership():
     service = SimpleNamespace()
     with patch(
-        "api.services.pipecat.service_factory.OpenAILLMService",
+        "api.services.pipecat.openai_llm.OpenAILLMService",
         return_value=service,
     ):
         result = create_llm_service_from_provider(
