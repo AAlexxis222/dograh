@@ -73,10 +73,10 @@ entries:
     model_or_feature: ["tts-1*", "gpt-4o-mini-tts*"]
     date: 2027-01-06
     effect: shutdown
-    replacement: null   # no documented Spanish voice in OpenAI TTS (VOZ-AC-B1-83)
+    replacement: gpt-realtime-2.1-mini   # as named by the vendor page; not a 1:1 TTS swap, no documented Spanish voice in OpenAI TTS (VOZ-AC-B1-83)
     warn_from: 2026-10-02
-    source_url: https://platform.openai.com/docs/deprecations
-    read_at: 2026-10-02
+    source_url: https://developers.openai.com/api/docs/deprecations
+    read_at: 2026-11-05
   - provider: openai
     kind: service   # the whole OpenAITTSService: no 1:1 replacement, kept only for existing workflows (VOZ-AC-B1-83, VOZ-D7 option C)
     model_or_feature: tts
@@ -107,13 +107,21 @@ entries:
     read_at: 2026-10-02
   - provider: openai
     kind: stt
-    model_or_feature: [whisper-1, "gpt-4o-transcribe*"]
+    model_or_feature: gpt-4o-mini-transcribe-2025-03-20
+    date: 2027-01-20
+    effect: shutdown
+    replacement: gpt-4o-mini-transcribe-2025-12-15
+    source_url: https://developers.openai.com/api/docs/deprecations
+    read_at: 2026-11-05
+  - provider: openai
+    kind: stt
+    model_or_feature: [whisper-1, "gpt-4o-transcribe*", "gpt-4o-mini-transcribe*"]   # the first glob does not match gpt-4o-mini-transcribe
     date: 2027-02-26
     effect: shutdown
     replacement: gpt-transcribe (or gpt-live-transcribe)
     warn_from: 2026-10-02   # VOZ-AC-B1-81: the OpenAI STT default must be flagged
-    source_url: https://platform.openai.com/docs/deprecations
-    read_at: 2026-10-02
+    source_url: https://developers.openai.com/api/docs/deprecations
+    read_at: 2026-11-05
   - provider: openai
     kind: llm
     model_or_feature: [gpt-5.4-nano, gpt-5.1, gpt-5.3-codex]
@@ -125,11 +133,11 @@ entries:
   - provider: google_realtime
     kind: realtime
     model_or_feature: [gemini-3.1-flash-live-preview, gemini-2.5-flash-native-audio-preview-12-2025]
-    date: null
-    effect: legacy
+    date: 2026-11-17   # earliest possible shutdown per the vendor page
+    effect: shutdown
     replacement: gemini-3.8-live
-    source_url: https://ai.google.dev/gemini-api/docs/live-api
-    read_at: 2026-10-02
+    source_url: https://aistudio.google.com/docs/deprecations
+    read_at: 2026-11-05
   - provider: google_vertex_realtime
     kind: realtime
     model_or_feature: ["google/gemini-live-2.5-flash-native-audio", gemini-2.5-flash-native-audio-preview-12-2025]
@@ -170,3 +178,35 @@ entries:
     replacement: null
     source_url: https://speechmatics.featurebase.app/en/changelog
     read_at: 2026-10-02
+  - provider: openai
+    kind: llm
+    model_or_feature: [gpt-4.1, gpt-4.1-2025-04-14, gpt-4.1-mini, gpt-4.1-mini-2025-04-14]   # alias and snapshot; the vendor page lists the snapshot ids
+    date: 2027-01-14
+    effect: shutdown
+    replacement: gpt-6-luna
+    source_url: https://developers.openai.com/api/docs/deprecations
+    read_at: 2026-11-05
+  - provider: azure
+    kind: llm
+    model_or_feature: gpt-4.1-mini
+    date: 2027-04-14
+    effect: shutdown
+    replacement: null   # the lifecycle page names none yet (picked 90-120 days before retirement)
+    source_url: https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/model-retirements
+    read_at: 2026-11-05
+  - provider: soniox
+    kind: stt
+    model_or_feature: stt-rt-v5
+    date: 2026-12-15
+    effect: shutdown
+    replacement: stt-rt-v6
+    source_url: https://docs.soniox.com/stt/models
+    read_at: 2026-11-05
+  - provider: lmnt
+    kind: service   # the whole LMNT service is gone; stored configs stay readable (aurora stays as the class default)
+    model_or_feature: tts
+    date: 2026-11-05   # LMNT's page ("LMNT has shut down") gives no date: the day this entry was written
+    effect: shutdown
+    replacement: null
+    source_url: https://docs.lmnt.com/
+    read_at: 2026-11-05

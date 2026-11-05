@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from api.services.capabilities.deprecations import load_deprecations, status_for
 from api.services.configuration import registry
 
-TODAY = dt.date(2026, 10, 6)
+TODAY = dt.date(2026, 12, 14)
 
 
 def _configs():
