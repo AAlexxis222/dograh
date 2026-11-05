@@ -17,7 +17,7 @@ organization base and freezes on the run exactly like every other setting descri
     "stt": {
       "deepgram": {
         "settings": { "eot_threshold": 0.8, "keyterm": ["Marbella", "parasailing"] },
-        "ctor": { "mip_opt_out": true }
+        "ctor": { "tag": ["xpand"] }
       }
     },
     "tts": {
@@ -38,7 +38,7 @@ up to three dictionaries:
 | Dictionary | Reaches | Example |
 | --- | --- | --- |
 | `settings` | The provider's own settings object, merged over the defaults the run already builds | `stt.deepgram.settings.eot_threshold` |
-| `ctor` | Allow-listed constructor arguments, which are not settings at all | `stt.deepgram.ctor.mip_opt_out` |
+| `ctor` | Allow-listed constructor arguments, which are not settings at all | `stt.deepgram.ctor.tag` |
 | `options` | Switches that are neither, such as which OpenAI API to speak | `llm.openai.options.api` |
 
 "Merged over the defaults" is key by key: a tuned setting replaces the value the run would have
@@ -286,7 +286,7 @@ speed and volume in the model configuration rather than merging into it.
 
 ## Behaviour changes
 
-Seven fixes ride along with this section, because a knob cannot be exposed on a path that never
+Eight changes ride along with this section, because a knob cannot be exposed on a path that never
 worked:
 
 - **OpenAI TTS now uses the configured voice.** It previously ignored the model configuration's
@@ -307,3 +307,10 @@ worked:
 - **Camb TTS is built through its settings object** instead of the constructor arguments pipecat
   deprecated, which is what lets `user_instructions` reach it. The voice, model, language and
   timeout an untuned workflow ends up with are the same as before.
+- **Deepgram is EU-hosted and opted out of model training by default.** The Deepgram endpoint
+  defaults to `https://api.eu.deepgram.com` (it was the US host) for STT, Flux and TTS, so call
+  audio is processed in the EU unless an operator picks another endpoint. Every Deepgram request,
+  Dograh Flux included, now sends `mip_opt_out=true`, which keeps the audio out of Deepgram's
+  Model Improvement Program; it is fixed, so `stt.deepgram.ctor.mip_opt_out` and
+  `stt.dograh.ctor.mip_opt_out` are no longer accepted. Amazon Nova Sonic's default region is
+  `eu-north-1` (it was `us-east-1`).
