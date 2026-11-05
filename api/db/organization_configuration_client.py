@@ -8,6 +8,9 @@ from sqlalchemy.future import select
 
 from api.db.base_client import BaseDBClient
 from api.db.models import OrganizationConfigurationModel
+from api.enums import OrganizationConfigurationKey
+from api.services.public_links import links_enabled
+from api.services.runtime.cell_startup import is_cell
 
 # Lease states stored under an organization configuration key used as a lock.
 LEASE_PENDING = "pending"
@@ -245,6 +248,22 @@ class OrganizationConfigurationClient(BaseDBClient):
         """Get the value of a configuration, returning default if not found."""
         config = await self.get_configuration(organization_id, key)
         return config.value if config else default
+
+    async def public_links_enabled(self, organization_id: int | None) -> bool:
+        """Whether this organization may have public download links (VOZ-N0-30): always outside a cell, only on
+        its own ``public_links_enabled: true`` inside one. A legacy workflow without an organization has none."""
+        if not is_cell():
+            return True
+        defaults = (
+            await self.get_configuration_value(
+                organization_id,
+                OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value,
+                {},
+            )
+            if organization_id is not None
+            else {}
+        )
+        return links_enabled(defaults)
 
     async def get_all_configurations_by_key(self, key: str) -> list[dict[str, Any]]:
         """Get all organization configurations for a given key.

@@ -14,7 +14,10 @@ STOP_GRACE_ENV = "CELL_STOP_GRACE_S"
 DRAIN_TIMEOUT_ENV = "DRAIN_TIMEOUT"
 DRAIN_MAX_WAIT_ENV = "DRAIN_MAX_WAIT"
 DRAIN_INITIAL_DELAY_ENV = "DRAIN_INITIAL_DELAY"
+PUBLIC_LINK_TTL_ENV = "PUBLIC_LINK_TTL_H"
 DEFAULT_CEILING_S = 1200
+# A public download link of a call's recording/transcript lives this long from the moment it is minted (VOZ-N0-30).
+DEFAULT_PUBLIC_LINK_TTL_H = 72
 # Default max_call_duration of a workflow; the cell ceiling cannot be lower (max_call_duration <= ceiling).
 DEFAULT_MAX_CALL_DURATION_S = 300
 _CEILING_HINT = (
@@ -82,6 +85,27 @@ def ring_timeout_for(carrier: str) -> int:
     return CARRIER_RING_TIMEOUT_S.get(carrier, DEFAULT_RING_TIMEOUT_S)
 
 
+def _whole_number_env(
+    env: Mapping[str, str],
+    name: str,
+    default: int,
+    unit: str,
+    *,
+    hint: str | None = None,
+) -> int:
+    raw = env.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise DurationsError(
+            "knob_invalid",
+            f"{name}={raw!r} is not a whole number of {unit}",
+            hint or f"set {name} to a whole number of {unit}, or unset it",
+        ) from None
+
+
 @dataclass(frozen=True)
 class Durations:
     ceiling: int
@@ -95,6 +119,8 @@ class Durations:
     claim_retry_base_s: int = 1
     # Retry-After of an admission refused because the slot backend is down (HTTP 503, RFC 9110 §10.2.3).
     admission_retry_after_s: int = 5
+    # Hours a public download link stays alive after it is minted. Independent of the ceiling.
+    public_link_ttl_h: int = DEFAULT_PUBLIC_LINK_TTL_H
 
     def __post_init__(self) -> None:
         # The invariants live in the type: no Durations exists that breaks them, however it was built.
@@ -103,6 +129,14 @@ class Durations:
                 "knob_out_of_range",
                 f"call duration ceiling {self.ceiling}s is below the default max_call_duration {DEFAULT_MAX_CALL_DURATION_S}s",
                 _CEILING_HINT,
+            )
+        if self.public_link_ttl_h <= 0:
+            raise DurationsError(
+                "knob_out_of_range",
+                f"{PUBLIC_LINK_TTL_ENV}={self.public_link_ttl_h} is not a positive number of hours: a public link "
+                "would be born expired",
+                f"set {PUBLIC_LINK_TTL_ENV} to a whole number of hours >= 1 (default {DEFAULT_PUBLIC_LINK_TTL_H}), "
+                "or unset it",
             )
         if self.pending_ttl_s < MIN_PENDING_TTL_S:
             raise DurationsError(
@@ -128,18 +162,14 @@ class Durations:
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Durations":
-        raw = (os.environ if environ is None else environ).get(CEILING_ENV, "").strip()
-        if not raw:
-            return cls.from_cell(DEFAULT_CEILING_S)
-        try:
-            ceiling = int(raw)
-        except ValueError:
-            raise DurationsError(
-                "knob_invalid",
-                f"{CEILING_ENV}={raw!r} is not a whole number of seconds",
-                _CEILING_HINT,
-            ) from None
-        return cls.from_cell(ceiling)
+        env = os.environ if environ is None else environ
+        ttl_h = _whole_number_env(
+            env, PUBLIC_LINK_TTL_ENV, DEFAULT_PUBLIC_LINK_TTL_H, "hours"
+        )
+        ceiling = _whole_number_env(
+            env, CEILING_ENV, DEFAULT_CEILING_S, "seconds", hint=_CEILING_HINT
+        )
+        return cls.from_cell(ceiling, public_link_ttl_h=ttl_h)
 
     @property
     def slot_ttl(self) -> int:
