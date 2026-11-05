@@ -29,6 +29,7 @@ from typing import (
 from pydantic import BaseModel
 
 from api.errors.telephony_errors import log_telephony_error
+from api.utils.stored_credentials import credential_value
 
 if TYPE_CHECKING:
     from api.services.telephony.base import TelephonyProvider
@@ -350,6 +351,22 @@ class ProviderSpec:
     apply_trunk_on_save: Optional[TrunkApplier] = None
     remove_trunk_on_delete: Optional[TrunkRemover] = None
 
+    def account_id_from(self, credentials: Any) -> Optional[str]:
+        """The account id inbound dispatch matches this provider's calls on.
+
+        This is the value stored in ``telephony_configurations.account_id`` on every
+        save. ``None`` when the provider has no account concept (ARI), when the
+        credential is not set, or when it is neither a string nor a number. A JSON
+        number is returned as its text, which is what the original ``->>`` lookup
+        compared.
+        """
+        if not self.account_id_credential_field:
+            return None
+        value = credential_value(credentials, self.account_id_credential_field)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+        return value if isinstance(value, str) else None
+
     @property
     def supports_trunks(self) -> bool:
         """Whether this provider's calls travel over named carrier paths."""
@@ -402,6 +419,12 @@ def get(name: str) -> ProviderSpec:
 def get_optional(name: str) -> Optional[ProviderSpec]:
     """Look up a registered provider by name, returning None if not registered."""
     return _REGISTRY.get(name)
+
+
+def account_id_for(provider: str, credentials: Any) -> Optional[str]:
+    """``ProviderSpec.account_id_from`` by provider name; ``None`` for an unknown one."""
+    spec = _REGISTRY.get(provider)
+    return spec.account_id_from(credentials) if spec else None
 
 
 def all_specs() -> List[ProviderSpec]:

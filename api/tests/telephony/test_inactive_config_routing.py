@@ -79,6 +79,7 @@ async def test_inbound_route_queries_exclude_inactive_configuration(
         name="Parked Twilio",
         provider="twilio",
         credentials={"account_sid": "AC-parked"},
+        account_id="AC-parked",
         is_default_outbound=True,
         inactive=True,
     )
@@ -107,7 +108,6 @@ async def test_inbound_route_queries_exclude_inactive_configuration(
     assert (
         await db_session.find_inbound_route_by_account(
             provider="twilio",
-            account_id_field="account_sid",
             account_id="AC-parked",
             to_number="+15551234567",
             organization_id=organization.id,

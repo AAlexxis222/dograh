@@ -37,9 +37,11 @@ from api.services.configuration.ai_model_configuration import (
 )
 from api.services.configuration.check_validity import UserConfigurationValidator
 from api.services.configuration.masking import (
+    MaskedSecretUnmatched,
     mask_workflow_configurations,
     mask_workflow_definition,
     merge_workflow_api_keys,
+    refuse_masked_secrets,
 )
 from api.services.configuration.merge import merge_workflow_configuration_secrets
 from api.services.configuration.resolve import (
@@ -482,8 +484,11 @@ async def create_workflow(
         user: The user to create the workflow for
     """
     # Auto-mint trigger_path for any trigger node that didn't ship one so
-    # clients don't need to generate UUIDs themselves.
-    workflow_definition = ensure_trigger_paths(request.workflow_definition)
+    # clients don't need to generate UUIDs themselves. A masked secret (a
+    # downloaded workflow uploaded again) has nothing to keep: 422, not stored.
+    workflow_definition = ensure_trigger_paths(
+        refuse_masked_secrets(request.workflow_definition)
+    )
     trigger_path_issues = validate_trigger_paths(workflow_definition)
     if trigger_path_issues:
         raise _trigger_path_validation_http_exception(trigger_path_issues)
@@ -1033,13 +1038,14 @@ async def get_workflows_summary(
         workflows = []
         for status_value in statuses:
             workflows.extend(
-                await db_client.get_all_workflows(
+                await db_client.get_all_workflows_for_listing(
                     organization_id=user.selected_organization_id,
                     status=status_value,
                 )
             )
     else:
-        workflows = await db_client.get_all_workflows(
+        # Only id and name: no secret column is loaded, so no credential is decrypted (or can fail) here.
+        workflows = await db_client.get_all_workflows_for_listing(
             organization_id=user.selected_organization_id, status=None
         )
     return [
@@ -1416,7 +1422,7 @@ async def update_workflow(
             "version_number": active_def.version_number if active_def else None,
             "version_status": active_def.status if active_def else None,
         }
-    except HTTPException:
+    except (HTTPException, MaskedSecretUnmatched):
         raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1723,7 +1729,7 @@ async def get_workflow_templates() -> List[WorkflowTemplateResponse]:
             "id": template.id,
             "template_name": template.template_name,
             "template_description": template.template_description,
-            "template_json": template.template_json,
+            "template_json": mask_workflow_definition(template.template_json),
             "created_at": template.created_at,
         }
         for template in templates

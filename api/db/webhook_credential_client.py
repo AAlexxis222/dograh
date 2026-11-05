@@ -7,6 +7,7 @@ from loguru import logger
 from sqlalchemy import select, update
 
 from api.db.base_client import BaseDBClient
+from api.db.credentials_at_rest import seal
 from api.db.models import ExternalCredentialModel
 
 
@@ -144,7 +145,11 @@ class WebhookCredentialClient(BaseDBClient):
             if credential_type is not None:
                 update_values["credential_type"] = credential_type
             if credential_data is not None:
-                update_values["credential_data"] = credential_data
+                update_values["credential_data"] = seal(
+                    ExternalCredentialModel.credential_data,
+                    credential.id,
+                    credential_data,
+                )
 
             await session.execute(
                 update(ExternalCredentialModel)

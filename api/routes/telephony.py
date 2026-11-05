@@ -24,6 +24,11 @@ from api.db.models import UserModel
 from api.enums import CallType, WorkflowRunMode, WorkflowRunState
 from api.errors.failure import failure_already_reported
 from api.errors.telephony_errors import TelephonyError
+from api.routes.admission_answers import (
+    bind_failure_response,
+    carrier_error,
+    http_response,
+)
 from api.sdk_expose import sdk_expose
 from api.services.auth.depends import get_user
 from api.services.call_concurrency import (
@@ -182,9 +187,10 @@ async def initiate_call(
             user.selected_organization_id,
             source="telephony_outbound",
             timeout=0,
+            outbound_carrier=provider.PROVIDER_NAME,
         )
-    except CallConcurrencyLimitError:
-        raise HTTPException(status_code=429, detail="Concurrent call limit reached")
+    except CallConcurrencyLimitError as e:
+        return http_response(e)
 
     try:
         if not workflow_run_id:
@@ -230,11 +236,9 @@ async def initiate_call(
             workflow_run_name = workflow_run.name
 
         await call_concurrency.bind_workflow_run(concurrency_slot, workflow_run_id)
-    except WorkflowRunSlotAlreadyBoundError:
-        raise HTTPException(
-            status_code=409,
-            detail="Workflow run already has an active call",
-        )
+    except (WorkflowRunSlotAlreadyBoundError, CallConcurrencyLimitError) as e:
+        # Either way the bind already released the slot: a taken run, or a slot backend that did not answer.
+        return bind_failure_response(e)
     except Exception:
         await call_concurrency.release_slot(concurrency_slot)
         raise
@@ -413,7 +417,6 @@ async def _validate_inbound_request(
     if account_field and normalized_data.account_id:
         match = await db_client.find_inbound_route_by_account(
             provider=provider_class.PROVIDER_NAME,
-            account_id_field=account_field,
             account_id=normalized_data.account_id,
             to_number=normalized_data.to_number,
             country_hint=normalized_data.to_country,
@@ -855,17 +858,13 @@ async def handle_inbound_run(request: Request):
 
         # 1. Resolve (config, phone_number) in a single SQL roundtrip that
         # joins telephony_configurations and telephony_phone_numbers and
-        # filters on (provider, credentials[account_id_field], called number
+        # filters on (provider, account_id, called number
         # canonical address, is_active). The phone-number row's existence in
         # the matched config simultaneously identifies the org — we never
         # match a config from one org against a phone owned by another.
-        spec = telephony_registry.get_optional(provider_class.PROVIDER_NAME)
-        account_field = spec.account_id_credential_field if spec else ""
-
         if normalized_data.account_id:
             match = await db_client.find_inbound_route_by_account(
                 provider=provider_class.PROVIDER_NAME,
-                account_id_field=account_field,
                 account_id=normalized_data.account_id,
                 to_number=normalized_data.to_number,
                 country_hint=normalized_data.to_country,
@@ -899,7 +898,6 @@ async def handle_inbound_run(request: Request):
         logger.info(
             f"/inbound/run matched route — org={config.organization_id} "
             f"config={config.id} name={config.name!r} "
-            f"config_{account_field}={(config.credentials or {}).get(account_field)!r} "
             f"webhook_account_id={normalized_data.account_id!r} "
             f"phone={phone_row.id} address={phone_row.address!r} "
             f"inbound_workflow_id={phone_row.inbound_workflow_id}"
@@ -949,10 +947,8 @@ async def handle_inbound_run(request: Request):
                 source=f"inbound:{provider_class.PROVIDER_NAME}",
                 timeout=0,
             )
-        except CallConcurrencyLimitError:
-            return provider_class.generate_validation_error_response(
-                TelephonyError.CONCURRENT_CALL_LIMIT
-            )
+        except CallConcurrencyLimitError as e:
+            return provider_class.generate_validation_error_response(carrier_error(e))
 
         workflow_run_id = None
         try:
@@ -1000,10 +996,9 @@ async def handle_inbound_run(request: Request):
                 normalized_data=normalized_data,
                 backend_endpoint=backend_endpoint,
             )
-        except WorkflowRunSlotAlreadyBoundError:
-            return provider_class.generate_validation_error_response(
-                TelephonyError.CONCURRENT_CALL_LIMIT
-            )
+        except (WorkflowRunSlotAlreadyBoundError, CallConcurrencyLimitError) as e:
+            # Either way the bind already released the slot: a taken run, or a slot backend that did not answer.
+            return provider_class.generate_validation_error_response(carrier_error(e))
         except Exception as e:
             if workflow_run_id:
                 await mark_workflow_run_failed(
@@ -1122,10 +1117,8 @@ async def handle_inbound_telephony(
                 source=f"inbound_legacy:{workflow_context['provider']}",
                 timeout=0,
             )
-        except CallConcurrencyLimitError:
-            return provider_class.generate_validation_error_response(
-                TelephonyError.CONCURRENT_CALL_LIMIT
-            )
+        except CallConcurrencyLimitError as e:
+            return provider_class.generate_validation_error_response(carrier_error(e))
 
         workflow_run_id = None
         try:
@@ -1173,10 +1166,9 @@ async def handle_inbound_telephony(
                 normalized_data=normalized_data,
                 backend_endpoint=backend_endpoint,
             )
-        except WorkflowRunSlotAlreadyBoundError:
-            return provider_class.generate_validation_error_response(
-                TelephonyError.CONCURRENT_CALL_LIMIT
-            )
+        except (WorkflowRunSlotAlreadyBoundError, CallConcurrencyLimitError) as e:
+            # Either way the bind already released the slot: a taken run, or a slot backend that did not answer.
+            return provider_class.generate_validation_error_response(carrier_error(e))
         except Exception as e:
             if workflow_run_id:
                 await mark_workflow_run_failed(

@@ -32,6 +32,10 @@ from api.schemas.workflow_configurations import (
     WorkflowConfigurationDefaults,
     schema_defaults_document,
 )
+from api.services.configuration.credential_refs import (
+    resolve_credential_refs,
+    to_credential_refs,
+)
 from api.services.configuration.service_tuning_bounds import (
     SERVICE_TUNING_NUMERIC_BOUNDS,
     apply_service_tuning_invariants,
@@ -278,16 +282,10 @@ class WorkflowDefinitionNotVisibleError(PermissionError):
     """The definition belongs to another organization."""
 
 
-async def load_effective_workflow_configurations(
-    db: "DBClient", *, organization_id: int | None, definition_id: int | None
-) -> ResolvedWorkflowConfigurations:
-    """Resolve the cascade for a run about to be created. Raises instead of
-    returning ``{}`` for a missing or foreign definition.
-
-    ``organization_id`` is ``None`` only for legacy user-scoped workflows
-    (``WorkflowModel.organization_id`` is nullable): they have no organization
-    layer and no tenant check to fail.
-    """
+async def _resolve_for_definition(
+    db: DBClient, *, organization_id: int | None, definition_id: int | None
+) -> tuple[ResolvedWorkflowConfigurations, Any]:
+    """The resolved cascade and the pinned definition's own document."""
     if definition_id is None:
         raise WorkflowDefinitionMissingError("workflow has no definition to run")
     lookup = await db.get_definition_configurations_with_owner(definition_id)
@@ -318,12 +316,46 @@ async def load_effective_workflow_configurations(
         logger.warning(
             "workflow configuration (definition {}): {}", definition_id, warning
         )
+    return resolved, definition_configurations
+
+
+async def load_effective_workflow_configurations(
+    db: DBClient, *, organization_id: int | None, definition_id: int | None
+) -> ResolvedWorkflowConfigurations:
+    """Resolve the cascade for a run about to be created. Raises instead of
+    returning ``{}`` for a missing or foreign definition.
+
+    ``organization_id`` is ``None`` only for legacy user-scoped workflows
+    (``WorkflowModel.organization_id`` is nullable): they have no organization
+    layer and no tenant check to fail.
+    """
+    resolved, _ = await _resolve_for_definition(
+        db, organization_id=organization_id, definition_id=definition_id
+    )
     return resolved
 
 
-def run_configurations_for(workflow_run) -> dict[str, Any]:
-    """Configuration a loaded run executes with; the in-memory twin of
-    ``get_workflow_run_configurations``.
+async def load_run_configurations_to_freeze(
+    db: DBClient, *, organization_id: int | None, definition_id: int | None
+) -> dict[str, Any]:
+    """The document a new run stores: the resolved cascade with a credential
+    reference in place of every secret value (credential_refs.py)."""
+    resolved, pinned = await _resolve_for_definition(
+        db, organization_id=organization_id, definition_id=definition_id
+    )
+    return to_credential_refs(resolved.effective, pinned, definition_id)
+
+
+def _pinned_configurations(workflow_run) -> Any:
+    definition = getattr(workflow_run, "definition", None)
+    return getattr(definition, "workflow_configurations", None) if definition else None
+
+
+def run_config_without_credentials(workflow_run) -> dict[str, Any]:
+    """Configuration a loaded run executes with, credentials left as stored
+    (references or redactions); the in-memory twin of
+    ``get_workflow_run_config_without_credentials``. For readers that need no
+    credential, which a reference that no longer resolves must not break.
 
     The result is a copy: both sources are columns of a loaded ORM row, and a
     consumer that edited the returned document in place would dirty the row and
@@ -332,9 +364,22 @@ def run_configurations_for(workflow_run) -> dict[str, Any]:
     frozen = getattr(workflow_run, "effective_configurations", None)
     if frozen is not None:
         return copy.deepcopy(frozen)
-    definition = getattr(workflow_run, "definition", None)
-    return copy.deepcopy(
-        (getattr(definition, "workflow_configurations", None) or {})
-        if definition
-        else {}
-    )
+    return copy.deepcopy(_pinned_configurations(workflow_run) or {})
+
+
+def run_config_with_credentials(workflow_run) -> dict[str, Any]:
+    """The run's configuration with every credential resolved from the pinned
+    definition, for readers that use one (pipeline start, QA, text chat, quota).
+    Fails closed with ``CredentialRefUnresolved`` or ``CredentialRedacted``. The
+    definition is only touched when the snapshot holds a reference (every
+    caller loads it eagerly).
+    """
+    frozen = getattr(workflow_run, "effective_configurations", None)
+    if frozen is not None:
+        return resolve_credential_refs(
+            frozen,
+            lambda: _pinned_configurations(workflow_run),
+            definition_id=getattr(workflow_run, "definition_id", None),
+            run_id=getattr(workflow_run, "id", None),
+        )
+    return run_config_without_credentials(workflow_run)

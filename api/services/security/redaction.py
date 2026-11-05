@@ -7,12 +7,14 @@ that is the privacy-first choice, since the raw exception values would
 otherwise reach Sentry unredacted.
 """
 
+import base64
 import os
 import re
 import traceback
 from collections.abc import Iterable
 
 from api.errors.failure import fold_for_gate, redact_credentials
+from api.services.security import credential_box
 
 _PHONE = "<redacted:phone>"
 
@@ -92,16 +94,39 @@ def _is_secret_env_name(name: str) -> bool:
 def active_secret_values() -> set[str]:
     """Secret values this process holds in memory right now, for log redaction.
 
-    Today: the values of secret-named environment variables. The log patcher
+    Today: the values of secret-named environment variables and each credential
+    master key with its derived forms (VOZ-AC-B6-16). The log patcher
     binds this set once, at ``setup_logging``, so a secret loaded later (the
-    decrypted database credentials of VOZ-N0-23) is not redacted until the
+    decrypted database credentials of VOZ-N0-24) is not redacted until the
     credential box rebuilds that binding with a refreshed set.
     """
-    return {
+    values = {
         value
         for name, value in os.environ.items()
         if _is_secret_env_name(name) and len(value) >= _MIN_SECRET_LENGTH
     }
+    # Each credential master key on its own, raw and as ``id=base64``: the whole
+    # variable is covered above, a single key of a rotation list is not.
+    for item in credential_box.master_key_items(os.environ.get(credential_box.ENV, "")):
+        key = item.partition("=")[2].strip()
+        values.update(
+            v
+            for v in (item, key, *_derived_key_forms(key))
+            if len(v) >= _MIN_SECRET_LENGTH
+        )
+    return values
+
+
+def _derived_key_forms(key: str) -> tuple[str, ...]:
+    """Re-encodings of a master key a log line could carry: unpadded base64,
+    URL-safe base64 (padded or not) and hex (either case). Nothing for a key
+    that is not valid base64: the cell start check refuses it anyway."""
+    try:
+        raw = base64.b64decode(key, validate=True)
+    except ValueError:
+        return ()
+    urlsafe = base64.urlsafe_b64encode(raw).decode()
+    return (key.rstrip("="), urlsafe, urlsafe.rstrip("="), raw.hex(), raw.hex().upper())
 
 
 def known_secret_values() -> tuple[str, ...]:
@@ -118,6 +143,15 @@ def redact(text: str, secrets: Iterable[str] | None = None) -> str:
         secrets = known_secret_values()
     for value in secrets:
         text = text.replace(value, "<redacted:secret>")
+    # A credential_box token (v1:<key_id>:<nonce_b64>:<ct_b64>) is ciphertext, but it
+    # never belongs in a log line. credential_box.TOKEN is anchored on the token's
+    # structure, not on its left edge, so a token glued to any text ("xv1:",
+    # "workflow_v1:") is matched whole, and an earlier "v1:" ("dev1:<token>") or a
+    # look-alike ("dev1:host:12:34") cannot start the match. It runs before every
+    # other rule: the bearer rule stops at ":" and the "sk-" rule matches a key id,
+    # and either would leave the rest of the token in clear.
+    if "v1:" in text:
+        text = credential_box.TOKEN.sub("<redacted:credential_token>", text)
     text = redact_credentials(text)
     folded = fold_for_gate(text)
     for needles, pattern, repl in _PATTERNS:

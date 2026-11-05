@@ -26,7 +26,12 @@ def _reset_gauge():
 
 
 def test_stats_empty_is_zero():
-    assert loop_lag.stats() == {"p95_ms": 0.0, "max_ms": 0.0, "samples": 0}
+    assert loop_lag.stats() == {
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0,
+        "samples": 0,
+    }
 
 
 def test_percentile_nearest_rank():

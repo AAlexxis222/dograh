@@ -38,6 +38,7 @@ from api.errors.failure import (
     failure_already_reported,
     log_failure,
 )
+from api.routes.admission_answers import client_error
 from api.routes.turn_credentials import (
     TURN_HOST,
     TURN_SECRET,
@@ -620,16 +621,8 @@ class SignalingManager:
                         workflow_run_id,
                     )
                     concurrency_bound = True
-                except CallConcurrencyLimitError:
-                    await ws.send_json(
-                        {
-                            "type": "error",
-                            "payload": {
-                                "error_type": "concurrency_limit_exceeded",
-                                "message": "Concurrent call limit reached",
-                            },
-                        }
-                    )
+                except CallConcurrencyLimitError as e:
+                    await ws.send_json({"type": "error", "payload": client_error(e)})
                     return
                 except WorkflowRunSlotAlreadyBoundError:
                     await ws.send_json(

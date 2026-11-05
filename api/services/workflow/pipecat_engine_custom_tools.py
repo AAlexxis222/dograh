@@ -811,7 +811,7 @@ class CustomToolManager:
                         or EndTaskReason.CALL_TRANSFERRED.value
                     )
                     workflow_configurations = (
-                        await db_client.get_workflow_run_configurations(
+                        await db_client.get_workflow_run_config_without_credentials(
                             self._engine._workflow_run_id, organization_id
                         )
                     )

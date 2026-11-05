@@ -7,13 +7,19 @@ From the repo root (both forms work; the DB URL must use an async driver, e.g. p
 
 One line per hit: <code> where=<kind>#<id>:<path> state=<state> date=<date|none> reason=... hint=...
 Exit 1 if there is a shutdown (or unstructured) hit within the horizon, 0 if there are none or only legacy ones,
-2 if DATABASE_URL is missing. The horizon must reach the shutdown date: run it with
+2 if DATABASE_URL is missing, 3 if a row is encrypted at rest and cannot be opened (no or wrong
+CREDENTIALS_MASTER_KEY): the sweep never reports a clean result for a document it could not read. The horizon must reach the shutdown date: run it with
 --horizon-days >= days until the date (e.g. 14 on or after 2026-10-06 for the 2026-10-20 Cartesia shutdown);
 a shorter horizon reports nothing for that model. Reuses api.services.capabilities.deprecations; nothing is written to the DB.
 
 Two passes per table, erring on the side of reporting: a structured walk over {provider, model} pairs (JSON
 strings are decoded), and a raw-text regex built from the registry that catches what the walk cannot
 interpret (e.g. a provider-less model_overrides). Rows only the regex finds print as ``unstructured_hit``.
+
+Encryption at rest (VOZ-N0-24c) stores secrets as credential_box tokens, some documents whole (the org and user
+model configurations), others at secret leaves. Every document goes through the app's own opener
+(api/services/security/credential_documents.py) with CREDENTIALS_MASTER_KEY; an opened one runs through both
+passes in Python.
 """
 
 from __future__ import annotations
@@ -34,8 +40,11 @@ if __name__ == "__main__":  # `python scripts/xpand/deprecation_sweep.py` puts s
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from api.services.capabilities.deprecations import blocking_patterns, status_for  # noqa: E402
+from api.services.security.credential_box import CredentialUnreadable
+from api.services.security.credential_documents import unseal_document
 
 CODE = "deprecated_model_in_use"
+UNREADABLE_CODE = "deprecation_sweep_encrypted_unreadable"
 UNSTRUCTURED_CODE = "unstructured_hit"
 _BLOCKING = ("shutdown", "legacy")
 _FAILING = ("shutdown", "unstructured")   # exit 1; legacy alone only prints
@@ -173,6 +182,34 @@ async def _load_rows(database_url: str, pattern: str) -> tuple[list[tuple[str, i
     return docs, text_rows
 
 
+def open_encrypted_rows(
+    docs: list[tuple[str, int, Any]], text_rows: list[tuple[str, int]], pattern: str
+) -> tuple[list[tuple[str, int, Any]], list[tuple[str, int]], list[str]]:
+    """Open every token a document holds, whole or at a secret leaf, with the app's own rule
+    (api/services/security/credential_documents.py); the text regex runs on each opened JSON. Returns the docs, the
+    text rows and one B0-28 line per document that could not be opened."""
+    tables = {s.kind: s for s in _SOURCES}
+    opened, rows, unreadable = [], list(text_rows), []
+    for kind, row_id, doc in docs:
+        source = tables[kind]
+        stored = _decode(doc)
+        try:
+            plain = unseal_document(source.table, row_id, source.column, stored)
+        except CredentialUnreadable as e:
+            unreadable.append(
+                f"{UNREADABLE_CODE} where={kind}#{row_id} reason=the document is encrypted at rest and "
+                f"cannot be opened ({e.reason}) hint=run the sweep with the CREDENTIALS_MASTER_KEY of this database"
+            )
+            continue
+        if plain is stored:  # no token: the SQL text regex already saw the document as stored
+            opened.append((kind, row_id, doc))
+            continue
+        opened.append((kind, row_id, plain))
+        if re.search(pattern, json.dumps(plain), re.IGNORECASE):
+            rows.append((kind, row_id))
+    return opened, rows, unreadable
+
+
 def _utc_today(clock: Callable[..., dt.datetime] = dt.datetime.now) -> dt.date:
     return clock(dt.timezone.utc).date()
 
@@ -188,9 +225,14 @@ def main(argv: list[str] | None = None) -> int:
     today = _utc_today()
     pattern = build_text_regex(blocking_patterns(today=today + dt.timedelta(days=args.horizon_days)))
     docs, text_rows = asyncio.run(_load_rows(database_url, pattern))
+    docs, text_rows, unreadable = open_encrypted_rows(docs, text_rows, pattern)
     hits = with_unstructured(find_deprecated_usage(docs, today=today, horizon_days=args.horizon_days), text_rows)
     for hit in hits:
         print(format_hit(hit))
+    for line in unreadable:
+        print(line)
+    if unreadable:
+        return 3
     return 1 if any(h.state in _FAILING for h in hits) else 0
 
 

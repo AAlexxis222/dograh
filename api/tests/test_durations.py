@@ -1,5 +1,6 @@
 """VOZ-N0-20 / VOZ-AT-B3-19: durations.py is the single source of call, slot, drain and grace durations."""
 
+import importlib.util
 import json
 import os
 import re
@@ -19,7 +20,9 @@ from api.services.runtime.durations import (
     Durations,
     DurationsError,
     cell_durations,
+    check_ring_floor,
     main,
+    ring_timeout_for,
 )
 from api.tests.support.cell_overlay import overlay_source
 
@@ -29,7 +32,9 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_default_ceiling_derivations():
     d = Durations.from_cell(ceiling_s=1200)
     assert (d.slot_ttl, d.drain_max, d.grace) == (1260, 1260, 1305)
-    assert d.heartbeat_renew_s <= d.slot_ttl / 3
+    # VOZ-AC-B3-66: heartbeat_renew_s <= slot_ttl / 3, default 300.
+    assert d.heartbeat_renew_s == 300
+    assert Durations.from_cell(ceiling_s=600).heartbeat_renew_s == 660 // 3
 
 
 def test_raised_ceiling_keeps_invariants():
@@ -266,11 +271,13 @@ async def test_acquire_gives_the_lua_script_the_slot_ttl():
     limiter = RateLimiter(Durations.from_cell(ceiling_s=7200))
     client = AsyncMock()
     client.eval.return_value = None
-    limiter._get_redis = AsyncMock(return_value=client)
+    limiter.slots._get_redis = AsyncMock(return_value=client)
     await limiter.try_acquire_concurrent_slot_details(1, 5)
-    assert (
-        client.eval.await_args.args[-1] == Durations.from_cell(ceiling_s=7200).slot_ttl
-    )
+    d = Durations.from_cell(ceiling_s=7200)
+    assert client.eval.await_args.args[-2:] == (d.pending_ttl_s, d.slot_ttl)
+    await limiter.slots.renew_slot(org_id=1, attempt_id="a", workflow_run_id=7)
+    # (script, numkeys, clock, org, scope, fleet, mapping, legacy org, member, ttl, org_id, scope)
+    assert client.eval.await_args.args[9] == d.slot_ttl
 
 
 async def test_workflow_slot_mapping_ttl_is_the_slot_ttl():
@@ -278,13 +285,14 @@ async def test_workflow_slot_mapping_ttl_is_the_slot_ttl():
     slot_ttl = Durations.from_cell(ceiling_s=7200).slot_ttl
     limiter = RateLimiter(Durations.from_cell(ceiling_s=7200))
     client = AsyncMock()
-    limiter._get_redis = AsyncMock(return_value=client)
+    limiter.slots._get_redis = AsyncMock(return_value=client)
+    # (script, numkeys, key, org_id, slot_id, ttl, scope_key, ...): the upstream writer delegates to the if-absent one.
     await limiter.store_workflow_slot_mapping(7, 1, "slot")
-    assert client.expire.await_args.args == ("workflow_slot_mapping:7", slot_ttl)
+    assert client.eval.await_args.args[2] == "workflow_slot_mapping:7"
+    assert client.eval.await_args.args[5] == slot_ttl
+    client.eval.reset_mock()
     await limiter.store_workflow_slot_mapping_if_absent(7, 1, "slot")
-    assert (
-        client.eval.await_args.args[5] == slot_ttl
-    )  # (script, numkeys, key, org_id, slot_id, ttl, scope_key)
+    assert client.eval.await_args.args[5] == slot_ttl
 
 
 def test_direct_construction_is_validated_too():
@@ -360,3 +368,63 @@ def test_the_rate_limiter_asks_the_resolved_durations(monkeypatch):
         module.RateLimiter().stale_call_timeout
         == Durations.from_cell(ceiling_s=400).slot_ttl
     )
+
+
+def test_each_carrier_rings_its_own_default_and_the_lease_covers_it():
+    """No ring changes behaviour: each carrier keeps its documented default ring, and the outbound pending lease is
+    that ring plus pending_ttl_s. The US TSR 15 s floor still holds for every entry."""
+    d = Durations(ceiling=1200)
+    rings = {c: ring_timeout_for(c) for c in ("twilio", "vonage", "telnyx", "ari")}
+    assert rings == {"twilio": 60, "vonage": 60, "telnyx": 30, "ari": 30}
+    assert ring_timeout_for("plivo") == 120  # UNVERIFIED default, lease only
+    assert ring_timeout_for("exotel") == 60  # no ring field: DEFAULT_RING_TIMEOUT_S
+    assert d.outbound_pending_ttl_s("telnyx") == 30 + d.pending_ttl_s
+    assert d.outbound_pending_ttl_s("plivo") == 120 + d.pending_ttl_s
+
+    from api.services.runtime import durations as module
+
+    # The module checks its own table once, at import; the same check refuses a short ring.
+    check_ring_floor(
+        {**module.CARRIER_RING_TIMEOUT_S, "default": module.DEFAULT_RING_TIMEOUT_S}
+    )
+    with pytest.raises(DurationsError) as e:
+        check_ring_floor({**module.CARRIER_RING_TIMEOUT_S, "telnyx": 14})
+    assert (
+        e.value.code == "knob_out_of_range" and "16 CFR 310.4(b)(4)" in e.value.reason
+    )
+
+
+def test_importing_the_module_refuses_a_ring_below_the_floor(tmp_path):
+    """The floor is enforced by the module itself at import, not only by calling the check: importing a copy of the
+    module with one ring edited below 15 s fails with the named error, and importing the unedited copy does not."""
+    from api.services.runtime import durations as module
+
+    def import_copy(name: str, source: str):
+        path = tmp_path / f"{name}.py"
+        path.write_text(source, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location(name, path)
+        copy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(copy)
+        return copy
+
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    short = source.replace(
+        "WorkflowRunMode.TELNYX.value: 30,", "WorkflowRunMode.TELNYX.value: 14,"
+    )
+    assert short != source
+
+    import_copy("durations_unedited", source)
+    with pytest.raises(ValueError) as e:
+        import_copy("durations_short_ring", short)
+    assert type(e.value).__name__ == "DurationsError"
+    assert e.value.code == "knob_out_of_range" and "telnyx" in e.value.reason
+
+
+def test_a_pending_lease_below_three_seconds_is_a_named_error():
+    """Final review finding 2: pending_ttl_s < 3 makes the claim retry cap 0, and a failed claim would spin on
+    sleep(0) while Redis is down."""
+    assert Durations(ceiling=1200, pending_ttl_s=3).claim_retry_cap_s == 1
+    with pytest.raises(DurationsError) as e:
+        Durations(ceiling=1200, pending_ttl_s=2)
+    assert e.value.code == "knob_out_of_range" and "pending_ttl_s" in e.value.reason
+    assert e.value.hint
