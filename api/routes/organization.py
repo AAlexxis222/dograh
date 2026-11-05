@@ -57,6 +57,7 @@ from api.schemas.telephony_phone_number import (
 )
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
 from api.services.auth.depends import (
+    get_privacy_operator,
     get_user,
     get_user_with_selected_organization,
 )
@@ -133,6 +134,14 @@ from api.utils.common import get_backend_endpoints
 from api.utils.telephony_address import normalize_telephony_address
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
+
+# Writes that carry privacy weight are XPAND-operator only (get_privacy_operator).
+_OPERATOR_ONLY = {
+    403: {
+        "description": "Not an XPAND operator. Body: {detail: {code: "
+        "privacy_knob_forbidden, where, reason, hint}}"
+    }
+}
 
 
 def _sensitive_fields(provider_name: str) -> List[str]:
@@ -715,10 +724,11 @@ async def get_workflow_configuration_defaults(
 @router.put(
     "/workflow-configuration-defaults",
     response_model=OrganizationWorkflowConfigurationDefaultsResponse,
+    responses=_OPERATOR_ONLY,
 )
 async def save_workflow_configuration_defaults(
     request: WorkflowConfigurationDefaults,
-    user: UserModel = Depends(get_user_with_selected_organization),
+    user: UserModel = Depends(get_privacy_operator),
 ):
     try:
         stored = await upsert_organization_workflow_configuration_defaults(
@@ -1763,15 +1773,12 @@ async def get_langfuse_credentials(user: UserModel = Depends(get_user)):
     )
 
 
-@router.post("/langfuse-credentials")
+@router.post("/langfuse-credentials", responses=_OPERATOR_ONLY)
 async def save_langfuse_credentials(
     request: LangfuseCredentialsRequest,
-    user: UserModel = Depends(get_user),
+    user: UserModel = Depends(get_privacy_operator),
 ):
-    """Save Langfuse credentials for the user's organization."""
-    if not user.selected_organization_id:
-        raise HTTPException(status_code=400, detail="No organization selected")
-
+    """Save Langfuse credentials for the user's organization. XPAND operators only."""
     existing_config = await db_client.get_configuration(
         user.selected_organization_id,
         OrganizationConfigurationKey.LANGFUSE_CREDENTIALS.value,
@@ -1805,15 +1812,18 @@ async def save_langfuse_credentials(
         org_id=user.selected_organization_id,
     )
 
+    # Audit trail: who changed where call traces go. Never the key values.
+    logger.info(
+        "organization {} langfuse credentials saved by user {}",
+        user.selected_organization_id,
+        user.id,
+    )
     return {"message": "Langfuse credentials saved successfully"}
 
 
-@router.delete("/langfuse-credentials")
-async def delete_langfuse_credentials(user: UserModel = Depends(get_user)):
-    """Delete Langfuse credentials for the user's organization."""
-    if not user.selected_organization_id:
-        raise HTTPException(status_code=400, detail="No organization selected")
-
+@router.delete("/langfuse-credentials", responses=_OPERATOR_ONLY)
+async def delete_langfuse_credentials(user: UserModel = Depends(get_privacy_operator)):
+    """Delete Langfuse credentials for the user's organization. XPAND operators only."""
     deleted = await db_client.delete_configuration(
         user.selected_organization_id,
         OrganizationConfigurationKey.LANGFUSE_CREDENTIALS.value,
@@ -1829,6 +1839,11 @@ async def delete_langfuse_credentials(user: UserModel = Depends(get_user)):
         org_id=user.selected_organization_id,
     )
 
+    logger.info(
+        "organization {} langfuse credentials deleted by user {}",
+        user.selected_organization_id,
+        user.id,
+    )
     return {"message": "Langfuse credentials deleted successfully"}
 
 

@@ -9,6 +9,7 @@ from api.db.models import UserModel
 from api.enums import PostHogEvent
 from api.services.auth.stack_auth import stackauth
 from api.services.organization_bootstrap import ensure_organization_bootstrapped
+from api.services.pipecat.openai_efforts import KnobRefusal
 from api.services.posthog_client import (
     POSTHOG_ORGANIZATION_GROUP_TYPE,
     capture_event,
@@ -248,6 +249,30 @@ async def get_user_with_selected_organization(
 ) -> UserModel:
     if not user.selected_organization_id:
         raise HTTPException(status_code=400, detail="No organization selected")
+    return user
+
+
+async def get_privacy_operator(
+    user: Annotated[UserModel, Depends(get_user_with_selected_organization)],
+) -> UserModel:
+    """Gate for organization settings that carry privacy weight: workflow
+    configuration defaults and Langfuse credentials (VOZ-AC-B0-29).
+
+    There is no organization role model yet, so the operator is an XPAND
+    superuser; real organization roles arrive with the control plane
+    (VOZ-FU-N0-31-org-roles). Anyone else gets the B0-28 403 body.
+    """
+    if not user.is_superuser:
+        raise HTTPException(
+            status_code=403,
+            detail=KnobRefusal(
+                code="privacy_knob_forbidden",
+                where="organization privacy settings",
+                reason="only XPAND operators can change the organization's "
+                "workflow configuration defaults and telemetry credentials",
+                hint="ask an XPAND operator to make this change",
+            ).as_detail(),
+        )
     return user
 
 

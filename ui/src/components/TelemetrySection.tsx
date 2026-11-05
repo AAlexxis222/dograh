@@ -15,6 +15,15 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useAuth } from "@/lib/auth";
 
+// The backend refuses non-operators with {detail: {code, hint, ...}} (B0-28).
+// The hint says what to do, so it replaces the generic failure message.
+function operatorHint(error: unknown): string | null {
+  const detail = (error as { detail?: { code?: unknown; hint?: unknown } } | undefined)?.detail;
+  return detail?.code === "privacy_knob_forbidden" && typeof detail.hint === "string"
+    ? detail.hint
+    : null;
+}
+
 export function TelemetrySection() {
   const { user, loading: authLoading } = useAuth();
   const [credentials, setCredentials] = useState<LangfuseCredentialsResponse>({
@@ -64,7 +73,9 @@ export function TelemetrySection() {
         },
       });
       if (error) {
-        throw new Error("Failed to save");
+        const hint = operatorHint(error);
+        toast.error(hint ?? "Failed to save telemetry credentials");
+        return;
       }
       toast.success("Telemetry credentials saved");
       await fetchCredentials();
@@ -78,7 +89,11 @@ export function TelemetrySection() {
   async function handleDelete() {
     setSaving(true);
     try {
-      await deleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDelete();
+      const { error } = await deleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDelete();
+      if (error) {
+        toast.error(operatorHint(error) ?? "Failed to remove telemetry credentials");
+        return;
+      }
       setCredentials({
         host: "",
         public_key: "",

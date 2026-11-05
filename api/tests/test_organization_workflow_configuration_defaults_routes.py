@@ -17,8 +17,12 @@ async def org_user(async_session):
     org = OrganizationModel(provider_id="test-org-wf-defaults")
     async_session.add(org)
     await async_session.flush()
+    # The PUT is XPAND-operator only (VOZ-N0-31); the 403 for anyone else is
+    # pinned in test_privacy_knob_role.py.
     user = UserModel(
-        provider_id="test-user-wf-defaults", selected_organization_id=org.id
+        provider_id="test-user-wf-defaults",
+        selected_organization_id=org.id,
+        is_superuser=True,
     )
     async_session.add(user)
     await async_session.flush()
