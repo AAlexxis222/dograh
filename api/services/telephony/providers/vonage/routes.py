@@ -11,7 +11,13 @@ from loguru import logger
 from pipecat.utils.run_context import set_current_run_id
 
 from api.db import db_client
+from api.services.telephony.callback_auth import (
+    provider_for_run,
+    rejected,
+    verify_signature,
+)
 from api.services.telephony.factory import get_telephony_provider_for_run
+from api.services.telephony.providers.vonage.provider import VonageProvider
 
 router = APIRouter()
 
@@ -21,14 +27,33 @@ async def handle_ncco_webhook(
     workflow_id: int,
     workflow_run_id: int,
     organization_id: int,
+    request: Request,
 ):
     """Handle NCCO (Nexmo Call Control Objects) webhook for Vonage.
 
     Returns JSON response instead of XML like TwiML.
-    """
 
-    workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
-    provider = await get_telephony_provider_for_run(workflow_run, organization_id)
+    The NCCO carries the media-stream URL and its token, so the request must carry the signed
+    webhook JWT of the run's own organization (401 otherwise), checked exactly as the events
+    webhook is. The query is not covered by that check, so ``workflow_id`` and
+    ``organization_id`` must agree with the run, which decides.
+    """
+    where = "GET /telephony/ncco"
+    workflow_run, workflow, provider = await provider_for_run(
+        workflow_run_id, provider_name=VonageProvider.PROVIDER_NAME, where=where
+    )
+    if (
+        workflow_run.workflow_id != workflow_id
+        or workflow.organization_id != organization_id
+    ):
+        raise rejected(where, why=f"query does not match run {workflow_run_id}")
+    await verify_signature(
+        provider,
+        where=where,
+        url=str(request.url),
+        data=dict(request.query_params),
+        headers=dict(request.headers),
+    )
 
     response_content = await provider.get_webhook_response(
         workflow_id, organization_id, workflow_run_id

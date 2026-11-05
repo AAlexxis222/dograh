@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import urlencode
 
+import jwt
 import nacl.signing
 import pytest
 from fastapi import FastAPI
@@ -597,6 +598,102 @@ def test_vonage_event_bad_signature_is_401_and_processes_nothing(client, world):
     assert response.status_code == 401
     world.provider.parse_status_callback.assert_not_called()
     assert world.snapshot() == before
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Vonage GET /ncco (the answer URL: its NCCO carries the media-stream URL and its token)
+# ---------------------------------------------------------------------------------------------------------
+
+NCCO_PATH = "/telephony/ncco"
+VONAGE_SECRET = secrets.token_hex(16)
+VONAGE_APP = "aaaaaaaa-bbbb-cccc-dddd-0123456789ab"
+NCCO_TOKEN = "ws-capability-" + secrets.token_hex(8)
+NCCO = [
+    {
+        "action": "connect",
+        "endpoint": [
+            {"type": "websocket", "uri": f"wss://backend.test/ws?token={NCCO_TOKEN}"}
+        ],
+    }
+]
+NCCO_QUERY = {
+    "workflow_id": WORKFLOW_ID,
+    "workflow_run_id": RUN_ID,
+    "organization_id": ORG_ID,
+}
+
+
+def _vonage_jwt(secret: str = VONAGE_SECRET) -> dict:
+    """The signed-webhook JWT Vonage sends in Authorization (a GET has no body, so no payload_hash)."""
+    token = jwt.encode(
+        {
+            "iat": int(time.time()),
+            "jti": "test-jti",
+            "iss": "Vonage",
+            "api_key": FAKE,
+            "application_id": VONAGE_APP,
+        },
+        secret,
+        algorithm="HS256",
+    )
+    return {"authorization": f"Bearer {token}"}
+
+
+def _get_ncco(client, world, *, query=None, headers=None):
+    world.provider = VonageProvider(
+        {
+            "api_key": FAKE,
+            "api_secret": secrets.token_hex(8),
+            "application_id": VONAGE_APP,
+            "private_key": FAKE,
+            "signature_secret": VONAGE_SECRET,
+            "from_numbers": ["15551230002"],
+        }
+    )
+    world.provider.get_webhook_response = AsyncMock(return_value=json.dumps(NCCO))
+    response = client.get(
+        NCCO_PATH,
+        params=query or NCCO_QUERY,
+        headers=headers if headers is not None else _vonage_jwt(),
+    )
+    return response, world.provider.get_webhook_response
+
+
+def test_ncco_signed_returns_the_ncco(client, world):
+    response, build = _get_ncco(client, world)
+
+    assert response.status_code == 200
+    assert response.json() == NCCO
+    build.assert_awaited_once_with(WORKFLOW_ID, ORG_ID, RUN_ID)
+
+
+@pytest.mark.parametrize("headers", [{}, "other_secret", "not_a_jwt"])
+def test_ncco_bad_signature_is_401_without_ncco_or_token(client, world, headers):
+    if headers == "other_secret":
+        headers = _vonage_jwt(secret=OTHER_TOKEN)
+    elif headers == "not_a_jwt":
+        headers = {"authorization": "Bearer Zm9yZ2Vk"}
+    before = world.snapshot()
+
+    response, build = _get_ncco(client, world, headers=headers)
+
+    _assert_b028(response)
+    assert NCCO_TOKEN not in response.text and "websocket" not in response.text
+    build.assert_not_awaited()
+    assert world.snapshot() == before
+
+
+@pytest.mark.parametrize(
+    "tampered", [{"workflow_id": 34}, {"organization_id": 12}, {"workflow_run_id": 8}]
+)
+def test_ncco_query_that_disagrees_with_the_run_is_401_even_if_signed(
+    client, world, tampered
+):
+    response, build = _get_ncco(client, world, query={**NCCO_QUERY, **tampered})
+
+    _assert_b028(response)
+    assert NCCO_TOKEN not in response.text
+    build.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------------------------------------
