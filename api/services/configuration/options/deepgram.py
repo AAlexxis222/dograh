@@ -2,12 +2,14 @@
 # decides where audio is processed - and therefore which jurisdiction the audio
 # lands in. api.eu.deepgram.com keeps /v1/listen, /v2/listen and /v1/speak inside
 # EU infrastructure, which is what a European deployment needs to avoid an
-# undeclared transfer. Regional hosts accept the same API keys as the default.
+# undeclared transfer, so it is the default: an operator who leaves the field
+# alone is EU-hosted, and one who wants another region has to choose it.
+# Regional hosts accept the same API keys as the US one.
 # https://developers.deepgram.com/reference/custom-endpoints
-DEEPGRAM_DEFAULT_BASE_URL = "https://api.deepgram.com"
+DEEPGRAM_DEFAULT_BASE_URL = "https://api.eu.deepgram.com"
 DEEPGRAM_BASE_URLS = (
     DEEPGRAM_DEFAULT_BASE_URL,
-    "https://api.eu.deepgram.com",
+    "https://api.deepgram.com",
     "https://api.au.deepgram.com",
 )
 

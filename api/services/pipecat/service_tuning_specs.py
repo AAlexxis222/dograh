@@ -268,8 +268,10 @@ SPECS[("stt", "deepgram")] = TuningSpec(
     None,
     FLUX_SETTINGS | NOVA_SETTINGS,
     service_classes=(DeepgramFluxSTTService, DeepgramSTTService),
-    ctor_allowed=frozenset({"url", "mip_opt_out", "tag"}),
-    ctor_types={"url": str, "mip_opt_out": bool, "tag": list},
+    # ``mip_opt_out`` is not tunable: the factory always opts out (a privacy
+    # policy, not a knob), and an allow-listed ``false`` would undo it.
+    ctor_allowed=frozenset({"url", "tag"}),
+    ctor_types={"url": str, "tag": list},
     # Nova declares ``endpointing`` as ``Any`` (deepgram/stt.py:213), so
     # nothing about the field constrains the value and ``endpointing: true``
     # would reach the connection as a nonsense query parameter. Deepgram's
@@ -311,8 +313,8 @@ SPECS[("stt", "dograh")] = TuningSpec(
     DeepgramFluxSTTSettings,
     FLUX_SETTINGS,
     service_classes=(DograhFluxSTTService,),
-    ctor_allowed=frozenset({"mip_opt_out", "tag"}),
-    ctor_types={"mip_opt_out": bool, "tag": list},
+    ctor_allowed=frozenset({"tag"}),  # mip_opt_out: fixed by the factory
+    ctor_types={"tag": list},
 )
 SPECS[("stt", "elevenlabs")] = TuningSpec(
     "stt",

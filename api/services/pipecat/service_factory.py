@@ -421,6 +421,15 @@ def _tts_provider_ctor(plan) -> dict:
     return {name: value for name, value in plan.ctor.items() if name not in common}
 
 
+# Deepgram's Model Improvement Program may train on the audio and text a call
+# sends. Caller audio can carry health data, so every Deepgram request opts
+# out. It is a policy rather than a default an operator can pick, so it is
+# fixed here and the tuning allow-list does not offer it: a tuned ``false``
+# would undo it. It is merged last wherever it is splatted, so a stale stored
+# value cannot win or collide with it.
+_DEEPGRAM_PRIVACY = {"mip_opt_out": True}
+
+
 def _deepgram_base_url(service_config) -> str:
     """Resolve the Deepgram endpoint for an STT or TTS config section.
 
@@ -575,6 +584,7 @@ def create_stt_service(
                 **{
                     "url": _deepgram_websocket_url(deepgram_base_url, "/v2/listen"),
                     **plan.ctor,
+                    **_DEEPGRAM_PRIVACY,
                 },
             )
 
@@ -622,7 +632,7 @@ def create_stt_service(
             # Takes the host and derives the wss and https URLs itself. The
             # regional host is the only source: the tuning allow-list has no
             # base_url, and the Flux-only ctor.url was dropped above.
-            **{"base_url": deepgram_base_url, **ctor},
+            **{"base_url": deepgram_base_url, **ctor, **_DEEPGRAM_PRIVACY},
         )
     elif user_config.stt.provider == ServiceProviders.OPENAI.value:
         plan = tuning_for(tuning, "stt", ServiceProviders.OPENAI.value)
@@ -752,7 +762,8 @@ def create_stt_service(
                 settings=settings,
                 should_interrupt=False,  # external turn strategies own interruption
                 sample_rate=audio_config.transport_in_sample_rate,
-                **plan.ctor,  # dograh's ctor allow-list has no "url" (SPECS)
+                # dograh's ctor allow-list has no "url" (SPECS)
+                **{**plan.ctor, **_DEEPGRAM_PRIVACY},
             )
 
         # The non-Flux Dograh service takes none of the stt.dograh knobs (its
@@ -1089,6 +1100,7 @@ def create_tts_service(
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
+            **_DEEPGRAM_PRIVACY,
             **silence,
         )
     elif user_config.tts.provider == ServiceProviders.OPENAI.value:

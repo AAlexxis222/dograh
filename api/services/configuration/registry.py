@@ -901,8 +901,12 @@ class AWSNovaSonicRealtimeLLMConfiguration(BaseLLMConfiguration):
         description="Optional AWS session token for temporary IAM credentials.",
     )
     aws_region: str = Field(
-        default="us-east-1",
-        description="AWS region where Nova 2 Sonic is enabled for the account.",
+        default="eu-north-1",
+        description=(
+            "AWS region where Nova 2 Sonic is enabled for the account. The "
+            "region decides where the call audio is processed; the default "
+            "keeps it in the EU."
+        ),
         json_schema_extra={
             "examples": AWS_NOVA_SONIC_REGIONS,
             "allow_custom_input": True,
@@ -1180,9 +1184,10 @@ class DeepgramTTSConfiguration(BaseServiceConfiguration):
         default=DEEPGRAM_DEFAULT_BASE_URL,
         description=(
             "Deepgram API endpoint. This is what decides where your text is "
-            "processed: use https://api.eu.deepgram.com to keep processing "
-            "inside the EU, or https://api.au.deepgram.com for Australia. The "
-            "same API key works on every regional endpoint."
+            "processed: the default, https://api.eu.deepgram.com, keeps "
+            "processing inside the EU; use https://api.deepgram.com for the "
+            "US or https://api.au.deepgram.com for Australia. The same API "
+            "key works on every regional endpoint."
         ),
         json_schema_extra={
             "examples": list(DEEPGRAM_BASE_URLS),
@@ -1840,9 +1845,10 @@ class DeepgramSTTConfiguration(BaseSTTConfiguration):
         default=DEEPGRAM_DEFAULT_BASE_URL,
         description=(
             "Deepgram API endpoint. This is what decides where call audio is "
-            "processed: use https://api.eu.deepgram.com to keep processing "
-            "inside the EU, or https://api.au.deepgram.com for Australia. The "
-            "same API key works on every regional endpoint."
+            "processed: the default, https://api.eu.deepgram.com, keeps "
+            "processing inside the EU; use https://api.deepgram.com for the "
+            "US or https://api.au.deepgram.com for Australia. The same API "
+            "key works on every regional endpoint."
         ),
         json_schema_extra={
             "examples": list(DEEPGRAM_BASE_URLS),
