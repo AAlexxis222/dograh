@@ -197,7 +197,7 @@ export type AwsNovaSonicRealtimeLlmConfiguration = {
     /**
      * Aws Region
      *
-     * AWS region where Nova 2 Sonic is enabled for the account.
+     * AWS region where Nova 2 Sonic is enabled for the account. The region decides where the call audio is processed; the default keeps it in the EU.
      */
     aws_region?: string;
     /**
@@ -2066,7 +2066,7 @@ export type DeepgramSttConfiguration = {
     /**
      * Base Url
      *
-     * Deepgram API endpoint. This is what decides where call audio is processed: use https://api.eu.deepgram.com to keep processing inside the EU, or https://api.au.deepgram.com for Australia. The same API key works on every regional endpoint.
+     * Deepgram API endpoint. This is what decides where call audio is processed: the default, https://api.eu.deepgram.com, keeps processing inside the EU; use https://api.deepgram.com for the US or https://api.au.deepgram.com for Australia. The same API key works on every regional endpoint.
      */
     base_url?: string;
 };
@@ -2092,7 +2092,7 @@ export type DeepgramTtsConfiguration = {
     /**
      * Base Url
      *
-     * Deepgram API endpoint. This is what decides where your text is processed: use https://api.eu.deepgram.com to keep processing inside the EU, or https://api.au.deepgram.com for Australia. The same API key works on every regional endpoint.
+     * Deepgram API endpoint. This is what decides where your text is processed: the default, https://api.eu.deepgram.com, keeps processing inside the EU; use https://api.deepgram.com for the US or https://api.au.deepgram.com for Australia. The same API key works on every regional endpoint.
      */
     base_url?: string;
 };
