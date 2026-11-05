@@ -286,7 +286,7 @@ speed and volume in the model configuration rather than merging into it.
 
 ## Behaviour changes
 
-Seven fixes ride along with this section, because a knob cannot be exposed on a path that never
+Eight fixes ride along with this section, because a knob cannot be exposed on a path that never
 worked:
 
 - **OpenAI TTS now uses the configured voice.** It previously ignored the model configuration's
@@ -307,3 +307,6 @@ worked:
 - **Camb TTS is built through its settings object** instead of the constructor arguments pipecat
   deprecated, which is what lets `user_instructions` reach it. The voice, model, language and
   timeout an untuned workflow ends up with are the same as before.
+- **xAI realtime `language_hint` is a Spanish value.** Only `es`, `es-ES` and `es-MX` are accepted
+  when the workflow is saved (any other value is a 422 `knob_out_of_range`), and `es` is sent to
+  xAI as `es-ES`. An untuned workflow sends no hint, as before.

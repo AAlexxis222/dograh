@@ -687,3 +687,31 @@ def test_ultravox_max_duration_is_seconds_only():
         _validate(
             {"realtime": {"ultravox_realtime": {"settings": {"max_duration": "PT10M"}}}}
         )
+
+
+# --- xAI realtime language_hint (VOZ-N0-27, VOZ-AC-B1-39) --------------------
+
+
+@pytest.mark.parametrize("hint", ["es", "es-ES", "es-MX"])
+def test_grok_language_hint_in_the_set_is_accepted(hint):
+    # "es" is stored as written: the factory sends it as es-ES.
+    cfg = _validate({"realtime": {"grok_realtime": {"settings": {"language_hint": hint}}}})
+    assert cfg.model_dump(exclude_unset=True)["service_tuning"]["realtime"][
+        "grok_realtime"
+    ]["settings"] == {"language_hint": hint}
+
+
+@pytest.mark.parametrize("hint", ["en-US", "spanish", "", "es-es", " es"])
+def test_grok_language_hint_outside_the_set_is_the_named_422(hint):
+    with pytest.raises(ValidationError) as e:
+        _validate({"realtime": {"grok_realtime": {"settings": {"language_hint": hint}}}})
+    (error,) = e.value.errors()
+    assert error["type"] == "knob_out_of_range"
+    assert "realtime.grok_realtime.settings.language_hint" in error["msg"]
+    assert "es|es-ES|es-MX" in error["msg"]
+    assert "hint:" in error["msg"]
+
+
+def test_grok_language_hint_wrong_type_keeps_the_type_error():
+    with pytest.raises(ValidationError, match="language_hint: wrong type"):
+        _validate({"realtime": {"grok_realtime": {"settings": {"language_hint": 5}}}})

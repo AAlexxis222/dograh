@@ -68,6 +68,7 @@ from api.services.pipecat.service_tuning_specs import (
     FLUX_SETTINGS,
     NOVA_SETTINGS,
     SPECS,
+    grok_language_hint,
 )
 from api.services.pipecat.tts_cache.runtime import get_speech_cache
 from api.utils.url_security import validate_user_configured_service_url
@@ -1781,6 +1782,10 @@ _OPENAI_REALTIME_WRAPPERS: dict[str, Callable[[Any], Any]] = {
     "noise_reduction": lambda value: InputAudioNoiseReduction(type=value),
     "reasoning_effort": lambda value: Reasoning(effort=value),
 }
+_GROK_REALTIME_WRAPPERS: dict[str, Callable[[Any], Any]] = {
+    # ``es`` is sent as ``es-ES``; a value outside the Spanish set is refused.
+    "language_hint": grok_language_hint,
+}
 _GEMINI_REALTIME_COERCIONS: dict[str, Callable[[Any], Any]] = {
     # These arrive from the tuning document as JSON objects. Gemini Live reads
     # ``thinking`` and ``proactivity`` straight off the settings into its
@@ -1920,7 +1925,9 @@ def create_realtime_llm_service(
                 ),
             ),
         )
-        _apply_realtime_fields(session_properties, provider, plan)
+        _apply_realtime_fields(
+            session_properties, provider, plan, _GROK_REALTIME_WRAPPERS
+        )
         return DograhGrokRealtimeLLMService(
             api_key=api_key,
             settings=GrokRealtimeLLMSettings(

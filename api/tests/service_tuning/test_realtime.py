@@ -18,6 +18,7 @@ import pytest
 from fastapi import HTTPException
 from pipecat.services.settings import NOT_GIVEN
 
+from api.services.pipecat.openai_efforts import KnobRefusal
 from api.services.pipecat.service_factory import (
     REALTIME_FIELDS,
     create_realtime_llm_service,
@@ -71,19 +72,42 @@ def test_openai_realtime_noise_reduction_speed_reasoning_and_max_output_tokens()
     assert sp.audio.input.turn_detection is None
 
 
-def test_grok_realtime_language_hint():
+def _grok_session(settings=None):
+    tuning = (
+        {"realtime": {"grok_realtime": {"settings": settings}}} if settings else None
+    )
     with patch(
         "api.services.pipecat.service_factory.DograhGrokRealtimeLLMService"
     ) as cls:
         create_realtime_llm_service(
             _rt("grok_realtime", model="grok-realtime"),
             audio_config(),
-            tuning={
-                "realtime": {"grok_realtime": {"settings": {"language_hint": "es"}}}
-            },
+            tuning=tuning,
         )
-    sp = cls.call_args.kwargs["settings"].session_properties
-    assert sp.audio.input.transcription.language_hint == "es"
+    return cls.call_args.kwargs["settings"].session_properties
+
+
+@pytest.mark.parametrize(
+    "stored, sent", [("es", "es-ES"), ("es-ES", "es-ES"), ("es-MX", "es-MX")]
+)
+def test_grok_realtime_language_hint_es_is_sent_as_es_es(stored, sent):
+    sp = _grok_session({"language_hint": stored})
+    assert sp.audio.input.transcription.language_hint == sent
+
+
+def test_grok_realtime_language_hint_outside_the_set_is_refused_at_build():
+    # A document stored before the PUT check existed must not reach the wire.
+    with pytest.raises(KnobRefusal) as e:
+        _grok_session({"language_hint": "en-US"})
+    assert e.value.code == "knob_out_of_range"
+
+
+@pytest.mark.parametrize("settings", [None, {"language_hint": "es"}])
+def test_grok_realtime_transcription_model_is_grok_transcribe(settings):
+    # Regression: grok-transcribe is pipecat's default (xai/realtime/events.py:118),
+    # so it cannot go red until pipecat changes it; xAI emits no user transcript
+    # events without it.
+    assert _grok_session(settings).audio.input.transcription.model == "grok-transcribe"
 
 
 def test_gemini_live_thinking_and_affective_dialog():

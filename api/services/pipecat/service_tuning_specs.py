@@ -31,6 +31,7 @@ from google.genai.types import ProactivityConfig, SafetySetting, ThinkingConfig
 from loguru import logger
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from api.services.pipecat.openai_efforts import KnobRefusal
 from pipecat.services.assemblyai.stt import (
     U3_PRO_MODEL_PREFIXES,
     AssemblyAISTTService,
@@ -755,6 +756,32 @@ SPECS[("realtime", "azure_realtime")] = _realtime_row(
 SPECS[("realtime", "grok_realtime")] = _realtime_row(
     "grok_realtime", {"language_hint": str}
 )
+# Spanish deployments only (VOZ-AC-B1-39): the value is what xAI's transcriber
+# gets as ``language_hint`` (xai/realtime/events.py:119). A bare ``es`` is
+# widened to ``es-ES``, anything outside the keys is refused.
+_GROK_LANGUAGE_HINTS = {"es": "es-ES", "es-ES": "es-ES", "es-MX": "es-MX"}
+_GROK_LANGUAGE_HINT = "realtime.grok_realtime.settings.language_hint"
+
+
+def grok_language_hint(value: str) -> str:
+    """The ``language_hint`` xAI receives for the stored ``value``.
+
+    One check for the PUT (``validate_service_tuning``) and the build
+    (``REALTIME_FIELDS`` wrapper), so a document stored before the PUT check
+    existed cannot reach a live call either.
+    """
+    try:
+        return _GROK_LANGUAGE_HINTS[value]
+    except KeyError:
+        raise KnobRefusal(
+            code="knob_out_of_range",
+            where=_GROK_LANGUAGE_HINT,
+            reason=f"xAI realtime takes a Spanish language hint, not {value!r}",
+            hint=f"set {_GROK_LANGUAGE_HINT} to one of "
+            f"{'|'.join(_GROK_LANGUAGE_HINTS)} (es is sent as es-ES) or remove it",
+        ) from None
+
+
 SPECS[("realtime", "google_realtime")] = _realtime_row(
     "google_realtime", _GEMINI_REALTIME_TYPES, models=_GEMINI_REALTIME_MODELS
 )
@@ -1369,6 +1396,12 @@ def validate_service_tuning(document: dict[str, Any]) -> list[str]:
                         )
                     if error:
                         errors.append(error)
+                    elif (kind, provider, name) == (
+                        "realtime",
+                        "grok_realtime",
+                        "language_hint",
+                    ):
+                        grok_language_hint(value)  # KnobRefusal: the named 422
                 elif name in REGISTRY_OWNED:
                     errors.append(f"{path}: owned by the model configuration")
                 else:

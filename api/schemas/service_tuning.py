@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_core import PydanticCustomError
 
 
 class ProviderTuning(BaseModel):
@@ -46,9 +47,18 @@ class ServiceTuning(BaseModel):
     @model_validator(mode="after")
     def _known_knobs_only(self) -> "ServiceTuning":
         # Lazy import: the specs module imports pipecat service classes.
+        from api.services.pipecat.openai_efforts import KnobRefusal
         from api.services.pipecat.service_tuning_specs import validate_service_tuning
 
-        errors = validate_service_tuning(self.model_dump(exclude_unset=True))
+        try:
+            errors = validate_service_tuning(self.model_dump(exclude_unset=True))
+        except KnobRefusal as e:
+            # The named 422 (B0-28): ``code`` is the error type, the rest the message.
+            raise PydanticCustomError(
+                e.code,
+                "{where}: {reason} (hint: {hint})",
+                {"where": e.where, "reason": e.reason, "hint": e.hint},
+            ) from None
         if errors:
             raise ValueError("; ".join(errors))
         return self
