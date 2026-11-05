@@ -27,6 +27,7 @@ from api.services.configuration.masking import (
     refuse_masked_tool_headers,
 )
 from api.services.posthog_client import capture_event
+from api.services.security.egress_guard import ToolUrlBlocked
 from api.services.workflow.mcp_tool_session import discover_mcp_tools
 from api.services.workflow.tools.mcp_tool import (
     McpDefinitionError,
@@ -282,6 +283,15 @@ async def refresh_mcp_tool_for_user(
             credential=credential,
             timeout_secs=cfg["timeout_secs"],
             sse_read_timeout_secs=cfg["sse_read_timeout_secs"],
+        )
+    except ToolUrlBlocked as e:
+        logger.warning(f"MCP refresh blocked for tool {tool_uuid}: {e}")
+        return McpRefreshResponse(
+            tool_uuid=tool_uuid,
+            discovered_tools=[],
+            error=str(e),
+            code=e.code,
+            hint=e.hint,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning(f"MCP refresh discovery failed: {e}")

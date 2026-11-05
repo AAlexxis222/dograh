@@ -751,6 +751,9 @@ class McpRefreshResponse(BaseModel):
     tool_uuid: str
     discovered_tools: list = Field(default_factory=list)
     error: str | None = None
+    # VOZ-AC-B0-28: a refusal by the egress guard keeps its stable code and hint (error carries the full line).
+    code: str | None = None
+    hint: str | None = None
 
 
 class ToolTestRequest(BaseModel):

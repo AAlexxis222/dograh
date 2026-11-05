@@ -30,3 +30,5 @@ noveum-trace @ https://files.pythonhosted.org/packages/e7/53/177b987931f3fd43660
 PyNaCl==1.6.2
 # Direct dependency of api/services/security/credential_box.py (AES-256-GCM); pinned to the version aiortc resolved.
 cryptography==50.0.2
+# Direct dependency of api/services/security/egress_guard.py (the MCP SDK's httpx line, pinned client); pinned to the version mcp resolved.
+httpx2==2.13.1

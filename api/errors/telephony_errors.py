@@ -17,6 +17,8 @@ class TelephonyError(Enum):
     PHONE_NUMBER_NOT_CONFIGURED = "PHONE_NUMBER_NOT_CONFIGURED"
     SIGNATURE_VALIDATION_FAILED = "SIGNATURE_VALIDATION_FAILED"
     CONCURRENT_CALL_LIMIT = "CONCURRENT_CALL_LIMIT"
+    # Admission failed closed: the slot backend (Redis) did not answer (VOZ-AC-B3-65-bis).
+    ADMISSION_BACKEND_UNAVAILABLE = "ADMISSION_BACKEND_UNAVAILABLE"
     QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
     GENERAL_AUTH_FAILED = "GENERAL_AUTH_FAILED"
     VALID = "VALID"
@@ -30,6 +32,7 @@ TELEPHONY_ERROR_MESSAGES = {
     TelephonyError.PHONE_NUMBER_NOT_CONFIGURED: "Phone number not configured: This number is not set up for inbound calls in your account. Please add this number to your telephony configuration.",
     TelephonyError.SIGNATURE_VALIDATION_FAILED: "Security error: Webhook signature validation failed. Please verify your auth token configuration and ensure requests are coming from your telephony provider.",
     TelephonyError.CONCURRENT_CALL_LIMIT: "Service temporarily unavailable: Your account has reached its concurrent call limit. Please try again later.",
+    TelephonyError.ADMISSION_BACKEND_UNAVAILABLE: "Service temporarily unavailable. Please try again later.",
     TelephonyError.QUOTA_EXCEEDED: "Service temporarily unavailable: Your account has exceeded usage limits. Please contact your administrator or upgrade your plan to continue receiving calls.",
     TelephonyError.GENERAL_AUTH_FAILED: "Authentication failed: Please check your webhook URL configuration and ensure your telephony provider settings match your dashboard configuration.",
 }
@@ -72,6 +75,10 @@ def failure_from_telephony_error(
     error_type = (
         ErrorType.QUOTA_ERROR if error in _QUOTA_ERRORS else ErrorType.CONFIG_ERROR
     )
+    # Ours, not the tenant's, and it clears when Redis answers again.
+    backend_down = error == TelephonyError.ADMISSION_BACKEND_UNAVAILABLE
+    if backend_down:
+        error_type = ErrorType.SYSTEM_ERROR
     provider_code = (provider or "telephony").replace("_", "-")
     external_message = TELEPHONY_ERROR_MESSAGES.get(
         error, TELEPHONY_ERROR_MESSAGES[TelephonyError.GENERAL_AUTH_FAILED]
@@ -83,8 +90,8 @@ def failure_from_telephony_error(
         internal_message=f"Inbound telephony validation failed: {error.value}",
         external_message=external_message,
         provider=provider,
-        error_owner="user",
-        retryable=False,
+        error_owner="operator" if backend_down else "user",
+        retryable=backend_down,
         context={
             # A failed signature can be sent by an attacker and must not become a
             # tenant notification until attribution has been established.

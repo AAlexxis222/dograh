@@ -1,4 +1,4 @@
-"""Startup assertion of a cell role (VOZ-AC-B3-61, VOZ-AC-B6-52, VOZ-AC-B6-16), and of the credential master key in every role. Fail closed, VOZ-AC-B0-28 output.
+"""Startup assertion of a cell role (VOZ-AC-B3-61, VOZ-AC-B6-52, VOZ-AC-B6-16, VOZ-AC-B5-91), and of the credential master key in every role. Fail closed, VOZ-AC-B0-28 output.
 
 Light on purpose (no FastAPI import): the api lifespan calls it, and scripts/xpand/require_db_head.sh runs it as
 `python -m api.services.runtime.cell_startup <role>` for every role, so arq and coordinators are covered too.
@@ -9,6 +9,7 @@ import sys
 
 from api.services.runtime.cell_state import parse_call_k_p
 from api.services.security import credential_box
+from api.services.security.egress_flag import URL_GUARD_FLAG, url_guard_enforced
 
 # Levels at or above INFO. Anything else (DEBUG, TRACE, numbers, unknown names, unset) can log caller text.
 _SAFE_LOG_LEVELS = {"INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"}
@@ -79,6 +80,16 @@ def assert_cell_startup_config(where: str = "api.app") -> None:
             "set CALL_K_P to a positive integer, or unset it for the default of 4",
         ) from e
     _require_valid_master_key(where)
+    # VOZ-AC-B5-91 / B0-30: a tool must never reach IMDS or the compose network. The egress guard
+    # (api/services/security/egress_guard.py) enforces only under the rule in egress_flag.py, so anything else is a
+    # cell with the control off.
+    if not url_guard_enforced():
+        raise CellStartupError(
+            "url_guard_not_enforced",
+            where,
+            f"{URL_GUARD_FLAG} is not exactly 'true', so tools could reach cloud metadata (IMDS) and the Docker network",
+            f"set {URL_GUARD_FLAG}=true in the cell env (docker-compose.cell.yaml sets it for every role)",
+        )
     # Durations are not checked here: the gate in scripts/xpand/require_db_head.sh owns them for every role.
 
 

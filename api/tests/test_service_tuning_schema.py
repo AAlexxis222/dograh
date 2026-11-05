@@ -324,6 +324,18 @@ def test_openai_option_values_are_checked_not_just_their_names():
             }
         }
     )
+    _validate(
+        {
+            "llm": {
+                "openai": {
+                    "options": {
+                        "api": "responses",
+                        "reasoning": {"effort": "max", "summary": "concise"},
+                    }
+                }
+            }
+        }
+    )
     for options, message in (
         ({"api": "grpc"}, "llm.openai.options.api: must be one of"),
         # Ruling A: explicit null is not one of the choices either.
@@ -337,11 +349,11 @@ def test_openai_option_values_are_checked_not_just_their_names():
             {"reasoning": {"depth": "low"}},
             "llm.openai.options.reasoning.depth: unknown key",
         ),
-        # Ruling B: only the Responses API carries a reasoning summary, and
-        # that path is parked — so the knob is a named 422, not a no-op.
+        # Ruling B: only the Responses API carries a reasoning summary, so
+        # on chat/completions the knob is a named 422, not a no-op.
         (
             {"reasoning": {"summary": "concise"}},
-            "llm.openai.options.reasoning.summary: not available in this build",
+            "llm.openai.options.reasoning.summary: only the Responses API",
         ),
         ({"verbosity": "loud"}, "llm.openai.options.verbosity: must be one of"),
         # Unhashable values: a bare `value in frozenset` raises TypeError,
@@ -358,7 +370,7 @@ def test_openai_option_values_are_checked_not_just_their_names():
         ),
         (
             {"reasoning": {"summary": ["auto"]}},
-            "llm.openai.options.reasoning.summary: not available in this build",
+            "llm.openai.options.reasoning.summary: only the Responses API",
         ),
     ):
         with pytest.raises(ValidationError, match=message):

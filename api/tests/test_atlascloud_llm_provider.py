@@ -99,7 +99,7 @@ def test_atlascloud_api_key_validation_uses_atlascloud_error_message(monkeypatch
 
 def test_create_atlascloud_llm_service_from_provider_defaults_base_url():
     # Voicemail and QA configs with their own provider pass no base_url.
-    with patch("api.services.pipecat.service_factory.OpenAILLMService") as mock_service:
+    with patch("api.services.pipecat.openai_llm.OpenAILLMService") as mock_service:
         create_llm_service_from_provider(
             ServiceProviders.ATLASCLOUD.value,
             "qwen/qwen3.5-flash",
@@ -112,7 +112,7 @@ def test_create_atlascloud_llm_service_from_provider_defaults_base_url():
 
 
 def test_create_openai_llm_service_from_provider_keeps_default_endpoint():
-    with patch("api.services.pipecat.service_factory.OpenAILLMService") as mock_service:
+    with patch("api.services.pipecat.openai_llm.OpenAILLMService") as mock_service:
         create_llm_service_from_provider(
             ServiceProviders.OPENAI.value,
             "gpt-4.1",
