@@ -28,10 +28,18 @@ def load_migration(revision: str):
     return module
 
 
-async def run_upgrade(session: AsyncSession, migration) -> None:
-    def _upgrade(sync_conn):
+async def _run(session: AsyncSession, step) -> None:
+    def _step(sync_conn):
         with Operations.context(MigrationContext.configure(sync_conn)):
-            migration.upgrade()
+            step()
 
     connection = await session.connection()
-    await connection.run_sync(_upgrade)
+    await connection.run_sync(_step)
+
+
+async def run_upgrade(session: AsyncSession, migration) -> None:
+    await _run(session, migration.upgrade)
+
+
+async def run_downgrade(session: AsyncSession, migration) -> None:
+    await _run(session, migration.downgrade)
