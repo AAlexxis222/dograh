@@ -1038,13 +1038,14 @@ async def get_workflows_summary(
         workflows = []
         for status_value in statuses:
             workflows.extend(
-                await db_client.get_all_workflows(
+                await db_client.get_all_workflows_for_listing(
                     organization_id=user.selected_organization_id,
                     status=status_value,
                 )
             )
     else:
-        workflows = await db_client.get_all_workflows(
+        # Only id and name: no secret column is loaded, so no credential is decrypted (or can fail) here.
+        workflows = await db_client.get_all_workflows_for_listing(
             organization_id=user.selected_organization_id, status=None
         )
     return [

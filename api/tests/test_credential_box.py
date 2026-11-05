@@ -317,7 +317,20 @@ def test_the_org_credential_keys_are_registered_whole():
         Key.LANGFUSE_CREDENTIALS.value,
     }
     valid = {k.value for k in Key}
-    assert all(s.row_key in valid for s in SURFACES if s.row_key is not None)
+    assert all(
+        s.row_key in valid
+        for s in SURFACES
+        if s.table == "organization_configurations" and s.row_key is not None
+    )
+
+
+def test_user_configurations_are_scoped_to_the_model_configuration_key():
+    from api.enums import UserConfigurationKey
+    from api.services.security.secret_surfaces import SURFACES
+
+    assert [s.row_key for s in SURFACES if s.table == "user_configurations"] == [
+        UserConfigurationKey.MODEL_CONFIGURATION.value
+    ]
 
 
 def _paths(table, column):
@@ -442,3 +455,26 @@ def test_every_call_event_sink_secret_is_registered():
     assert declared  # bigquery's private_key today
     registered = {s.json_path for s in SURFACES if s.row_key == "CALL_EVENTS"}
     assert {("config", field) for field in declared} <= registered
+
+
+def test_secret_row_keys_name_the_keyed_stores():
+    from api.services.security.credential_documents import secret_row_keys
+
+    assert secret_row_keys("user_configurations") == {"MODEL_CONFIGURATION"}
+    assert "CALL_EVENTS" in secret_row_keys("organization_configurations")
+    assert "ORGANIZATION_BOOTSTRAP" not in secret_row_keys(
+        "organization_configurations"
+    )
+    assert secret_row_keys("tools") == frozenset()
+
+
+def test_key_configured_and_is_token(monkeypatch):
+    token = cb.encrypt(b"x", aad=AAD)
+    assert cb.key_configured() and cb.is_token(token)
+    assert (
+        not cb.is_token(token + " ")
+        and not cb.is_token({"t": token})
+        and not cb.is_token("plain")
+    )
+    monkeypatch.setenv(cb.ENV, " , ")
+    assert not cb.key_configured()

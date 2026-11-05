@@ -53,6 +53,7 @@ from api.services.pipecat.tracing_config import (
 )
 from api.services.pipecat.tts_cache.runtime import close_speech_cache
 from api.services.runtime.cell_startup import assert_cell_startup_config
+from api.services.security.credential_box import CredentialUnreadable
 from api.services.telephony.providers.twilio.region import RegionError
 from api.services.worker_sync.manager import (
     WorkerSyncManager,
@@ -236,6 +237,16 @@ async def handle_run_credential_error(
 ) -> JSONResponse:
     """A run's credential is unavailable, or a snapshot would store one: fail closed (VOZ-AC-B0-30)."""
     logger.error("run credential error: {}", exc)
+    return _named_error(500, exc)
+
+
+@app.exception_handler(CredentialUnreadable)
+async def handle_credential_unreadable(
+    _request: Request, exc: CredentialUnreadable
+) -> JSONResponse:
+    """A stored credential that does not decrypt: fail closed (VOZ-AC-B0-30), never an empty value. ``where`` is the
+    table:id:column:path of the leaf; the token is never echoed."""
+    logger.error("credential unreadable: {}", exc)
     return _named_error(500, exc)
 
 

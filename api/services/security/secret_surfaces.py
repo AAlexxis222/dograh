@@ -1,7 +1,7 @@
 """The one registry of where a credential can live at rest (VOZ-AC-B6-15, inventory of VOZ-AC-B0-16).
 
 A surface is ``(table, column, json_path)``, plus ``row_key`` when a keyed store holds a different document per row
-(the ``key`` column of organization_configurations). ``json_path`` is a tuple of keys: ``()`` is the whole column
+(the ``key`` column of organization_configurations and user_configurations). ``json_path`` is a tuple of keys: ``()`` is the whole column
 value, ``*`` matches one level and ``**`` any depth, and either passes through a list (the walk of
 api/services/security/secret_walk.py). Encryption at rest and VOZ-AT-B6-05 derive from this list.
 
@@ -12,7 +12,7 @@ time are guarded against it by api/tests/test_credential_box.py.
 
 from dataclasses import dataclass
 
-from api.enums import OrganizationConfigurationKey
+from api.enums import OrganizationConfigurationKey, UserConfigurationKey
 
 SECRET_LEAF_NAMES: tuple[str, ...] = (
     "api_key",
@@ -101,7 +101,13 @@ SURFACES: tuple[SecretSurface, ...] = (
     ),
     SecretSurface("telephony_configurations", "credentials"),
     SecretSurface("external_credentials", "credential_data"),
-    SecretSurface("user_configurations", "configuration"),
+    # Only the legacy per-user model configuration holds secrets; ONBOARDING is UI state.
+    SecretSurface(
+        "user_configurations",
+        "configuration",
+        (),
+        UserConfigurationKey.MODEL_CONFIGURATION.value,
+    ),
     SecretSurface("integrations", "connection_details"),
     SecretSurface("webhook_deliveries", "custom_headers"),
     *(

@@ -9,7 +9,8 @@ from api.tests._migration_sql import migration_path
 
 
 @pytest.mark.parametrize(
-    "revision", ["5be1d27c9a43", "d7e3a915c2b8", "a4f1c8e27b35", "c5e8a2d7f914"]
+    "revision",
+    ["5be1d27c9a43", "d7e3a915c2b8", "a4f1c8e27b35", "c5e8a2d7f914", "e2b7c4d9a613"],
 )
 def test_migration_does_not_import_application_code(revision):
     tree = ast.parse(migration_path(revision).read_text())

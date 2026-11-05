@@ -18,7 +18,7 @@ cd "$BASE_DIR"
 
 bash -c "$DURATIONS_CMD $WHERE" || exit 1 # the module prints its own VOZ-AC-B0-28 line
 # The other startup checks of a cell (devops secret, LOG_LEVEL, CALL_K_P; VOZ-AC-B3-61, B6-52): arq and coordinators
-# never run the api lifespan, which makes the same call. A no-op outside a cell.
+# never run the api lifespan, which makes the same call. Outside a cell it only checks the credential master key.
 bash -c "$CELL_STARTUP_CMD $WHERE" || exit 1
 
 # VOZ-AC-B0-28 shape, one line.

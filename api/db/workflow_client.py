@@ -7,6 +7,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import load_only, selectinload
 
 from api.db.base_client import BaseDBClient
+from api.db.credentials_at_rest import seal, unseal
 from api.db.models import WorkflowDefinitionModel, WorkflowModel, WorkflowRunModel
 
 
@@ -378,7 +379,10 @@ class WorkflowClient(BaseDBClient):
             row = result.first()
             if row is None:
                 return None
-            return (row[0] or {}), row[1]
+            configurations = unseal(
+                WorkflowDefinitionModel.workflow_configurations, definition_id, row[0]
+            )
+            return (configurations or {}), row[1]
 
     async def list_draft_definitions_for_backfill(
         self, *, after_id: int, limit: int
@@ -411,7 +415,18 @@ class WorkflowClient(BaseDBClient):
                 .order_by(WorkflowDefinitionModel.id)
                 .limit(limit)
             )
-            return [(row[0], row[1], row[2], row[3] or {}) for row in result.all()]
+            return [
+                (
+                    row[0],
+                    row[1],
+                    row[2],
+                    unseal(
+                        WorkflowDefinitionModel.workflow_configurations, row[0], row[3]
+                    )
+                    or {},
+                )
+                for row in result.all()
+            ]
 
     async def update_definition_configurations(
         self, definition_id: int, configurations: dict
@@ -432,7 +447,13 @@ class WorkflowClient(BaseDBClient):
                     WorkflowDefinitionModel.id == definition_id,
                     WorkflowDefinitionModel.status == "draft",
                 )
-                .values(workflow_configurations=configurations)
+                .values(
+                    workflow_configurations=seal(
+                        WorkflowDefinitionModel.workflow_configurations,
+                        definition_id,
+                        configurations,
+                    )
+                )
             )
             await session.commit()
 
@@ -529,7 +550,13 @@ class WorkflowClient(BaseDBClient):
                             WorkflowModel.id == workflow_id,
                             WorkflowModel.organization_id == organization_id,
                         )
-                        .values(workflow_configurations=workflow_configurations)
+                        .values(
+                            workflow_configurations=seal(
+                                WorkflowModel.workflow_configurations,
+                                workflow_id,
+                                workflow_configurations,
+                            )
+                        )
                     )
 
                 organization_workflow_ids = select(WorkflowModel.id).where(
@@ -544,7 +571,13 @@ class WorkflowClient(BaseDBClient):
                                 organization_workflow_ids
                             ),
                         )
-                        .values(workflow_configurations=workflow_configurations)
+                        .values(
+                            workflow_configurations=seal(
+                                WorkflowDefinitionModel.workflow_configurations,
+                                definition_id,
+                                workflow_configurations,
+                            )
+                        )
                     )
 
                 await session.commit()
