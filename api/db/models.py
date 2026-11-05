@@ -664,6 +664,10 @@ class WorkflowRunModel(Base):
     queued_run_id = Column(Integer, ForeignKey("queued_runs.id"), nullable=True)
     queued_run = relationship("QueuedRunModel", foreign_keys=[queued_run_id])
     public_access_token = Column(String(36), nullable=True)
+    # VOZ-N0-30: set when the token is minted (mint time + PUBLIC_LINK_TTL_H). NULL on a row with a token = expired.
+    public_access_expires_at = Column(DateTime(timezone=True), nullable=True)
+    # Set by revoke_public_access: the token is gone for good and is never minted again for this run.
+    public_access_revoked_at = Column(DateTime(timezone=True), nullable=True)
     text_session = relationship(
         "WorkflowRunTextSessionModel",
         back_populates="workflow_run",
