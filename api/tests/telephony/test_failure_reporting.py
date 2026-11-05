@@ -127,6 +127,19 @@ def test_inbound_validation_mapping_separates_config_and_quota():
     assert quota.code == "plivo-concurrent-call-limit"
 
 
+def test_admission_backend_down_is_an_operator_system_error_not_a_quota():
+    failure = failure_from_telephony_error(
+        TelephonyError.ADMISSION_BACKEND_UNAVAILABLE,
+        provider="twilio",
+    )
+
+    assert failure is not None
+    assert failure.type == ErrorType.SYSTEM_ERROR
+    assert failure.code == "twilio-admission-backend-unavailable"
+    assert failure.error_owner == "operator"
+    assert failure.retryable is True
+
+
 def test_signature_failure_is_not_customer_notification_eligible():
     failure = failure_from_telephony_error(
         TelephonyError.SIGNATURE_VALIDATION_FAILED,

@@ -26,11 +26,15 @@ If it is part of a planned merge list sharing files with another PR: MERGE-ORDER
 <!-- high / medium / low per area, one reason each -->
 
 ## Review
-<!-- Required, checked by the pr-body gate: the two lines below, as adversarial-reviewer prints them, for the PR head commit,
-plus the principles-reviewer line.
-VERDICT: SAFE TO MERGE
-REVIEWED: <head commit sha>
-PRINCIPLES: <n> MAJOR / <n> MINOR → <fixed | accepted: why>   (or: PRINCIPLES: n/a (no code))
+<!-- Lines the pr-body gate checks (required): VERDICT, REVIEWED (for the PR head commit) and PRINCIPLES, as review-frontier prints them (VERDICT and REVIEWED from `verdict --print-lines`, PRINCIPLES from `principles-line`).
+Lines the gate does NOT check (the pr-ready skill checks all three): REVIEW-RUN (printed by `verdict --print-lines`), SECURITY (printed by `security-line`), and SECURITY-ACCEPTED (written by hand, one per accepted finding, validated by `check_acceptance.py`).
+Moving these checks into the gate (check-body.mjs) is follow-up REV4-F1.
+  VERDICT: SAFE TO MERGE
+  REVIEWED: <head commit sha>
+  PRINCIPLES: <n> MAJOR / <n> MINOR → <fixed | accepted: why>   (or: PRINCIPLES: n/a (no code))
+  REVIEW-RUN: <12-hex digest>
+  SECURITY: <n> HIGH+ / <n> MEDIUM / <n> LOW → <fixed | open: ids | accepted: ids> · refuted: <n>   (copy the line `security-line` prints over every run of the PR, not the run-only SECURITY line of `verdict --print-lines`; the " · refuted: <n>" suffix is optional; a tail "open: …" means the PR is not merge-ready; or: SECURITY: n/a (<why>) when L-SEC ran in no run of the PR)
+  SECURITY-ACCEPTED: <12-hex id> <CWE-<n> | CWE-n/a> <reason> · owner <who> · expires <YYYY-MM-DD> · <follow-up>   (only if a risk is accepted; expiry ≤ 90 days; CWE-n/a when the finding has no cwe)
 Then: what was fixed / pushed back. -->
 
 ## XPAND obligations (B9 §8.3)
