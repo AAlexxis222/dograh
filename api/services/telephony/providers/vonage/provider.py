@@ -13,6 +13,7 @@ from fastapi import HTTPException, Response
 from loguru import logger
 
 from api.enums import TelephonyCallStatus, WorkflowRunMode
+from api.services.runtime.durations import ring_timeout_for
 from api.services.telephony import ws_auth
 from api.services.telephony.base import (
     CallInitiationResult,
@@ -109,6 +110,8 @@ class VonageProvider(TelephonyProvider):
             "from": {"type": "phone", "number": from_number},
             "answer_url": [webhook_url],
             "answer_method": "GET",
+            # The carrier's default ring, sent explicitly: the bound the outbound pending lease is sized for.
+            "ringing_timer": ring_timeout_for(self.PROVIDER_NAME),
         }
 
         # Add event webhook if workflow_run_id provided

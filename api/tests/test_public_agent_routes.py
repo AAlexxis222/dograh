@@ -11,9 +11,28 @@ from api.routes.public_agent import (
     _execute_resolved_target,
     router,
 )
-from api.services.call_concurrency import CallConcurrencyLimitError
+from api.services.call_concurrency import (
+    AdmissionBackendUnavailableError,
+    CallConcurrencyLimitError,
+)
+from api.services.runtime.durations import cell_durations
 from api.services.telephony.outbound_readiness import OutboundSetupIncompleteError
 from api.tests.conftest import mock_configuration_cascade
+
+DOWN = AdmissionBackendUnavailableError
+# The VOZ-AC-B0-28 record a refusal for a down slot backend must carry (code, what, where, hint).
+DOWN_RECORD = {
+    "code": DOWN.reason,
+    "reason": DOWN.what,
+    "where": DOWN.where,
+    "hint": DOWN.hint,
+}
+
+
+def _refusal(reason: str, **fields) -> CallConcurrencyLimitError:
+    """The refusal acquire_org_slot raises for this reason: a down backend is its own subclass."""
+    refusal = DOWN if reason == DOWN.reason else CallConcurrencyLimitError
+    return refusal(**fields)
 
 
 @pytest.fixture(autouse=True)
@@ -190,6 +209,7 @@ def test_trigger_route_executes_as_workflow_owner():
         workflow.organization_id,
         source="public_agent",
         timeout=0,
+        outbound_carrier="twilio",
     )
     mock_concurrency.bind_workflow_run.assert_awaited_once_with(slot, 501)
     mock_db.get_workflow.assert_awaited_once_with(workflow.id, organization_id=11)
@@ -399,6 +419,7 @@ def test_workflow_uuid_route_uses_scoped_lookup_and_shared_execution():
         workflow.organization_id,
         source="public_agent",
         timeout=0,
+        outbound_carrier="twilio",
     )
     mock_concurrency.bind_workflow_run.assert_awaited_once_with(slot, 601)
 
@@ -669,7 +690,14 @@ def test_trigger_route_still_returns_success_when_metadata_persistence_fails():
     mock_concurrency.release_workflow_run_slot.assert_not_awaited()
 
 
-def test_trigger_route_rejects_when_concurrency_limit_reached():
+@pytest.mark.parametrize(
+    ("reason", "status", "detail"),
+    [
+        ("concurrent_call_limit", 429, "Concurrent call limit reached"),
+        (DOWN.reason, 503, None),
+    ],
+)
+def test_trigger_route_rejects_when_concurrency_limit_reached(reason, status, detail):
     app = _make_test_app()
     client = TestClient(app)
 
@@ -685,7 +713,8 @@ def test_trigger_route_rejects_when_concurrency_limit_reached():
         ),
     ):
         mock_concurrency.acquire_org_slot = AsyncMock(
-            side_effect=CallConcurrencyLimitError(
+            side_effect=_refusal(
+                reason,
                 organization_id=11,
                 source="public_agent",
                 wait_time=0,
@@ -715,8 +744,19 @@ def test_trigger_route_rejects_when_concurrency_limit_reached():
             json={"phone_number": "+15551234567"},
         )
 
-    assert response.status_code == 429
-    assert response.json()["detail"] == "Concurrent call limit reached"
+    assert response.status_code == status
+    body = response.json()
+    if status == 429:
+        assert body == {"detail": detail}
+    else:
+        # The UI renders `detail` as text, so it stays a string; the B0-28 record rides as top-level fields.
+        assert isinstance(body["detail"], str)
+        assert DOWN.reason in body["detail"] and DOWN.hint in body["detail"]
+        assert {k: body[k] for k in DOWN_RECORD} == DOWN_RECORD
+    if status == 503:  # RFC 9110 §10.2.3: when to come back
+        assert response.headers["Retry-After"] == str(
+            cell_durations().admission_retry_after_s
+        )
     mock_db.create_workflow_run.assert_not_called()
 
 
