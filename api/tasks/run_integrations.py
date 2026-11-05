@@ -371,7 +371,7 @@ def _build_render_context(
 
     Args:
         workflow_run: The workflow run model
-        public_token: Optional public access token for download URLs
+        public_token: Optional public access token for download URLs; without one no URL or storage key is exposed
 
     Returns:
         Dict containing all fields available for template rendering
@@ -415,10 +415,13 @@ def _build_render_context(
             f"{base_url}/bot_recording" if bot_recording_key else None
         )
     else:
-        context["recording_url"] = workflow_run.recording_url
-        context["transcript_url"] = workflow_run.transcript_url
-        context["user_recording_url"] = user_recording_key
-        context["bot_recording_url"] = bot_recording_key
+        # No token: links are off for this organization, or the run was revoked (VOZ-N0-30). The storage URLs and
+        # keys are internal, so nothing of them goes to the receiver, not even through ``extra``.
+        context["recording_url"] = None
+        context["transcript_url"] = None
+        context["user_recording_url"] = None
+        context["bot_recording_url"] = None
+        context["extra"] = {k: v for k, v in extra.items() if k != "recordings"}
 
     return context
 

@@ -526,8 +526,11 @@ async def get_usage_history(
 
         total_pages = (total_count + limit - 1) // limit
 
+        links_on = await db_client.public_links_enabled(user.selected_organization_id)
         for run in runs:
-            public_access_token = run.get("public_access_token")
+            # Links off (VOZ-N0-30): the raw token leaves the response too, not only the URLs built from it.
+            public_access_token = run.get("public_access_token") if links_on else None
+            run["public_access_token"] = public_access_token
             run["transcript_public_url"] = artifact_url(
                 public_access_token, "transcript"
             )

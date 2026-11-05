@@ -1555,17 +1555,23 @@ async def get_workflow_run(
     if not run:
         raise HTTPException(status_code=404, detail="Workflow run not found")
 
-    public_access_token = run.public_access_token
+    # Links off (VOZ-N0-30): no token in any field, even one stored while they were on.
+    links_on = await db_client.public_links_enabled(user.selected_organization_id)
+    public_access_token = run.public_access_token if links_on else None
     user_recording_url = get_recording_storage_key(run.extra, "user")
     bot_recording_url = get_recording_storage_key(run.extra, "bot")
     has_user_recording = has_recording_track(run.extra, "user")
     has_bot_recording = has_recording_track(run.extra, "bot")
     if (
-        run.transcript_url
-        or run.recording_url
-        or has_user_recording
-        or has_bot_recording
-    ) and not public_access_token:
+        links_on
+        and (
+            run.transcript_url
+            or run.recording_url
+            or has_user_recording
+            or has_bot_recording
+        )
+        and not public_access_token
+    ):
         public_access_token = await db_client.ensure_public_access_token(run.id)
 
     return {

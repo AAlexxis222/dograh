@@ -432,7 +432,8 @@ async def test_completion_happy_path_uploads_audio_and_sends_trace():
     assert call_names.index("send_trace_dict") < call_names.index("send_audio_sync")
     sent_trace = client.send_trace_dict.call_args.args[0]
     assert sent_trace["trace_id"] == "trace-1"
-    assert sent_trace["attributes"]["dograh.recording_url"] == "https://dograh/rec.wav"
+    # No public link (public_token=None: links off or revoked, VOZ-N0-30): the internal storage URL is not sent.
+    assert "dograh.recording_url" not in sent_trace["attributes"]
     # Placeholder live-phase identity must be replaced with the node's values.
     assert sent_trace["attributes"]["noveum.project"] == "voice-agent"
     assert sent_trace["attributes"]["noveum.environment"] == "production"
