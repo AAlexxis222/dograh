@@ -13,9 +13,13 @@ BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WHERE="${1:-unknown}"
 ALEMBIC_CMD="${ALEMBIC_CMD:-alembic -c api/alembic.ini}"
 DURATIONS_CMD="${DURATIONS_CMD:-python -m api.services.runtime.durations}"
+CELL_STARTUP_CMD="${CELL_STARTUP_CMD:-python -m api.services.runtime.cell_startup}"
 cd "$BASE_DIR"
 
 bash -c "$DURATIONS_CMD $WHERE" || exit 1 # the module prints its own VOZ-AC-B0-28 line
+# The other startup checks of a cell (devops secret, LOG_LEVEL, CALL_K_P; VOZ-AC-B3-61, B6-52): arq and coordinators
+# never run the api lifespan, which makes the same call. A no-op outside a cell.
+bash -c "$CELL_STARTUP_CMD $WHERE" || exit 1
 
 # VOZ-AC-B0-28 shape, one line.
 report() { echo "code=$1 where=$WHERE reason=$2 hint=$3" >&2; } # <code> <reason> <hint>

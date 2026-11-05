@@ -704,3 +704,40 @@ def mock_configuration_cascade(mock_db, organization_id: int = 11) -> None:
         return_value=({}, organization_id)
     )
     mock_db.get_configuration_value = AsyncMock(return_value={})
+
+
+class FakeRedisClock:
+    """A test-only clock key the slot scripts read instead of Redis TIME
+    (``SlotStore(test_clock=clock.key)``); starts at Redis's own TIME."""
+
+    def __init__(self, client, key: str, now: float):
+        self.client, self.key, self.now = client, key, now
+
+    async def advance(self, seconds: float) -> None:
+        self.now += seconds
+        await self.client.set(self.key, repr(self.now))
+
+
+@pytest.fixture
+async def redis_client():
+    """A real Redis client (REDIS_URL) for the call-concurrency slot tests."""
+    import redis.asyncio as aioredis
+
+    from api.constants import REDIS_URL
+
+    client = aioredis.from_url(REDIS_URL, decode_responses=True)
+    yield client
+    await client.aclose()
+
+
+@pytest.fixture
+async def fake_redis_clock(redis_client):
+    import uuid
+
+    seconds, micros = await redis_client.time()
+    clock = FakeRedisClock(
+        redis_client, f"test_clock:{uuid.uuid4().hex}", seconds + micros / 1e6
+    )
+    await clock.advance(0)
+    yield clock
+    await redis_client.delete(clock.key)
