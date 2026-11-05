@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from api.db import db_client
 from api.enums import TriggerState, WorkflowStatus
+from api.routes.admission_answers import http_response
 from api.services.call_concurrency import (
     CallConcurrencyLimitError,
     call_concurrency,
@@ -275,12 +276,10 @@ async def _execute_resolved_target(
             target.organization_id,
             source="public_agent",
             timeout=0,
+            outbound_carrier=provider.PROVIDER_NAME,
         )
-    except CallConcurrencyLimitError:
-        raise HTTPException(
-            status_code=429,
-            detail="Concurrent call limit reached",
-        )
+    except CallConcurrencyLimitError as e:
+        return http_response(e)
 
     try:
         run_inputs = await prepare_workflow_run_inputs(

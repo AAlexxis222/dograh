@@ -12,10 +12,8 @@ from openai import NOT_GIVEN
 from pydantic import ValidationError
 
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
-from api.services.pipecat.service_factory import (
-    _gpt5_chat_plan,
-    create_llm_service_from_provider,
-)
+from api.services.pipecat.openai_llm import openai_chat_inputs
+from api.services.pipecat.service_factory import create_llm_service_from_provider
 from api.services.pipecat.service_tuning import tuning_for
 from api.tests.service_tuning._transport import chat_payload
 
@@ -165,7 +163,7 @@ def test_gpt5_translation_never_mutates_the_plan():
         "llm",
         "openai",
     )
-    translated = _gpt5_chat_plan(plan, "gpt-5.1")
+    translated, _ = openai_chat_inputs("gpt-5.1", plan)
     assert plan.settings == {"max_tokens": 400, "top_p": 0.8}
     assert translated.settings == {"max_completion_tokens": 400, "top_p": 0.8}
 
@@ -191,14 +189,10 @@ def test_openai_extra_is_never_accepted():
         )
 
 
-def test_responses_api_option_is_rejected_until_the_deferral_port_lands():
-    # Task 12 flips this to a real service; until then the knob is a named 422.
-    with pytest.raises(
-        ValidationError, match="llm.openai.options.api: responses is not available"
-    ):
-        WorkflowConfigurationDefaults.model_validate(
-            {"service_tuning": {"llm": {"openai": {"options": {"api": "responses"}}}}}
-        )
+def test_responses_api_option_is_accepted_now_the_deferral_port_landed():
+    WorkflowConfigurationDefaults.model_validate(
+        {"service_tuning": {"llm": {"openai": {"options": {"api": "responses"}}}}}
+    )
 
 
 def test_reasoning_options_outside_gpt5_are_dropped_with_a_logged_warning():

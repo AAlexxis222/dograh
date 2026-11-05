@@ -18,13 +18,13 @@ from api.errors.failure import (
     redact_failure_message,
 )
 from api.services.configuration.masking import mask_key
+from api.services.security.egress_guard import ToolUrlBlocked, guard_egress
 from api.utils.credential_auth import build_auth_header
 from api.utils.template_renderer import (
     get_nested_value,
     render_template,
     render_url_template,
 )
-from api.utils.url_security import validate_user_configured_service_url
 
 # Map tool parameter types to JSON schema types
 TYPE_MAP = {
@@ -295,6 +295,27 @@ def render_body_template(template: Any, context: dict[str, Any]) -> Any:
     return render_template(template, context)
 
 
+_URL_HINT = (
+    "point the tool at a public http(s) endpoint: private, loopback, link-local and internal "
+    "service addresses are not reachable from tools"
+)
+
+
+def _url_rejection(error: ToolUrlBlocked) -> dict[str, Any]:
+    # Guard off: the legacy DEPLOYMENT_MODE refusal, in its pre-existing shape.
+    if not error.enforced:
+        return {"status": "error", "error": f"URL validation failed: {error!s}"}
+    return {
+        "status": "error",
+        "error": str(error),
+        "code": error.code,
+        "what": error.what,
+        "where": error.where,
+        "reason": error.reason,
+        "hint": error.hint,
+    }
+
+
 async def execute_http_tool(
     tool: Any,
     arguments: dict[str, Any],
@@ -458,12 +479,10 @@ async def execute_http_tool(
         )
 
     try:
-        validate_user_configured_service_url(url, field_name="config.url")
-    except ValueError as e:
+        target = await guard_egress(url, field="config.url", hint=_URL_HINT)
+    except ToolUrlBlocked as e:
         logger.error(f"Custom tool '{tool.name}' URL validation failed: {e}")
-        return build_result(
-            {"status": "error", "error": f"URL validation failed: {e!s}"}
-        )
+        return build_result(_url_rejection(e))
 
     # Build request: body for POST/PUT/PATCH, query params for GET/DELETE
     body = None
@@ -494,7 +513,7 @@ async def execute_http_tool(
             f"Resolved preset parameters for '{tool.name}': {list(preset_arguments.keys())}"
         )
     try:
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        async with target.httpx_client(timeout=timeout_seconds) as client:
             response = await client.request(
                 method=method,
                 url=url,

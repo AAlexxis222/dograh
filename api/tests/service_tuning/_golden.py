@@ -263,6 +263,8 @@ def _builders(factory) -> dict[str, Callable[[], Any]]:
 def capture() -> dict[str, dict[str, Any]]:
     """``{case id: {"class": name, "kwargs": {...}}}`` for every case."""
     factory = importlib.import_module("api.services.pipecat.service_factory")
+    # Modules that bind service classes by name and build them for the factory.
+    importers = (factory, importlib.import_module("api.services.pipecat.openai_llm"))
     out: dict[str, dict[str, Any]] = {}
     # Import everything before patching anything: a module imported after
     # its base class was mocked would subclass the mock.
@@ -279,8 +281,9 @@ def capture() -> dict[str, dict[str, Any]]:
                 mock.Settings = real.Settings
             if hasattr(module, name):
                 stack.enter_context(patch.object(module, name, mock))
-            if module is not factory and hasattr(factory, name):
-                stack.enter_context(patch.object(factory, name, mock))
+            for importer in importers:
+                if module is not importer and hasattr(importer, name):
+                    stack.enter_context(patch.object(importer, name, mock))
             mocks[name] = mock
         # MiniMax opens its own session before constructing the service.
         stack.enter_context(patch.object(factory.aiohttp, "ClientSession"))
