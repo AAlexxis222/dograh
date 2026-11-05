@@ -649,9 +649,12 @@ class TwilioProvider(TelephonyProvider):
         """
         from fastapi import Response
 
+        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_message_es
+
+        # ``message`` is for the operator; the caller hears the Spanish table text.
         twiml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="alice">Sorry, there was an error processing your call. {message}</Say>
+    <Say language="{CALLER_LANGUAGE}">{caller_message_es(error_type)}</Say>
     <Hangup/>
 </Response>"""
 
@@ -664,15 +667,11 @@ class TwilioProvider(TelephonyProvider):
         """
         from fastapi import Response
 
-        from api.errors.telephony_errors import TELEPHONY_ERROR_MESSAGES, TelephonyError
-
-        message = TELEPHONY_ERROR_MESSAGES.get(
-            error_type, TELEPHONY_ERROR_MESSAGES[TelephonyError.GENERAL_AUTH_FAILED]
-        )
+        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_message_es
 
         twiml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="alice">{message}</Say>
+    <Say language="{CALLER_LANGUAGE}">{caller_message_es(error_type)}</Say>
     <Hangup/>
 </Response>"""
 

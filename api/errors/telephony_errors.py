@@ -24,7 +24,8 @@ class TelephonyError(Enum):
     VALID = "VALID"
 
 
-# Error messages for organizations (debugging-focused)
+# Error messages for organizations (debugging-focused). Written to logs and failure records only: what a caller
+# HEARS is CALLER_MESSAGES_ES below.
 TELEPHONY_ERROR_MESSAGES = {
     TelephonyError.PROVIDER_MISMATCH: "Configuration error: This phone number is configured for a different telephony provider. Please check your dashboard settings and update your webhook URL configuration.",
     TelephonyError.WORKFLOW_NOT_FOUND: "Workflow not found. Please verify the workflow ID in your webhook URL is correct and the workflow exists in your dashboard.",
@@ -36,6 +37,34 @@ TELEPHONY_ERROR_MESSAGES = {
     TelephonyError.QUOTA_EXCEEDED: "Service temporarily unavailable: Your account has exceeded usage limits. Please contact your administrator or upgrade your plan to continue receiving calls.",
     TelephonyError.GENERAL_AUTH_FAILED: "Authentication failed: Please check your webhook URL configuration and ensure your telephony provider settings match your dashboard configuration.",
 }
+
+
+# What the caller hears (VOZ-AC-B4-46b): two Spanish sentences, never the debugging text above. Capacity
+# refusals say "we cannot take your call now"; everything else says the number is not available.
+CALLER_LANGUAGE = "es-ES"
+_CAPACITY_MESSAGE_ES = "Lo sentimos, en este momento no podemos atender su llamada. Por favor, inténtelo de nuevo más tarde."
+_UNAVAILABLE_MESSAGE_ES = "Lo sentimos, este número no está disponible en este momento. Por favor, inténtelo más tarde."
+_CAPACITY_ERRORS = {
+    TelephonyError.CONCURRENT_CALL_LIMIT,
+    TelephonyError.QUOTA_EXCEEDED,
+    TelephonyError.ADMISSION_BACKEND_UNAVAILABLE,
+}
+CALLER_MESSAGES_ES = {
+    error: _CAPACITY_MESSAGE_ES
+    if error in _CAPACITY_ERRORS
+    else _UNAVAILABLE_MESSAGE_ES
+    for error in TelephonyError
+    if error != TelephonyError.VALID
+}
+
+
+def caller_message_es(error) -> str:
+    """The sentence a caller hears for ``error`` (a TelephonyError or its value). Anything else, such as the
+    free-form types passed to ``generate_error_response``, gets the "not available" sentence."""
+    try:
+        return CALLER_MESSAGES_ES[TelephonyError(error)]
+    except (KeyError, ValueError):
+        return _UNAVAILABLE_MESSAGE_ES
 
 
 _QUOTA_ERRORS = {

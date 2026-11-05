@@ -779,10 +779,14 @@ class VonageProvider(TelephonyProvider):
         """
         from fastapi import Response
 
+        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_message_es
+
+        # ``message`` is for the operator; the caller hears the Spanish table text.
         error_ncco = [
             {
                 "action": "talk",
-                "text": f"Sorry, there was an error processing your call. {message}",
+                "text": caller_message_es(error_type),
+                "language": CALLER_LANGUAGE,
             },
             {"action": "hangup"},
         ]

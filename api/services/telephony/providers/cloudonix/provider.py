@@ -489,9 +489,11 @@ class CloudonixProvider(TelephonyProvider):
             "get_webhook_response called for Cloudonix - this should not happen. "
             "Cloudonix embeds CXML directly in API calls."
         )
-        return """<?xml version="1.0" encoding="UTF-8"?>
+        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_message_es
+
+        return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Error: This endpoint should not be called for Cloudonix</Say>
+    <Say language="{CALLER_LANGUAGE}">{caller_message_es("ENDPOINT_NOT_USED")}</Say>
 </Response>"""
 
     async def handle_websocket(
@@ -1330,15 +1332,11 @@ class CloudonixProvider(TelephonyProvider):
         """
         from fastapi import Response
 
-        from api.errors.telephony_errors import TELEPHONY_ERROR_MESSAGES, TelephonyError
-
-        message = TELEPHONY_ERROR_MESSAGES.get(
-            error_type, TELEPHONY_ERROR_MESSAGES[TelephonyError.GENERAL_AUTH_FAILED]
-        )
+        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_message_es
 
         twiml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="alice">{message}</Say>
+    <Say language="{CALLER_LANGUAGE}">{caller_message_es(error_type)}</Say>
     <Hangup/>
 </Response>"""
 
@@ -1353,30 +1351,12 @@ class CloudonixProvider(TelephonyProvider):
         """
         from fastapi import Response
 
-        # Map error types to appropriate TwiML responses
-        if error_type == "auth_failed":
-            twiml = """<?xml version="1.0" encoding="UTF-8"?>
+        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_message_es
+
+        # ``error_type`` and ``message`` are for the operator; the caller hears the Spanish table text.
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Authentication failed. This call cannot be processed.</Say>
-    <Hangup/>
-</Response>"""
-        elif error_type == "not_configured":
-            twiml = """<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say>Service not configured. Please contact support.</Say>
-    <Hangup/>
-</Response>"""
-        elif error_type == "invalid_number":
-            twiml = """<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say>Invalid phone number. This call cannot be processed.</Say>
-    <Hangup/>
-</Response>"""
-        else:
-            # Generic error
-            twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say>An error occurred: {message}</Say>
+    <Say language="{CALLER_LANGUAGE}">{caller_message_es(error_type)}</Say>
     <Hangup/>
 </Response>"""
 

@@ -13,6 +13,7 @@ from pipecat.utils.run_context import set_current_run_id
 from api.db import db_client
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
+from api.services.telephony.callback_auth import verify_transfer_callback
 from api.services.telephony.factory import get_telephony_provider_for_run
 from api.services.telephony.providers.telnyx.provider import (
     TelnyxProvider,
@@ -227,6 +228,19 @@ async def handle_telnyx_transfer_result(transfer_id: str, request: Request):
         - call.answered: https://developers.telnyx.com/api-reference/callbacks/call-answered
         - call.hangup:   https://developers.telnyx.com/api-reference/callbacks/call-hangup
     """
+    # Telnyx signs the exact bytes (timestamp|body), so verify before parsing anything. The credentials
+    # come from the transfer's context; a request that cannot be attributed to one is a 401.
+    raw_body = (await request.body()).decode("utf-8", errors="replace")
+    transfer_context = await verify_transfer_callback(
+        transfer_id,
+        provider_name="telnyx",
+        where="POST /telephony/telnyx/transfer-result/{transfer_id}",
+        url="",
+        data={},
+        headers=dict(request.headers),
+        body=raw_body,
+    )
+
     event_data = await request.json()
     logger.info(
         f"Telnyx transfer-result webhook (transfer_id={transfer_id}): "
@@ -243,9 +257,8 @@ async def handle_telnyx_transfer_result(transfer_id: str, request: Request):
         return {"status": "pending"}
 
     call_transfer_manager = await get_call_transfer_manager()
-    transfer_context = await call_transfer_manager.get_transfer_context(transfer_id)
-    original_call_sid = transfer_context.original_call_sid if transfer_context else ""
-    conference_name = transfer_context.conference_name if transfer_context else None
+    original_call_sid = transfer_context.original_call_sid
+    conference_name = transfer_context.conference_name
 
     if event_type == "call.answered":
         # Seed the conference now with the destination's live call_control_id

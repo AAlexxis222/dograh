@@ -6,12 +6,13 @@ provider registry — see ProviderSpec.router.
 
 import json
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from loguru import logger
 from pipecat.utils.run_context import set_current_run_id
 
 from api.db import db_client
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
+from api.services.telephony.callback_auth import refuse_unverifiable_in_cell
 from api.services.telephony.factory import get_telephony_provider_for_run
 from api.services.telephony.providers.cloudonix.provider import CloudonixProvider
 from api.services.telephony.status_processor import (
@@ -25,6 +26,13 @@ from api.services.telephony.transfer_event_protocol import (
 
 router = APIRouter()
 
+
+def _refuse_in_cell(request: Request) -> None:
+    """Route dependency: ``CloudonixProvider.verify_inbound_signature`` accepts every request (its scheme is
+    UNVERIFIED), so a cell, which fails closed, answers 401 before the handler reads anything."""
+    refuse_unverifiable_in_cell("cloudonix", f"POST {request.url.path}")
+
+
 # Cloudonix session statuses that terminate a transfer without an answer.
 _CLOUDONIX_TRANSFER_FAILURE_STATUSES = {
     "busy",
@@ -37,7 +45,9 @@ _CLOUDONIX_TRANSFER_FAILURE_STATUSES = {
 }
 
 
-@router.post("/cloudonix/transfer-result/{transfer_id}")
+@router.post(
+    "/cloudonix/transfer-result/{transfer_id}", dependencies=[Depends(_refuse_in_cell)]
+)
 async def handle_cloudonix_transfer_result(transfer_id: str, request: Request):
     """Drive transfer completion from the destination leg's session status.
 
@@ -113,7 +123,10 @@ async def handle_cloudonix_transfer_result(transfer_id: str, request: Request):
     return {"status": "completed"}
 
 
-@router.post("/cloudonix/status-callback/{workflow_run_id}")
+@router.post(
+    "/cloudonix/status-callback/{workflow_run_id}",
+    dependencies=[Depends(_refuse_in_cell)],
+)
 async def handle_cloudonix_status_callback(
     workflow_run_id: int,
     request: Request,
@@ -173,7 +186,7 @@ async def handle_cloudonix_status_callback(
     return {"status": "success"}
 
 
-@router.post("/cloudonix/cdr")
+@router.post("/cloudonix/cdr", dependencies=[Depends(_refuse_in_cell)])
 async def handle_cloudonix_cdr(request: Request):
     """Handle Cloudonix CDR (Call Detail Record) webhooks.
 

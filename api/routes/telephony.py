@@ -3,7 +3,6 @@ Telephony routes - handles all telephony-related endpoints.
 Consolidated from split modules for easier maintenance.
 """
 
-import json
 import uuid
 from typing import Optional
 
@@ -39,6 +38,11 @@ from api.services.call_concurrency import (
 from api.services.quota_service import authorize_workflow_run_start
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
+from api.services.telephony.callback_auth import (
+    rejected,
+    verify_signature,
+    verify_transfer_callback,
+)
 from api.services.telephony.factory import (
     get_all_telephony_providers,
     get_telephony_provider_by_id,
@@ -812,6 +816,30 @@ async def _handle_telephony_websocket(
 
 
 # Exotel's inbound webhook is a GET, everyone else POSTs.
+async def _find_inbound_route(provider_class, normalized_data):
+    """The ``(config, phone_number)`` an inbound webhook belongs to, or None.
+
+    One SQL roundtrip that joins telephony_configurations and
+    telephony_phone_numbers and filters on (provider, account_id, called
+    number canonical address, is_active).
+    """
+    if normalized_data.account_id:
+        return await db_client.find_inbound_route_by_account(
+            provider=provider_class.PROVIDER_NAME,
+            account_id=normalized_data.account_id,
+            to_number=normalized_data.to_number,
+            country_hint=normalized_data.to_country,
+        )
+    # Exotel Voicebot Applet dynamic-URL webhooks omit AccountSid;
+    # resolve org/config from the called number when it is uniquely
+    # registered for this provider (fail closed on ambiguity).
+    return await db_client.find_inbound_route_by_called_number(
+        provider=provider_class.PROVIDER_NAME,
+        to_number=normalized_data.to_number,
+        country_hint=normalized_data.to_country,
+    )
+
+
 @router.get("/inbound/run")
 @router.post("/inbound/run")
 async def handle_inbound_run(request: Request):
@@ -827,7 +855,6 @@ async def handle_inbound_run(request: Request):
     each provider's ``verify_inbound_signature`` reads its own headers from
     the dict, so adding a new provider doesn't require changes to this route.
     """
-    from api.services.telephony import registry as telephony_registry
 
     logger.info("Inbound /run dispatch received")
 
@@ -856,28 +883,10 @@ async def handle_inbound_run(request: Request):
             )
             return generic_hangup_response()
 
-        # 1. Resolve (config, phone_number) in a single SQL roundtrip that
-        # joins telephony_configurations and telephony_phone_numbers and
-        # filters on (provider, account_id, called number
-        # canonical address, is_active). The phone-number row's existence in
-        # the matched config simultaneously identifies the org — we never
+        # 1. Resolve (config, phone_number). The phone-number row's existence
+        # in the matched config simultaneously identifies the org — we never
         # match a config from one org against a phone owned by another.
-        if normalized_data.account_id:
-            match = await db_client.find_inbound_route_by_account(
-                provider=provider_class.PROVIDER_NAME,
-                account_id=normalized_data.account_id,
-                to_number=normalized_data.to_number,
-                country_hint=normalized_data.to_country,
-            )
-        else:
-            # Exotel Voicebot Applet dynamic-URL webhooks omit AccountSid;
-            # resolve org/config from the called number when it is uniquely
-            # registered for this provider (fail closed on ambiguity).
-            match = await db_client.find_inbound_route_by_called_number(
-                provider=provider_class.PROVIDER_NAME,
-                to_number=normalized_data.to_number,
-                country_hint=normalized_data.to_country,
-            )
+        match = await _find_inbound_route(provider_class, normalized_data)
 
         if not match:
             logger.warning(
@@ -1020,35 +1029,50 @@ async def handle_inbound_run(request: Request):
 @router.post("/inbound/fallback")
 async def handle_inbound_fallback(request: Request):
     """Fallback endpoint that returns audio message when calls cannot be processed."""
-
-    webhook_data, _ = await parse_webhook_request(request)
+    # Authenticated like /inbound/run: the account id of the webhook names the telephony
+    # configuration, and that configuration's credentials must verify the signature. Anything
+    # else is a 401. Neither the headers nor the body are logged, only the call id.
+    # (Comments, not docstring: the docstring is published in openapi.json and the generated clients.)
+    where = "POST /telephony/inbound/fallback"
+    try:
+        webhook_data, raw_body = await parse_webhook_request(request)
+    except ValueError:
+        raise rejected(where, why="no parseable body") from None
     headers = dict(request.headers)
 
-    # Detect provider
     provider_class = await _detect_provider(webhook_data, headers)
+    if not provider_class:
+        raise rejected(where, why="no provider recognises the request")
+    try:
+        normalized_data = normalize_webhook_data(provider_class, webhook_data, headers)
+        match = await _find_inbound_route(provider_class, normalized_data)
+        if not match:
+            raise rejected(where, why="no inbound route matches the webhook")
+        config, _ = match
+        provider = await get_telephony_provider_by_id(config.id, config.organization_id)
+    except HTTPException:
+        raise
+    except Exception as exc:  # any failure to resolve the credentials fails closed
+        raise rejected(
+            where, why=f"credentials unavailable ({type(exc).__name__})"
+        ) from exc
+    await verify_signature(
+        provider,
+        where=where,
+        url=str(request.url),
+        data=webhook_data,
+        headers=headers,
+        body=raw_body,
+    )
 
-    if provider_class:
-        # Use provider-specific error response
-        call_id = (
-            webhook_data.get("CallSid")
-            or webhook_data.get("CallUUID")
-            or webhook_data.get("call_uuid")
-        )
-        logger.info(
-            f"[fallback] Received {provider_class.PROVIDER_NAME} callback for call {call_id}: {json.dumps(webhook_data)}"
-        )
-
-        return provider_class.generate_error_response(
-            "SYSTEM_UNAVAILABLE",
-            "Our system is temporarily unavailable. Please try again later.",
-        )
-    else:
-        # Unknown provider - return generic XML
-        logger.info(
-            f"[fallback] Received unknown provider callback: {json.dumps(webhook_data)} and request headers: {json.dumps(headers)}"
-        )
-
-        return generic_hangup_response()
+    logger.info(
+        f"[fallback] Received {provider_class.PROVIDER_NAME} callback for call {normalized_data.call_id}"
+    )
+    # The second argument is for the operator; the caller hears the Spanish table text.
+    return provider_class.generate_error_response(
+        "SYSTEM_UNAVAILABLE",
+        "Our system is temporarily unavailable. Please try again later.",
+    )
 
 
 @router.post("/inbound/{workflow_id}", deprecated=True)
@@ -1201,6 +1225,18 @@ async def complete_transfer_function_call(transfer_id: str, request: Request):
     form_data = await request.form()
     data = dict(form_data)
 
+    # Only a request signed with the token of the organization that owns the transfer gets further;
+    # an unsigned or unattributable one is a 401 and changes nothing.
+    transfer_context = await verify_transfer_callback(
+        transfer_id,
+        provider_name="twilio",
+        where="POST /telephony/transfer-result/{transfer_id}",
+        url=str(request.url),
+        data=data,
+        headers=dict(request.headers),
+    )
+    call_transfer_manager = await get_call_transfer_manager()
+
     call_status = data.get("CallStatus", "")
     call_sid = data.get("CallSid", "")
 
@@ -1208,12 +1244,8 @@ async def complete_transfer_function_call(transfer_id: str, request: Request):
         f"Transfer result(call status) webhook: {transfer_id} status={call_status}"
     )
 
-    # Get transfer context from Redis for additional information
-    call_transfer_manager = await get_call_transfer_manager()
-    transfer_context = await call_transfer_manager.get_transfer_context(transfer_id)
-
-    original_call_sid = transfer_context.original_call_sid if transfer_context else None
-    conference_name = transfer_context.conference_name if transfer_context else None
+    original_call_sid = transfer_context.original_call_sid
+    conference_name = transfer_context.conference_name
 
     # Determine the result based on call status with user-friendly messaging
     if call_status in ("in-progress", "answered"):

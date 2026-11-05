@@ -667,23 +667,23 @@ class ExotelProvider(TelephonyProvider):
     @staticmethod
     def generate_validation_error_response(error_type) -> Response:
         """TwiML/ExoML hangup used when inbound route/auth validation fails."""
-        from api.errors.telephony_errors import TELEPHONY_ERROR_MESSAGES, TelephonyError
+        from api.errors.telephony_errors import caller_message_es
 
-        message = TELEPHONY_ERROR_MESSAGES.get(
-            error_type, TELEPHONY_ERROR_MESSAGES[TelephonyError.GENERAL_AUTH_FAILED]
-        )
         xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>{message}</Say>
+    <Say>{caller_message_es(error_type)}</Say>
     <Hangup/>
 </Response>"""
         return Response(content=xml, media_type="application/xml")
 
     @staticmethod
     def generate_error_response(error_type: str, message: str):
+        from api.errors.telephony_errors import caller_message_es
+
+        # ``message`` is for the operator; the caller hears the Spanish table text.
         xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Sorry, there was an error processing your call. {message}</Say>
+    <Say>{caller_message_es(error_type)}</Say>
     <Hangup/>
 </Response>"""
         return Response(content=xml, media_type="application/xml")

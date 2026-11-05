@@ -556,9 +556,12 @@ class PlivoProvider(TelephonyProvider):
     def generate_error_response(error_type: str, message: str) -> tuple:
         from fastapi import Response
 
+        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_message_es
+
+        # ``message`` is for the operator; the caller hears the Spanish table text.
         plivo_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Speak>Sorry, there was an error processing your call. {message}</Speak>
+    <Speak language="{CALLER_LANGUAGE}">{caller_message_es(error_type)}</Speak>
     <Hangup/>
 </Response>"""
         return Response(content=plivo_xml, media_type="application/xml")
@@ -567,15 +570,11 @@ class PlivoProvider(TelephonyProvider):
     def generate_validation_error_response(error_type) -> tuple:
         from fastapi import Response
 
-        from api.errors.telephony_errors import TELEPHONY_ERROR_MESSAGES, TelephonyError
-
-        message = TELEPHONY_ERROR_MESSAGES.get(
-            error_type, TELEPHONY_ERROR_MESSAGES[TelephonyError.GENERAL_AUTH_FAILED]
-        )
+        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_message_es
 
         plivo_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Speak>{message}</Speak>
+    <Speak language="{CALLER_LANGUAGE}">{caller_message_es(error_type)}</Speak>
     <Hangup/>
 </Response>"""
         return Response(content=plivo_xml, media_type="application/xml")
