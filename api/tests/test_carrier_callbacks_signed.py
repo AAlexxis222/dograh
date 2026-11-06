@@ -1051,6 +1051,124 @@ def test_cell_startup_uses_is_cell(monkeypatch):
 
 
 # ---------------------------------------------------------------------------------------------------------
+# What the log never holds: the raw body, caller names, caller or called numbers, the media-WS token
+# ---------------------------------------------------------------------------------------------------------
+
+CALLED = "+34911000111"
+NAME_MARKER = "caller-name-4471"
+
+
+def _pii_form() -> dict:
+    return {
+        "CallSid": "CA-pii",
+        "CallUUID": "uuid-pii",
+        "AccountSid": "AC123",
+        "From": CALLER,
+        "To": CALLED,
+        "CallerName": NAME_MARKER,
+        "Marker": BODY_MARKER,
+    }
+
+
+def _post_legacy_inbound(client, world, *, signature_valid: bool):
+    """The legacy per-workflow webhook with a body full of personal data, verified as ``signature_valid``."""
+    normalized = SimpleNamespace(
+        provider="twilio",
+        direction="inbound",
+        to_number=CALLED,
+        from_number=CALLER,
+        to_country="ES",
+        from_country="ES",
+        account_id="AC123",
+        call_id="CA-pii",
+        raw_data=_pii_form(),
+        sip_headers={"X-Caller-Name": NAME_MARKER},
+        sip_call_id=None,
+    )
+    _route_for_twilio(world)
+    world.db.get_workflow_by_id = AsyncMock(
+        return_value=SimpleNamespace(id=WORKFLOW_ID, organization_id=ORG_ID, user_id=1)
+    )
+    provider = SimpleNamespace(
+        verify_inbound_signature=AsyncMock(return_value=signature_valid),
+        start_inbound_stream=AsyncMock(),
+    )
+    with (
+        patch("api.routes.telephony.normalize_webhook_data", return_value=normalized),
+        patch(
+            "api.routes.telephony._detect_provider",
+            new=AsyncMock(return_value=TwilioProvider),
+        ),
+        patch(
+            "api.routes.telephony.get_telephony_provider_by_id",
+            new=AsyncMock(return_value=provider),
+        ),
+        patch("api.routes.telephony._create_inbound_workflow_run", new=AsyncMock()),
+        patch("api.routes.telephony.call_concurrency") as concurrency,
+    ):
+        concurrency.acquire_org_slot = AsyncMock(
+            side_effect=RuntimeError("test: stop after admission")
+        )
+        return client.post(f"/telephony/inbound/{WORKFLOW_ID}", data=_pii_form())
+
+
+def _assert_logged_nothing_personal(log_lines, *, numbers=True):
+    text = "\n".join(log_lines).lower()
+    assert text, "the sink saw nothing: the test would pass for the wrong reason"
+    assert BODY_MARKER not in text
+    assert NAME_MARKER not in text
+    if numbers:
+        # Digits only: the redaction patcher misses numbers without "+", and this sink has no patcher at all.
+        assert "612345678" not in text and "911000111" not in text
+
+
+# Status callbacks of the carrier routes: run 999 does not exist, so each handler answers right after its first log.
+STATUS_CALLBACKS = [
+    ("plivo", "/telephony/plivo/hangup-callback/999", "form"),
+    ("twilio", "/telephony/twilio/status-callback/999", "form"),
+    ("vobiz", "/telephony/vobiz/hangup-callback/999", "form"),
+    ("vobiz", "/telephony/vobiz/ring-callback/999", "form"),
+    ("vobiz", "/telephony/vobiz/hangup-callback/workflow/999", "form"),
+    ("exotel", "/telephony/exotel/status-callback/999", "form"),
+    ("telnyx", "/telephony/telnyx/events/999", "json"),
+    ("cloudonix", "/telephony/cloudonix/status-callback/999", "form"),
+    ("cloudonix", "/telephony/cloudonix/cdr", "json"),
+]
+
+
+def test_legacy_inbound_does_not_log_the_body_or_the_caller_name(
+    client, world, log_lines
+):
+    _post_legacy_inbound(client, world, signature_valid=True)
+
+    _assert_logged_nothing_personal(log_lines, numbers=False)
+
+
+@pytest.mark.parametrize(("carrier", "path", "kind"), STATUS_CALLBACKS)
+def test_status_callbacks_do_not_log_the_body(
+    client, world, monkeypatch, log_lines, carrier, path, kind
+):
+    monkeypatch.delenv("CELL_ROLE", raising=False)
+    module = f"api.services.telephony.providers.{carrier}.routes"
+    body = {
+        **_pii_form(),
+        "data": {
+            "event_type": "call.hangup",
+            "payload": {"from": CALLER, "caller_id_name": NAME_MARKER},
+        },
+        "domain": "acme.cloudonix.net",
+        "session": {"token": "session-pii"},
+    }
+    with patch(f"{module}.db_client", world.db):
+        if kind == "json":
+            client.post(path, json=body)
+        else:
+            client.post(path, data=_pii_form())
+
+    _assert_logged_nothing_personal(log_lines)
+
+
+# ---------------------------------------------------------------------------------------------------------
 # What the caller hears
 # ---------------------------------------------------------------------------------------------------------
 
