@@ -242,6 +242,18 @@ export type ActiveCallsResponse = {
      * Loop Lag Max Ms
      */
     loop_lag_max_ms?: number;
+    /**
+     * Lag P99 Ms
+     */
+    lag_p99_ms?: number;
+    /**
+     * Draining
+     */
+    draining?: boolean;
+    /**
+     * K P
+     */
+    k_p?: number;
 };
 
 /**
@@ -13388,6 +13400,10 @@ export type SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigura
 
 export type SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsPutErrors = {
     /**
+     * Not an XPAND operator. Body: {detail: {code: privacy_knob_forbidden, where, reason, hint}}
+     */
+    403: unknown;
+    /**
      * Not found
      */
     404: unknown;
@@ -14222,6 +14238,10 @@ export type DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDelete
 
 export type DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDeleteErrors = {
     /**
+     * Not an XPAND operator. Body: {detail: {code: privacy_knob_forbidden, where, reason, hint}}
+     */
+    403: unknown;
+    /**
      * Not found
      */
     404: unknown;
@@ -14297,6 +14317,10 @@ export type SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostData
 };
 
 export type SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostErrors = {
+    /**
+     * Not an XPAND operator. Body: {detail: {code: privacy_knob_forbidden, where, reason, hint}}
+     */
+    403: unknown;
     /**
      * Not found
      */

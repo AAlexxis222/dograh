@@ -1303,7 +1303,7 @@ export const setDefaultCallerIdApiV1OrganizationsTelephonyConfigsConfigIdPhoneNu
 /**
  * Delete Langfuse Credentials
  *
- * Delete Langfuse credentials for the user's organization.
+ * Delete Langfuse credentials for the user's organization. XPAND operators only.
  */
 export const deleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDelete = <ThrowOnError extends boolean = false>(options?: Options<DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDeleteData, ThrowOnError>): RequestResult<DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDeleteResponses, DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDeleteErrors, ThrowOnError> => (options?.client ?? client).delete<DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDeleteResponses, DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDeleteErrors, ThrowOnError>({ url: '/api/v1/organizations/langfuse-credentials', ...options });
 
@@ -1317,7 +1317,7 @@ export const getLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsGet = <T
 /**
  * Save Langfuse Credentials
  *
- * Save Langfuse credentials for the user's organization.
+ * Save Langfuse credentials for the user's organization. XPAND operators only.
  */
 export const saveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPost = <ThrowOnError extends boolean = false>(options: Options<SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostData, ThrowOnError>): RequestResult<SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostResponses, SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostErrors, ThrowOnError> => (options.client ?? client).post<SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostResponses, SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostErrors, ThrowOnError>({
     url: '/api/v1/organizations/langfuse-credentials',
@@ -1513,7 +1513,7 @@ export const getDailyRunsDetailApiV1OrganizationsReportsDailyRunsGet = <ThrowOnE
  * Get time-limited TURN credentials for WebRTC connections.
  *
  * This endpoint generates ephemeral TURN credentials that are:
- * - Valid for the configured TTL (default: 24 hours)
+ * - Valid for the configured TTL (default: 5 minutes)
  * - Cryptographically bound to the user via HMAC
  * - Compatible with coturn's use-auth-secret mode
  *
