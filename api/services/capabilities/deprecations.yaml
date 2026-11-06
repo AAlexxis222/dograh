@@ -186,14 +186,9 @@ entries:
     replacement: gpt-6-luna
     source_url: https://developers.openai.com/api/docs/deprecations
     read_at: 2026-11-05
-  - provider: azure
-    kind: llm
-    model_or_feature: gpt-4.1-mini
-    date: 2027-04-14
-    effect: shutdown
-    replacement: null   # the lifecycle page names none yet (picked 90-120 days before retirement)
-    source_url: https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/model-retirements
-    read_at: 2026-11-05
+  # No azure (LLM) entry: AzureLLMService.model is a deployment name, not the model the deployment runs, so an id entry
+  # cannot tell which rows run a retiring model. Azure's gpt-4.1-mini retirement (2027-04-14, learn.microsoft.com
+  # .../openai/concepts/model-retirements, read 2026-11-05) is tracked by VOZ-FU-N0-01b-azure-deployment-model.
   - provider: soniox
     kind: stt
     model_or_feature: stt-rt-v5
