@@ -203,8 +203,8 @@ entries:
     source_url: https://docs.soniox.com/stt/models
     read_at: 2026-11-05
   - provider: lmnt
-    kind: service   # the whole LMNT service is gone; stored configs stay readable (aurora stays as the class default)
-    model_or_feature: tts
+    kind: tts   # the whole LMNT service is gone: every model id it offered, exact (the sweep's text regex ignores the provider)
+    model_or_feature: [aurora, blizzard]   # stored configs stay readable; aurora stays the class default
     date: 2026-11-05   # LMNT's page ("LMNT has shut down") gives no date: the day this entry was written
     effect: shutdown
     replacement: null
