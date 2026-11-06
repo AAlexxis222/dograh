@@ -3,6 +3,8 @@
 # effect (shutdown|price|legacy), replacement, warn_from (optional), source_url, read_at.
 # read_at = the date source_url was last read; each entry cites its own source.
 # status_for returns the FIRST matching entry: put a specific id above any broader glob of the same provider.
+# A non-null replacement must be a model of the same provider and slot that is still active on the entry's date
+# (test_every_replacement_is_an_active_model_of_the_same_slot); otherwise null ("pick another model of this kind").
 entries:
   - provider: elevenlabs
     kind: tts
@@ -73,7 +75,7 @@ entries:
     model_or_feature: ["tts-1*", "gpt-4o-mini-tts*"]
     date: 2027-01-06
     effect: shutdown
-    replacement: gpt-realtime-2.1-mini   # as named by the vendor page; not a 1:1 TTS swap, no documented Spanish voice in OpenAI TTS (VOZ-AC-B1-83)
+    replacement: null   # the vendor names the realtime gpt-realtime-2.1-mini, not a TTS model; no documented Spanish voice in OpenAI TTS (VOZ-AC-B1-83)
     warn_from: 2026-10-02
     source_url: https://developers.openai.com/api/docs/deprecations
     read_at: 2026-11-05
@@ -110,7 +112,7 @@ entries:
     model_or_feature: gpt-4o-mini-transcribe-2025-03-20
     date: 2027-01-20
     effect: shutdown
-    replacement: gpt-4o-mini-transcribe-2025-12-15
+    replacement: gpt-transcribe   # the vendor's 2025-12-15 snapshot is caught by the glob below and retires on 2027-02-26
     source_url: https://developers.openai.com/api/docs/deprecations
     read_at: 2026-11-05
   - provider: openai
@@ -118,7 +120,7 @@ entries:
     model_or_feature: [whisper-1, "gpt-4o-transcribe*", "gpt-4o-mini-transcribe*"]   # the first glob does not match gpt-4o-mini-transcribe
     date: 2027-02-26
     effect: shutdown
-    replacement: gpt-transcribe (or gpt-live-transcribe)
+    replacement: gpt-transcribe   # the vendor also names gpt-live-transcribe, which the OpenAI STT slot does not offer
     warn_from: 2026-10-02   # VOZ-AC-B1-81: the OpenAI STT default must be flagged
     source_url: https://developers.openai.com/api/docs/deprecations
     read_at: 2026-11-05
