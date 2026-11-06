@@ -115,6 +115,33 @@ def test_azure_llm_model_is_a_deployment_name_and_is_never_matched_as_a_model_id
         assert status_for("azure", "gpt-4.1-mini", today=today).state == "active"
 
 
+# The next retirement wave: no model picker may still offer an id that is shut down by then.
+LIST_CHECK_DATE = dt.date(2026, 12, 15)
+
+
+def _offered_models():
+    """(service type, provider, model) for every id a registered class offers in its model picker."""
+    for service_type, by_provider in registry.REGISTRY.items():
+        for provider, cls in by_provider.items():
+            field = cls.model_fields.get("model")
+            extra = field.json_schema_extra if field else None
+            for model in extra.get("examples", ()) if isinstance(extra, dict) else ():
+                yield service_type.name.lower(), str(getattr(provider, "value", provider)), model
+
+
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        pytest.param(p, m, id=f"{t}:{p}:{m}")
+        for t, p, m in _offered_models()
+        if (p, m) not in EXCEPTIONS
+    ],
+)
+def test_offered_models_are_not_shutdown_at_the_next_wave(provider, model):
+    status = status_for(provider, model, today=LIST_CHECK_DATE)
+    assert status.state != "shutdown", f"{provider}/{model} is still offered: {status.reason}"
+
+
 def test_price_effect_only_warns():
     s = status_for("elevenlabs", "eleven_v4_turbo", today=dt.date(2026, 10, 13))
     assert s.state == "warning_price"
