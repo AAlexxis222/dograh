@@ -1177,6 +1177,36 @@ def test_refused_legacy_inbound_does_not_log_the_caller_number(
     _assert_logged_nothing_personal(log_lines)
 
 
+@pytest.mark.parametrize("routed", [False, True], ids=["no-route", "routed"])
+def test_inbound_run_does_not_log_caller_or_called_numbers(
+    client, world, log_lines, routed
+):
+    normalized = SimpleNamespace(
+        provider="twilio",
+        direction="inbound",
+        to_number=CALLED,
+        from_number=CALLER,
+        to_country="ES",
+        from_country="ES",
+        account_id="AC123",
+        call_id="CA-run",
+    )
+    if routed:
+        _route_for_twilio(world)
+        world.db.get_workflow = AsyncMock(return_value=None)
+    with (
+        patch("api.routes.telephony.normalize_webhook_data", return_value=normalized),
+        patch(
+            "api.routes.telephony._detect_provider",
+            new=AsyncMock(return_value=TwilioProvider),
+        ),
+    ):
+        response = client.post("/telephony/inbound/run", data=_pii_form())
+
+    assert UNAVAILABLE_ES in response.text
+    _assert_logged_nothing_personal(log_lines)
+
+
 # ---------------------------------------------------------------------------------------------------------
 # What the caller hears
 # ---------------------------------------------------------------------------------------------------------
