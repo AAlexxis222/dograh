@@ -27,6 +27,10 @@ EXCEPTIONS = {
         "VOZ-FU-N0-01b-llm-default",
         "OpenAI retires it on 2027-01-14; the default moves together with the voicemail and UI fallbacks",
     ),
+    ("openrouter", "openai/gpt-4.1"): (
+        "VOZ-FU-N0-01b-llm-default",
+        "legacy proxy of the same OpenAI model; it moves with the OpenAI default",
+    ),
     ("lmnt", "aurora"): (
         "VOZ-FU-N0-01b-refuse-on-save",
         "LMNT shut down; the class stays, outside REGISTRY, only so stored configs still load",

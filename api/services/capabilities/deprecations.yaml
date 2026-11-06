@@ -188,6 +188,14 @@ entries:
     replacement: gpt-6-luna
     source_url: https://developers.openai.com/api/docs/deprecations
     read_at: 2026-11-05
+  - provider: openrouter
+    kind: llm
+    model_or_feature: [openai/gpt-4.1, openai/gpt-4.1-mini]   # the OpenRouter slugs of the openai entry above
+    date: null
+    effect: legacy   # OpenAI retires the models on 2027-01-14; OpenRouter gives no date of its own, so no shutdown is claimed
+    replacement: null
+    source_url: https://developers.openai.com/api/docs/deprecations
+    read_at: 2026-11-05
   # No azure (LLM) entry: AzureLLMService.model is a deployment name, not the model the deployment runs, so an id entry
   # cannot tell which rows run a retiring model. Azure's gpt-4.1-mini retirement (2027-04-14, learn.microsoft.com
   # .../openai/concepts/model-retirements, read 2026-11-05) is tracked by VOZ-FU-N0-01b-azure-deployment-model.
