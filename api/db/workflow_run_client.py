@@ -511,12 +511,16 @@ class WorkflowRunClient(BaseDBClient):
 
     async def public_links_enabled_for_run(self, workflow_run_id: int) -> bool:
         """Whether the run's organization may have public download links (see
-        ``OrganizationConfigurationClient.public_links_enabled``). One query, and none outside a cell."""
+        ``OrganizationConfigurationClient.public_links_enabled``). One query, and none outside a cell. The document
+        is read whole and unsealed in Python: the column may hold a credential_box token, so SQL never looks inside."""
         if not is_cell():
             return True
         async with self.async_session() as session:
             result = await session.execute(
-                select(OrganizationConfigurationModel.value)
+                select(
+                    OrganizationConfigurationModel.id,
+                    OrganizationConfigurationModel.value,
+                )
                 .join(
                     WorkflowModel,
                     WorkflowModel.organization_id
@@ -531,7 +535,13 @@ class WorkflowRunClient(BaseDBClient):
                     == OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value,
                 )
             )
-            return public_links.links_enabled(result.scalar_one_or_none())
+            row = result.one_or_none()
+            document = (
+                unseal(OrganizationConfigurationModel.value, row.id, row.value)
+                if row is not None
+                else None
+            )
+            return public_links.links_enabled(document)
 
     async def ensure_public_access_token(self, workflow_run_id: int) -> Optional[str]:
         """Generate a public access token if not exists, return existing if present (idempotent).

@@ -78,6 +78,10 @@ HANDLED: dict[tuple[str, str], str] = {
         "get_workflow_run_config_without_credentials",
     ): "unseals the run snapshot and the pinned document with their ids",
     (
+        "api/db/workflow_run_client.py",
+        "public_links_enabled_for_run",
+    ): "unseals the selected organization document with its row id",
+    (
         "api/db/user_client.py",
         "upsert_user_configuration_value",
     ): "refuses a registered row key (MODEL_CONFIGURATION goes through the ORM)",
