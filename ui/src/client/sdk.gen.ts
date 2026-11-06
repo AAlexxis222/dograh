@@ -1513,7 +1513,7 @@ export const getDailyRunsDetailApiV1OrganizationsReportsDailyRunsGet = <ThrowOnE
  * Get time-limited TURN credentials for WebRTC connections.
  *
  * This endpoint generates ephemeral TURN credentials that are:
- * - Valid for the configured TTL (default: 24 hours)
+ * - Valid for the configured TTL (default: 5 minutes)
  * - Cryptographically bound to the user via HMAC
  * - Compatible with coturn's use-auth-secret mode
  *
@@ -1729,7 +1729,7 @@ export const initiateCallTestByWorkflowUuidApiV1PublicAgentTestWorkflowWorkflowU
  *
  * Raises:
  * HTTPException 400: If artifact type is unsupported
- * HTTPException 404: If token is invalid or artifact not found
+ * HTTPException 404: If token is invalid, expired or its links are off, or artifact not found
  */
 export const downloadWorkflowArtifactApiV1PublicDownloadWorkflowTokenArtifactTypeGet = <ThrowOnError extends boolean = false>(options: Options<DownloadWorkflowArtifactApiV1PublicDownloadWorkflowTokenArtifactTypeGetData, ThrowOnError>): RequestResult<DownloadWorkflowArtifactApiV1PublicDownloadWorkflowTokenArtifactTypeGetResponses, DownloadWorkflowArtifactApiV1PublicDownloadWorkflowTokenArtifactTypeGetErrors, ThrowOnError> => (options.client ?? client).get<DownloadWorkflowArtifactApiV1PublicDownloadWorkflowTokenArtifactTypeGetResponses, DownloadWorkflowArtifactApiV1PublicDownloadWorkflowTokenArtifactTypeGetErrors, ThrowOnError>({ url: '/api/v1/public/download/workflow/{token}/{artifact_type}', ...options });
 
