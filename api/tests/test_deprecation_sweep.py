@@ -186,6 +186,13 @@ def test_a_provider_less_id_next_to_a_resolved_pair_is_still_unstructured(monkey
     assert code == 1 and "unstructured_hit where=workflow#1:" in out
 
 
+def test_a_provider_less_id_inside_a_list_next_to_a_resolved_pair_is_still_unstructured(monkeypatch, capsys):
+    doc = {"llm": {"provider": "azure", "model": "gpt-4.1-mini"},
+           "nodes": [{"model_overrides": {"tts": {"model": "sonic-2"}}}]}
+    code, out = _run_main_with_sql_regex(monkeypatch, capsys, [("workflow", 1, doc)])
+    assert code == 1 and "unstructured_hit where=workflow#1:" in out
+
+
 @pytest.mark.parametrize("doc", [
     {"tts": {"provider": "cartesia", "model": "sonic-3.6"}, "nodes": [{"data": {"name": "Aurora"}}]},
     {"tts": {"provider": "elevenlabs", "model": "eleven_flash_v2_5", "voice": "Blizzard"}},
