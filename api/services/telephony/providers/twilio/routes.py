@@ -17,13 +17,17 @@ from api.enums import WorkflowRunState
 from api.errors.telephony_errors import CALL_NOT_ATTENDED_MESSAGE_ES, CALLER_LANGUAGE
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
+from api.services.telephony.callback_auth import provider_for_run, verify_signature
 from api.services.telephony.factory import get_telephony_provider_for_run
 from api.services.telephony.providers.twilio.introduction import (
     caller_left,
     introduction_twiml,
     process_introduction_status,
 )
-from api.services.telephony.providers.twilio.provider import CONNECT_ACTION_ROUTE
+from api.services.telephony.providers.twilio.provider import (
+    CONNECT_ACTION_ROUTE,
+    TwilioProvider,
+)
 from api.services.telephony.status_processor import (
     StatusCallbackRequest,
     _process_status_update,
@@ -62,22 +66,27 @@ async def handle_twiml_webhook(
     """
     Handle initial webhook from telephony provider.
     Returns provider-specific response (e.g., TwiML for Twilio).
+
+    The request must be signed with the token of the run's own organization, and the
+    ``workflow_id`` and ``organization_id`` of the query must agree with the run, which
+    decides (401 otherwise): the query never chooses whose credentials verify it.
     """
-
-    workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
-    provider = await get_telephony_provider_for_run(workflow_run, organization_id)
-    callback_data = dict(await request.form())
-
-    is_valid = await provider.verify_inbound_signature(
-        str(request.url),
-        callback_data,
-        dict(request.headers),
+    where = "POST /telephony/twiml"
+    _, _, provider = await provider_for_run(
+        workflow_run_id,
+        provider_name=TwilioProvider.PROVIDER_NAME,
+        where=where,
+        expect_workflow_id=workflow_id,
+        expect_organization_id=organization_id,
     )
-    if not is_valid:
-        logger.warning(
-            f"[run {workflow_run_id}] Invalid Twilio signature on answer webhook"
-        )
-        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+    callback_data = dict(await request.form())
+    await verify_signature(
+        provider,
+        where=where,
+        url=str(request.url),
+        data=callback_data,
+        headers=dict(request.headers),
+    )
 
     response_content = await provider.get_webhook_response(
         workflow_id, organization_id, workflow_run_id

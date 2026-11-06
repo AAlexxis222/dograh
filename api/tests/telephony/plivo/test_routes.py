@@ -121,8 +121,9 @@ async def test_plivo_xml_route_accepts_valid_signature_with_extra_query_param():
 
     with (
         patch("api.services.telephony.providers.plivo.routes.db_client") as db_client,
+        patch("api.services.telephony.callback_auth.db_client") as auth_db,
         patch(
-            "api.services.telephony.providers.plivo.routes.get_telephony_provider_for_run",
+            "api.services.telephony.callback_auth.get_telephony_provider_for_run",
             new_callable=AsyncMock,
             return_value=provider,
         ),
@@ -133,8 +134,11 @@ async def test_plivo_xml_route_accepts_valid_signature_with_extra_query_param():
             return_value="<Response/>",
         ) as get_webhook_response,
     ):
-        db_client.get_workflow_run_by_id = AsyncMock(
+        auth_db.get_workflow_run_by_id = AsyncMock(
             return_value=SimpleNamespace(gathered_context={}, workflow_id=7)
+        )
+        auth_db.get_workflow_by_id = AsyncMock(
+            return_value=SimpleNamespace(id=7, organization_id=11)
         )
         db_client.update_workflow_run = AsyncMock()
 

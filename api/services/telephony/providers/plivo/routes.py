@@ -14,7 +14,9 @@ from starlette.responses import HTMLResponse
 
 from api.db import db_client
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
+from api.services.telephony.callback_auth import provider_for_run, verify_signature
 from api.services.telephony.factory import get_telephony_provider_for_run
+from api.services.telephony.providers.plivo.provider import PlivoProvider
 from api.services.telephony.status_processor import (
     StatusCallbackRequest,
     _process_status_update,
@@ -107,24 +109,28 @@ async def handle_plivo_xml_webhook(
     """
     Handle initial webhook from Plivo when an outbound call is answered.
     Returns Plivo XML response with Stream element.
+
+    The request must be signed with the token of the run's own organization, and the
+    unsigned ``workflow_id`` and ``organization_id`` of the query must agree with the run,
+    which decides (401 otherwise): the query never chooses whose credentials verify it.
     """
     set_current_run_id(workflow_run_id)
-    workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
-    provider = await get_telephony_provider_for_run(workflow_run, organization_id)
-
-    form_data = await request.form()
-    callback_data = dict(form_data)
-
-    is_valid = await provider.verify_inbound_signature(
-        str(request.url), callback_data, dict(request.headers)
+    where = "POST /telephony/plivo-xml"
+    workflow_run, _, provider = await provider_for_run(
+        workflow_run_id,
+        provider_name=PlivoProvider.PROVIDER_NAME,
+        where=where,
+        expect_workflow_id=workflow_id,
+        expect_organization_id=organization_id,
     )
-    if not is_valid:
-        logger.warning(
-            f"[run {workflow_run_id}] Invalid Plivo signature on answer webhook"
-        )
-        return provider.generate_error_response(
-            "invalid_signature", "Invalid webhook signature."
-        )
+    callback_data = dict(await request.form())
+    await verify_signature(
+        provider,
+        where=where,
+        url=str(request.url),
+        data=callback_data,
+        headers=dict(request.headers),
+    )
 
     call_id = callback_data.get("CallUUID") or callback_data.get("RequestUUID")
     if call_id:
