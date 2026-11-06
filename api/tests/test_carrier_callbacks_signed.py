@@ -52,6 +52,7 @@ BASE = "http://testserver"
 TWILIO_TOKEN = secrets.token_hex(16)
 VOBIZ_TOKEN = secrets.token_hex(16)
 OTHER_TOKEN = secrets.token_hex(16)
+PLIVO_TOKEN = secrets.token_hex(16)
 FAKE = secrets.token_hex(8)
 RUN_ID = 7
 WORKFLOW_ID = 33
@@ -847,6 +848,126 @@ def test_vobiz_xml_query_that_disagrees_with_the_run_is_401_even_if_signed(
 
     _assert_b028(response)
     build.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------------------------------------
+# /plivo-xml and /twiml: the answer URL; the run decides whose credentials verify it, never the query
+# ---------------------------------------------------------------------------------------------------------
+
+ATTACKER_ORG = 12
+PLIVO_NONCE = "12345678901234567890"
+
+
+def _plivo(token: str = PLIVO_TOKEN) -> PlivoProvider:
+    return PlivoProvider(
+        {"auth_id": "MA123", "auth_token": token, "from_numbers": ["+15551230002"]}
+    )
+
+
+def _plivo_headers(url: str, form: dict, provider: PlivoProvider) -> dict:
+    payload = f"{provider._construct_post_url(url, form)}.{PLIVO_NONCE}"
+    digest = hmac.new(
+        provider.auth_token.encode(), payload.encode(), hashlib.sha256
+    ).digest()
+    return {
+        "x-plivo-signature-v3": base64.b64encode(digest).decode("ascii"),
+        "x-plivo-signature-v3-nonce": PLIVO_NONCE,
+    }
+
+
+ANSWER_URLS = {
+    "plivo-xml": {
+        "module": "api.services.telephony.providers.plivo.routes",
+        "provider": _plivo,
+        "form": {"CallUUID": "chosen-call-id"},
+        "sign": lambda url, form, provider: _plivo_headers(url, form, provider),
+    },
+    "twiml": {
+        "module": "api.services.telephony.providers.twilio.routes",
+        "provider": lambda token: TwilioProvider(
+            {"account_sid": "AC123", "auth_token": token, "from_numbers": []}
+        ),
+        "form": {"CallSid": "chosen-call-id"},
+        "sign": lambda url, form, provider: {
+            "X-Twilio-Signature": _twilio_signature(url, form, provider.auth_token)
+        },
+    },
+}
+
+
+def _answer_url_patches(module: str, world, resolve):
+    """The answer route's own db and provider lookup, and callback_auth's, all resolving through ``resolve``."""
+    return (
+        patch(f"{module}.db_client", world.db),
+        patch(f"{module}.get_telephony_provider_for_run", side_effect=resolve),
+        patch(
+            "api.services.telephony.callback_auth.get_telephony_provider_for_run",
+            side_effect=resolve,
+        ),
+    )
+
+
+@pytest.mark.parametrize("route", sorted(ANSWER_URLS))
+def test_answer_url_naming_another_org_is_401_even_if_signed_by_that_org(
+    client, world, route
+):
+    # The caller's own org has a configuration of the same carrier and signs with its own token; the run
+    # belongs to ORG_ID. The query's organization_id must not choose the credentials.
+    spec = ANSWER_URLS[route]
+    own, attacker = spec["provider"](PLIVO_TOKEN), spec["provider"](OTHER_TOKEN)
+    providers = {ORG_ID: own, ATTACKER_ORG: attacker}
+    for provider in providers.values():
+        provider.get_webhook_response = AsyncMock(return_value="<Response/>")
+
+    async def resolve(run, organization_id):
+        return providers[organization_id]
+
+    query = {
+        "workflow_id": WORKFLOW_ID,
+        "workflow_run_id": RUN_ID,
+        "organization_id": ATTACKER_ORG,
+    }
+    path = f"/telephony/{route}?{urlencode(query)}"
+    before = world.snapshot()
+    db, route_lookup, auth_lookup = _answer_url_patches(spec["module"], world, resolve)
+    with db, route_lookup, auth_lookup:
+        response = client.post(
+            path,
+            data=spec["form"],
+            headers=spec["sign"](BASE + path, spec["form"], attacker),
+        )
+
+    _assert_b028(response)
+    assert world.snapshot() == before
+    own.get_webhook_response.assert_not_awaited()
+    attacker.get_webhook_response.assert_not_awaited()
+
+
+def test_plivo_xml_bad_signature_is_401_and_writes_nothing(client, world):
+    world.provider = _plivo()
+    world.provider.get_webhook_response = AsyncMock(return_value="<Response/>")
+    query = {
+        "workflow_id": WORKFLOW_ID,
+        "workflow_run_id": RUN_ID,
+        "organization_id": ORG_ID,
+    }
+    before = world.snapshot()
+    db, route_lookup, auth_lookup = _answer_url_patches(
+        ANSWER_URLS["plivo-xml"]["module"], world, world.provider_for_run
+    )
+    with db, route_lookup, auth_lookup:
+        response = client.post(
+            f"/telephony/plivo-xml?{urlencode(query)}",
+            data={"CallUUID": "chosen-call-id"},
+            headers={
+                "x-plivo-signature-v3": "Zm9yZ2Vk",
+                "x-plivo-signature-v3-nonce": PLIVO_NONCE,
+            },
+        )
+
+    _assert_b028(response)
+    assert world.snapshot() == before
+    world.provider.get_webhook_response.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------------------------------------
