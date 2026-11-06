@@ -419,7 +419,6 @@ HOPPER_MODELS = [
 ]
 
 GROQ_MODELS = [
-    "llama-3.3-70b-versatile",
     "openai/gpt-oss-120b",
 ]
 OPENROUTER_MODELS = [
