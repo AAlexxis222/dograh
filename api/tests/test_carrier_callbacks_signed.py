@@ -1168,6 +1168,15 @@ def test_status_callbacks_do_not_log_the_body(
     _assert_logged_nothing_personal(log_lines)
 
 
+def test_refused_legacy_inbound_does_not_log_the_caller_number(
+    client, world, log_lines
+):
+    response = _post_legacy_inbound(client, world, signature_valid=False)
+
+    assert UNAVAILABLE_ES in response.text
+    _assert_logged_nothing_personal(log_lines)
+
+
 # ---------------------------------------------------------------------------------------------------------
 # What the caller hears
 # ---------------------------------------------------------------------------------------------------------
