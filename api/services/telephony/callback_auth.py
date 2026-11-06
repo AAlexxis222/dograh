@@ -13,6 +13,7 @@ from loguru import logger
 from api.db import db_client
 from api.services.runtime.cell_state import is_cell
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
+from api.services.telephony.carrier_policy import UNVERIFIED_CARRIERS
 from api.services.telephony.factory import (
     get_telephony_provider_by_id,
     get_telephony_provider_for_run,
@@ -146,18 +147,25 @@ async def verify_transfer_callback(
     return context
 
 
-def refuse_unverifiable_in_cell(provider_name: str, where: str) -> None:
-    """In a cell, refuse callbacks of a provider whose signature this platform cannot verify (VOZ-AC-B0-30).
+def refuse_unverifiable_signing(provider_name: str, where: str) -> None:
+    """Refuse callbacks of a provider whose signature this platform cannot verify.
 
-    Outside a cell nothing changes. ``<provider>_signing_unverified`` is the code VOZ-N0-40 lists as GATED until
-    the provider's scheme is checked against a real account.
+    A carrier in ``UNVERIFIED_CARRIERS`` is refused in every deployment; any other provider only in a cell, which
+    fails closed on a control it cannot enforce (VOZ-AC-B0-30). ``<provider>_signing_unverified`` is the code
+    VOZ-N0-40 lists as GATED until the provider's scheme is checked against a real account.
     """
-    if not is_cell():
+    if provider_name in UNVERIFIED_CARRIERS:
+        reason = f"{provider_name} callbacks cannot be authenticated yet, so this platform refuses them"
+        hint = f"{provider_name} is disabled until its signature scheme is verified against a real account (VOZ-N0-40)"
+    elif is_cell():
+        reason = f"{provider_name} callbacks cannot be authenticated yet, and a cell fails closed on a control it cannot enforce"
+        hint = f"do not point {provider_name} at a cell until its signature scheme is verified (VOZ-N0-40)"
+    else:
         return
     raise rejected(
         where,
         why=f"{provider_name} callbacks carry no signature this platform verifies",
         code=f"{provider_name}_signing_unverified",
-        reason=f"{provider_name} callbacks cannot be authenticated yet, and a cell fails closed on a control it cannot enforce",
-        hint=f"do not point {provider_name} at a cell until its signature scheme is verified (VOZ-N0-40), or run it outside a cell",
+        reason=reason,
+        hint=hint,
     )
