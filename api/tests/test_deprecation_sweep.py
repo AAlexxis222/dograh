@@ -90,15 +90,16 @@ def test_json_string_payloads_are_decoded_even_when_double_encoded():
 
 def test_text_regex_matches_quoted_model_values_only():
     rx = build_text_regex(["sonic-2", "sonic-2-*", "o3*"])
-    assert re.search(rx, json.dumps({"tts": {"model": "sonic-2"}}), re.I)
-    assert re.search(rx, json.dumps({"model": "sonic-2-2025-06-11"}), re.I)
-    assert re.search(rx, json.dumps(json.dumps({"model": "SONIC-2"})), re.I)  # double-encoded, any case
-    assert not re.search(rx, json.dumps({"model": "sonic-20"}), re.I)
-    assert not re.search(rx, json.dumps({"prompt": "say sonic-2 and sonic-2-x aloud"}), re.I)
-    assert re.search(rx, json.dumps({"model": "o3-mini"}), re.I)
+    assert re.search(rx, json.dumps({"tts": {"model": "sonic-2"}}))
+    assert re.search(rx, json.dumps({"model": "sonic-2-2025-06-11"}))
+    assert re.search(rx, json.dumps(json.dumps({"model": "sonic-2"})))  # double-encoded
+    assert not re.search(rx, json.dumps({"model": "SONIC-2"}))  # case-sensitive, as status_for matches
+    assert not re.search(rx, json.dumps({"model": "sonic-20"}))
+    assert not re.search(rx, json.dumps({"prompt": "say sonic-2 and sonic-2-x aloud"}))
+    assert re.search(rx, json.dumps({"model": "o3-mini"}))
     span = build_text_regex(["gpt-5*-2025-08-07"])
-    assert re.search(span, json.dumps({"model": "gpt-5-mini-2025-08-07"}), re.I)
-    assert not re.search(span, json.dumps({"a": "gpt-5-mini", "b": "x-2025-08-07"}), re.I)  # a glob never spans two strings
+    assert re.search(span, json.dumps({"model": "gpt-5-mini-2025-08-07"}))
+    assert not re.search(span, json.dumps({"a": "gpt-5-mini", "b": "x-2025-08-07"}))  # a glob never spans two strings
 
 
 def test_text_regex_rejects_unsupported_glob_syntax():
@@ -161,9 +162,9 @@ def _run_main(monkeypatch, capsys, docs, text_rows=()):
 
 
 def _run_main_with_sql_regex(monkeypatch, capsys, docs):
-    """Like _run_main, but the text rows come from the sweep's own regex, as the SQL ``~*`` would mark them."""
+    """Like _run_main, but the text rows come from the sweep's own regex, as the case-sensitive SQL ``~`` marks them."""
     async def fake_load(url, pattern):
-        return list(docs), [(k, i) for k, i, doc in docs if re.search(pattern, json.dumps(doc), re.I)]
+        return list(docs), [(k, i) for k, i, doc in docs if re.search(pattern, json.dumps(doc))]
 
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://unused")
     monkeypatch.setattr(sweep, "_load_rows", fake_load)
@@ -230,7 +231,7 @@ def test_legacy_only_row_exits_0_with_the_real_text_regex(monkeypatch, capsys):
     rx = build_text_regex(blocking_patterns(today=TODAY + dt.timedelta(days=14)))
     docs = [("workflow", 1, {"stt": {"provider": "assemblyai", "model": "u3-rt-pro"}}),
             ("workflow", 2, {"realtime": {"provider": "grok_realtime", "model": "grok-voice-think-fast-1.0"}})]
-    text_rows = [(k, i) for k, i, doc in docs if re.search(rx, json.dumps(doc), re.I)]
+    text_rows = [(k, i) for k, i, doc in docs if re.search(rx, json.dumps(doc))]
     code, out = _run_main(monkeypatch, capsys, docs, text_rows=text_rows)
     assert code == 0 and "unstructured_hit" not in out
 

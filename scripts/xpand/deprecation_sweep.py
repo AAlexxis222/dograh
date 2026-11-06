@@ -14,7 +14,8 @@ a shorter horizon reports nothing for that model. Reuses api.services.capabiliti
 
 Two passes per table, erring on the side of reporting: a structured walk over {provider, model} pairs (JSON
 strings are decoded), and a raw-text regex built from the registry that catches what the walk cannot
-interpret (e.g. a provider-less model_overrides). The regex ignores the provider, so a row prints as
+interpret (e.g. a provider-less model_overrides). Both passes match ids case-sensitively, as status_for does
+(fnmatchcase). The regex ignores the provider, so a row prints as
 ``unstructured_hit`` only when it matches somewhere other than the model of a {provider, model} pair (or the match
 cannot be located at all); a match the walk already judged with its provider is not reported twice.
 
@@ -118,7 +119,7 @@ def _unpaired_strings(doc: Any) -> Iterator[str]:
 def _explained_by_pairs(doc: Any, pattern: str) -> bool:
     """True when the regex matches the document only at models of {provider, model} pairs, and at one at least."""
     def found(value: str) -> bool:
-        return re.search(pattern, json.dumps(value), re.IGNORECASE) is not None
+        return re.search(pattern, json.dumps(value)) is not None
 
     return not any(found(s) for s in _unpaired_strings(doc)) and any(found(m) for _, _, m in _service_refs(doc))
 
@@ -138,7 +139,7 @@ def find_deprecated_usage(
 
 
 def build_text_regex(patterns: Iterable[str]) -> str:
-    """Regex (Python re and Postgres ARE, use case-insensitively) matching a quoted JSON string equal to a pattern.
+    """Regex (Python re and Postgres ARE, case-sensitive like status_for) matching a quoted JSON string equal to a pattern.
 
     ``\\*"`` tolerates the backslashes of JSON nested inside JSON strings; ``*`` in a pattern spans any non-quote run.
     """
@@ -206,7 +207,7 @@ async def _load_rows(database_url: str, pattern: str) -> tuple[list[tuple[str, i
         async with engine.connect() as conn:
             await conn.execute(text("SET TRANSACTION READ ONLY"))
             for s in _SOURCES:  # identifiers come from the constant above, the pattern is bound
-                sql = text(f"SELECT id, {s.column}, CAST({s.column} AS text) ~* :pat FROM {s.table} {s.where}")
+                sql = text(f"SELECT id, {s.column}, CAST({s.column} AS text) ~ :pat FROM {s.table} {s.where}")
                 for row_id, doc, text_hit in await conn.execute(sql, {"pat": pattern}):
                     docs.append((s.kind, row_id, doc))
                     if text_hit:
@@ -239,7 +240,7 @@ def open_encrypted_rows(
             opened.append((kind, row_id, doc))
             continue
         opened.append((kind, row_id, plain))
-        if re.search(pattern, json.dumps(plain), re.IGNORECASE):
+        if re.search(pattern, json.dumps(plain)):
             rows.append((kind, row_id))
     return opened, rows, unreadable
 
