@@ -260,6 +260,66 @@ def test_legacy_entry_has_no_date_and_is_legacy():
     assert s.state == "legacy" and "grok-voice-latest" in s.hint
 
 
+GROQ_NOTE = "free and developer tiers only, committed-spend enterprise orgs keep it"
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "today", "reason"),
+    [
+        (
+            "groq",
+            "llama-3.3-70b-versatile",
+            GUARD_DATE,
+            "groq/llama-3.3-70b-versatile retired on 2026-08-16"
+            f" (deprecations.yaml; {GROQ_NOTE})",
+        ),
+        (
+            "groq",
+            "llama-3.3-70b-versatile",
+            dt.date(2026, 8, 1),
+            f"groq/llama-3.3-70b-versatile retires on 2026-08-16 ({GROQ_NOTE})",
+        ),
+        (
+            "cartesia",
+            "sonic-2",
+            GUARD_DATE,
+            "cartesia/sonic-2 retired on 2026-10-20 (deprecations.yaml)",
+        ),
+        (
+            "cartesia",
+            "sonic-2",
+            dt.date(2026, 10, 1),
+            "cartesia/sonic-2 retires on 2026-10-20",
+        ),
+        (
+            "grok_realtime",
+            "grok-voice-think-fast-1.0",
+            GUARD_DATE,
+            "grok_realtime/grok-voice-think-fast-1.0 is legacy (deprecations.yaml)",
+        ),
+        (
+            "elevenlabs",
+            "eleven_v4_turbo",
+            dt.date(2026, 10, 13),
+            "elevenlabs/eleven_v4_turbo price change on 2026-10-12",
+        ),
+    ],
+    ids=[
+        "note-shutdown",
+        "note-warning",
+        "shutdown",
+        "warning",
+        "legacy",
+        "price",
+    ],
+)
+def test_an_entry_note_reaches_the_reason_and_the_rest_keep_their_text(
+    provider, model, today, reason
+):
+    """The sweep prints status.reason: a tier the effect spares must reach the operator, other entries are unchanged."""
+    assert status_for(provider, model, today=today).reason == reason
+
+
 @pytest.mark.parametrize(
     "model",
     [
