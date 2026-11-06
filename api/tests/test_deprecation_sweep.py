@@ -116,13 +116,16 @@ def test_blocking_patterns_follow_horizon_and_model_kinds():
     assert not {"line-sdk-hosting", "v1/prompts", "evals", "voice-sdk", "eleven_v4", "gemini-tts-promo-pricing"} & later
 
 
+def _sweep_regex():
+    return build_text_regex(blocking_patterns(today=TODAY + dt.timedelta(days=14)))
+
+
 def test_row_missed_by_structured_walk_becomes_unstructured_hit():
-    structured = find_deprecated_usage(
-        [("workflow", 1, {"tts": {"provider": "cartesia", "model": "sonic-2"}}),
-         ("workflow", 2, {"model_overrides": {"tts": {"model": "sonic-2"}}})],
-        today=TODAY, horizon_days=14)
+    docs = [("workflow", 1, {"tts": {"provider": "cartesia", "model": "sonic-2"}}),
+            ("workflow", 2, {"model_overrides": {"tts": {"model": "sonic-2"}}})]
+    structured = find_deprecated_usage(docs, today=TODAY, horizon_days=14)
     assert [h.row_id for h in structured] == [1]
-    merged = with_unstructured(structured, [("workflow", 1), ("workflow", 2), ("org", 2)])
+    merged = with_unstructured(structured, [("workflow", 1), ("workflow", 2), ("org", 2)], docs, _sweep_regex())
     assert [(h.kind, h.row_id, h.state) for h in merged] == [
         ("workflow", 1, "shutdown"), ("org", 2, "unstructured"), ("workflow", 2, "unstructured")]
     line = format_hit(merged[2])
@@ -132,9 +135,10 @@ def test_row_missed_by_structured_walk_becomes_unstructured_hit():
 
 def test_legacy_structured_hit_does_not_hide_provider_less_shutdown_in_same_row():
     doc = {"model_overrides": {"stt": {"provider": "assemblyai", "model": "u3-rt-pro"}, "tts": {"model": "sonic-2"}}}
-    structured = find_deprecated_usage([("workflow_definition", 107, doc)], today=TODAY, horizon_days=14)
+    docs = [("workflow_definition", 107, doc)]
+    structured = find_deprecated_usage(docs, today=TODAY, horizon_days=14)
     assert [h.state for h in structured] == ["legacy"]
-    merged = with_unstructured(structured, [("workflow_definition", 107)])
+    merged = with_unstructured(structured, [("workflow_definition", 107)], docs, _sweep_regex())
     assert [h.state for h in merged] == ["legacy", "unstructured"]
 
 
