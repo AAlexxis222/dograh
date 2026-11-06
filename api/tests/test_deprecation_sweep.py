@@ -156,6 +156,38 @@ def _run_main(monkeypatch, capsys, docs, text_rows=()):
     return code, capsys.readouterr().out
 
 
+def _run_main_with_sql_regex(monkeypatch, capsys, docs):
+    """Like _run_main, but the text rows come from the sweep's own regex, as the SQL ``~*`` would mark them."""
+    async def fake_load(url, pattern):
+        return list(docs), [(k, i) for k, i, doc in docs if re.search(pattern, json.dumps(doc), re.I)]
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://unused")
+    monkeypatch.setattr(sweep, "_load_rows", fake_load)
+    code = sweep.main(["--horizon-days", "3650"])
+    return code, capsys.readouterr().out
+
+
+@pytest.mark.parametrize("doc", [
+    {"llm": {"provider": "azure", "model": "gpt-4.1-mini"}},   # openai retires the id, azure has no entry
+    {"realtime": {"provider": "google_vertex_realtime", "model": "gemini-2.5-flash-native-audio-preview-12-2025"}},
+], ids=["active-under-another-provider", "legacy-under-another-provider"])
+def test_a_row_whose_every_model_id_was_resolved_is_never_unstructured(monkeypatch, capsys, doc):
+    code, out = _run_main_with_sql_regex(monkeypatch, capsys, [("workflow", 1, doc)])
+    assert "unstructured_hit" not in out and code == 0
+
+
+def test_a_provider_less_id_next_to_a_resolved_pair_is_still_unstructured(monkeypatch, capsys):
+    doc = {"llm": {"provider": "azure", "model": "gpt-4.1-mini"}, "model_overrides": {"tts": {"model": "sonic-2"}}}
+    code, out = _run_main_with_sql_regex(monkeypatch, capsys, [("workflow", 1, doc)])
+    assert code == 1 and "unstructured_hit where=workflow#1:" in out
+
+
+def test_the_walk_looks_inside_a_resolved_pair():
+    doc = {"tts": {"provider": "cartesia", "model": "sonic-3.6", "fallback": {"provider": "cartesia", "model": "sonic-2"}}}
+    hits = find_deprecated_usage([("workflow", 1, doc)], today=TODAY, horizon_days=14)
+    assert [(h.path, h.model, h.state) for h in hits] == [("tts.fallback", "sonic-2", "shutdown")]
+
+
 def test_exit_code_is_1_for_shutdown(monkeypatch, capsys):
     code, out = _run_main(monkeypatch, capsys, [("workflow", 1, {"tts": {"provider": "cartesia", "model": "sonic-2"}})])
     assert code == 1 and "state=shutdown" in out
