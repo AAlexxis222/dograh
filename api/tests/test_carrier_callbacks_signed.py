@@ -1229,6 +1229,20 @@ def test_vobiz_xml_does_not_log_the_media_url_or_its_token(client, world, log_li
     assert token not in text and "wss://media.example" not in text
 
 
+def test_refusal_log_cannot_be_split_by_a_request_value(client, world, log_lines):
+    # The transfer_id path segment is the caller's; decoded, %0A is a newline that would start a forged line.
+    response = client.post(
+        "/telephony/transfer-result/x%0A2026-11-06 12:00:00 | INFO | carrier callback accepted",
+        data={"CallStatus": "answered"},
+    )
+
+    _assert_b028(response)
+    refusals = [line for line in log_lines if "carrier callback refused" in line]
+    assert refusals
+    for line in refusals:
+        assert "\n2026-11-06" not in line
+
+
 # ---------------------------------------------------------------------------------------------------------
 # What the caller hears
 # ---------------------------------------------------------------------------------------------------------
