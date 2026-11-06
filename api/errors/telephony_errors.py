@@ -43,16 +43,14 @@ TELEPHONY_ERROR_MESSAGES = {
 # refusals say "we cannot take your call now"; everything else says the number is not available.
 CALLER_LANGUAGE = "es-ES"
 _CAPACITY_MESSAGE_ES = "Lo sentimos, en este momento no podemos atender su llamada. Por favor, inténtelo de nuevo más tarde."
-_UNAVAILABLE_MESSAGE_ES = "Lo sentimos, este número no está disponible en este momento. Por favor, inténtelo más tarde."
+UNAVAILABLE_MESSAGE_ES = "Lo sentimos, este número no está disponible en este momento. Por favor, inténtelo más tarde."
 _QUOTA_ERRORS = {
     TelephonyError.CONCURRENT_CALL_LIMIT,
     TelephonyError.QUOTA_EXCEEDED,
 }
 _CAPACITY_ERRORS = _QUOTA_ERRORS | {TelephonyError.ADMISSION_BACKEND_UNAVAILABLE}
 CALLER_MESSAGES_ES = {
-    error: _CAPACITY_MESSAGE_ES
-    if error in _CAPACITY_ERRORS
-    else _UNAVAILABLE_MESSAGE_ES
+    error: _CAPACITY_MESSAGE_ES if error in _CAPACITY_ERRORS else UNAVAILABLE_MESSAGE_ES
     for error in TelephonyError
     if error != TelephonyError.VALID
 }
@@ -64,7 +62,7 @@ def caller_message_es(error) -> str:
     try:
         return CALLER_MESSAGES_ES[TelephonyError(error)]
     except (KeyError, ValueError):
-        return _UNAVAILABLE_MESSAGE_ES
+        return UNAVAILABLE_MESSAGE_ES
 
 
 def failure_from_telephony_error(

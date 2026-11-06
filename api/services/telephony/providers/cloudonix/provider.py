@@ -489,11 +489,11 @@ class CloudonixProvider(TelephonyProvider):
             "get_webhook_response called for Cloudonix - this should not happen. "
             "Cloudonix embeds CXML directly in API calls."
         )
-        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_message_es
+        from api.errors.telephony_errors import CALLER_LANGUAGE, UNAVAILABLE_MESSAGE_ES
 
         return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say language="{CALLER_LANGUAGE}">{caller_message_es("ENDPOINT_NOT_USED")}</Say>
+    <Say language="{CALLER_LANGUAGE}">{UNAVAILABLE_MESSAGE_ES}</Say>
 </Response>"""
 
     async def handle_websocket(
