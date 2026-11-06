@@ -21,6 +21,8 @@ class TelephonyError(Enum):
     ADMISSION_BACKEND_UNAVAILABLE = "ADMISSION_BACKEND_UNAVAILABLE"
     QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
     GENERAL_AUTH_FAILED = "GENERAL_AUTH_FAILED"
+    # The carrier is disabled until its signing is verified (carrier_policy.UNVERIFIED_CARRIERS, VOZ-N0-40).
+    CARRIER_SIGNING_UNVERIFIED = "CARRIER_SIGNING_UNVERIFIED"
     VALID = "VALID"
 
 
@@ -36,6 +38,7 @@ TELEPHONY_ERROR_MESSAGES = {
     TelephonyError.ADMISSION_BACKEND_UNAVAILABLE: "Service temporarily unavailable. Please try again later.",
     TelephonyError.QUOTA_EXCEEDED: "Service temporarily unavailable: Your account has exceeded usage limits. Please contact your administrator or upgrade your plan to continue receiving calls.",
     TelephonyError.GENERAL_AUTH_FAILED: "Authentication failed: Please check your webhook URL configuration and ensure your telephony provider settings match your dashboard configuration.",
+    TelephonyError.CARRIER_SIGNING_UNVERIFIED: "Carrier disabled: this platform cannot verify this carrier's webhook signatures yet, so it refuses its calls. Please use another telephony provider.",
 }
 
 

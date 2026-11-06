@@ -12,18 +12,13 @@ UNVERIFIED_CARRIERS = frozenset({WorkflowRunMode.CLOUDONIX.value})
 
 
 class CarrierDisabledError(Exception):
-    """A call path resolved a carrier in ``UNVERIFIED_CARRIERS``. ``code`` is the stable code callers surface."""
+    """A call path resolved a carrier in ``UNVERIFIED_CARRIERS``. The message is ``code``, the stable code
+    callers surface (an HTTP detail, a campaign failure reason, a websocket close reason)."""
 
     def __init__(self, provider_name: str):
         self.provider_name = provider_name
         self.code = f"{provider_name}_signing_unverified"
         super().__init__(self.code)
-
-    def __str__(self) -> str:
-        return (
-            f"{self.code}: {self.provider_name} is disabled until its signature scheme is verified "
-            "(VOZ-N0-40)"
-        )
 
 
 def refuse_disabled_carrier(provider_name: str) -> None:

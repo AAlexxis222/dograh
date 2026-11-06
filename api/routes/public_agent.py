@@ -20,6 +20,7 @@ from api.services.call_concurrency import (
     call_concurrency,
 )
 from api.services.quota_service import authorize_workflow_run_start
+from api.services.telephony.carrier_policy import CarrierDisabledError
 from api.services.telephony.factory import get_telephony_provider_by_id
 from api.services.telephony.outbound_readiness import (
     OutboundConfigurationNotFoundError,
@@ -204,7 +205,7 @@ async def _execute_resolved_target(
         provider = await get_telephony_provider_by_id(
             resolved_cfg_id, target.organization_id
         )
-    except OutboundSetupIncompleteError as e:
+    except (OutboundSetupIncompleteError, CarrierDisabledError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except OutboundConfigurationNotFoundError as e:
         if request.telephony_configuration_id is not None:

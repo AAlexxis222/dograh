@@ -44,6 +44,7 @@ from api.services.telephony.callback_auth import (
     verify_signature,
     verify_transfer_callback,
 )
+from api.services.telephony.carrier_policy import CarrierDisabledError
 from api.services.telephony.factory import (
     get_all_telephony_providers,
     get_telephony_provider_by_id,
@@ -125,7 +126,7 @@ async def initiate_call(
         provider = await get_telephony_provider_by_id(
             telephony_configuration_id, user.selected_organization_id
         )
-    except OutboundSetupIncompleteError as e:
+    except (OutboundSetupIncompleteError, CarrierDisabledError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except OutboundConfigurationNotFoundError as e:
         detail = (
@@ -457,20 +458,16 @@ async def _validate_inbound_request(
     # Verify webhook signature using the matched config's credentials. The
     # provider extracts its own signature/timestamp/nonce headers from the
     # dict, so this dispatcher stays generic.
-    provider_instance = await get_telephony_provider_by_id(
-        telephony_configuration_id, organization_id
+    provider_instance, refusal = await _verified_inbound_provider(
+        telephony_configuration_id,
+        organization_id,
+        webhook_url,
+        webhook_data,
+        headers,
+        raw_body,
     )
-    signature_valid = await provider_instance.verify_inbound_signature(
-        webhook_url, webhook_data, headers, raw_body
-    )
-    logger.info(f"Signature validation for {provider}: {signature_valid}")
-    if not signature_valid:
-        return (
-            False,
-            TelephonyError.SIGNATURE_VALIDATION_FAILED,
-            {},
-            provider_instance,
-        )
+    if refusal:
+        return False, refusal, {}, None
 
     # Return success with workflow context
     workflow_context = {
@@ -482,6 +479,34 @@ async def _validate_inbound_request(
         "from_phone_number_id": phone_number_id,
     }
     return (True, "", workflow_context, provider_instance)
+
+
+async def _verified_inbound_provider(
+    telephony_configuration_id: int,
+    organization_id: int,
+    webhook_url: str,
+    webhook_data: dict,
+    headers: dict,
+    raw_body: str,
+):
+    """``(provider, None)`` when the matched config's provider verifies the inbound webhook, else
+    ``(None, refusal)``. A carrier disabled in ``carrier_policy`` is refused before it verifies anything.
+    """
+    try:
+        provider = await get_telephony_provider_by_id(
+            telephony_configuration_id, organization_id
+        )
+    except CarrierDisabledError as e:
+        logger.warning(f"Inbound call refused: {e}")
+        return None, TelephonyError.CARRIER_SIGNING_UNVERIFIED
+    if not await provider.verify_inbound_signature(
+        webhook_url, webhook_data, headers, raw_body
+    ):
+        logger.warning(
+            f"Inbound webhook signature did not verify (config {telephony_configuration_id})"
+        )
+        return None, TelephonyError.SIGNATURE_VALIDATION_FAILED
+    return provider, None
 
 
 async def _create_inbound_workflow_run(
@@ -937,20 +962,16 @@ async def handle_inbound_run(request: Request):
         user_id = workflow.user_id
 
         # 3. Verify webhook signature against the matched config's credentials.
-        provider_instance = await get_telephony_provider_by_id(
-            telephony_configuration_id, config.organization_id
+        provider_instance, refusal = await _verified_inbound_provider(
+            telephony_configuration_id,
+            config.organization_id,
+            str(request.url),
+            webhook_data,
+            headers,
+            raw_body,
         )
-        signature_valid = await provider_instance.verify_inbound_signature(
-            str(request.url), webhook_data, headers, raw_body
-        )
-        if not signature_valid:
-            logger.warning(
-                f"/inbound/run: signature validation failed for "
-                f"{provider_class.PROVIDER_NAME}"
-            )
-            return provider_class.generate_validation_error_response(
-                TelephonyError.SIGNATURE_VALIDATION_FAILED
-            )
+        if refusal:
+            return provider_class.generate_validation_error_response(refusal)
 
         try:
             concurrency_slot = await call_concurrency.acquire_org_slot(
