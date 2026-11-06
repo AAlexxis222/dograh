@@ -108,6 +108,13 @@ def test_every_lmnt_model_is_shutdown_for_status_and_text_regex(model):
     assert model in blocking_patterns(today=retired)
 
 
+def test_azure_llm_model_is_a_deployment_name_and_is_never_matched_as_a_model_id():
+    """AzureLLMService.model names a deployment, not the model it runs: an id-based entry would flag the wrong rows."""
+    assert "deployment name" in registry.AzureLLMService.model_fields["model"].description
+    for today in (dt.date(2027, 4, 14), dt.date(2028, 1, 1)):
+        assert status_for("azure", "gpt-4.1-mini", today=today).state == "active"
+
+
 def test_price_effect_only_warns():
     s = status_for("elevenlabs", "eleven_v4_turbo", today=dt.date(2026, 10, 13))
     assert s.state == "warning_price"
