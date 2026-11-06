@@ -96,14 +96,10 @@ async def handle_vobiz_xml_webhook(
 
     logger.debug(f"[run {workflow_run_id}] Using provider: {provider.PROVIDER_NAME}")
 
+    # Never logged: the XML carries the media-stream URL and its capability token.
     response_content = await provider.get_webhook_response(
         workflow_id, organization_id, workflow_run_id
     )
-
-    logger.debug(
-        f"[run {workflow_run_id}] Vobiz XML response generated:\n{response_content}"
-    )
-
     return HTMLResponse(content=response_content, media_type="application/xml")
 
 

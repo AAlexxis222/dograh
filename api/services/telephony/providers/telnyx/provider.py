@@ -466,9 +466,8 @@ class TelnyxProvider(TelephonyProvider):
             "webhook_url_method": "POST",
         }
 
-        logger.info(
-            f"Answering Telnyx inbound call {call_control_id} with stream_url={stream_url}"
-        )
+        # Not the stream_url: it carries the media-stream capability token.
+        logger.info(f"Answering Telnyx inbound call {call_control_id}")
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
