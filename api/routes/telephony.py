@@ -1084,7 +1084,7 @@ async def handle_inbound_fallback(request: Request):
     logger.info(
         f"[fallback] Received {provider_class.PROVIDER_NAME} callback for call {normalized_data.call_id}"
     )
-    # The second argument is for the operator; the caller hears the Spanish table text.
+    # The second argument is logged for the operator; the caller hears the Spanish table text.
     return provider_class.generate_error_response(
         "SYSTEM_UNAVAILABLE",
         "Our system is temporarily unavailable. Please try again later.",

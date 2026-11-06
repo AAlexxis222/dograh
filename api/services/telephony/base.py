@@ -507,7 +507,7 @@ class TelephonyProvider(ABC):
 
         Args:
             error_type: Type of error (auth_failed, not_configured, etc.)
-            message: Operator-facing error text, never spoken to the caller
+            message: Operator-facing error text: logged, never spoken to the caller
 
         Returns:
             Tuple of (Response, media_type) - Response object and content type

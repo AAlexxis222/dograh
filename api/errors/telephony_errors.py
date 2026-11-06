@@ -5,6 +5,8 @@ Centralizes error handling across all telephony providers.
 
 from enum import Enum
 
+from loguru import logger
+
 from api.errors.failure import DograhFailure, ErrorSource, ErrorType, log_failure
 
 
@@ -76,8 +78,12 @@ def caller_message_es(error) -> str:
 def caller_error_text(error_type, message: str, *, provider: str) -> str:
     """What the caller hears from ``provider``'s ``generate_error_response``: ``caller_message_es(error_type)``.
 
-    ``message`` is the operator-facing text of the same error and is never spoken.
+    ``message`` is the operator-facing text of the same error: logged with ``error_type`` and ``provider``, never
+    spoken. Callers pass fixed operator text, never caller data.
     """
+    logger.warning(
+        f"telephony error response: provider={provider} error_type={error_type} message={message}"
+    )
     return caller_message_es(error_type)
 
 
