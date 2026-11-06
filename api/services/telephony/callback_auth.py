@@ -1,4 +1,5 @@
-"""Authentication of the carrier callbacks that carry no workflow-run id of their own (VOZ-AC-B4-46b).
+"""Authentication of carrier callbacks: resolve the owning organization's provider and verify the signature, failing
+closed with one 401 (VOZ-AC-B4-46b).
 
 A callback is trusted only after the provider of the organization that owns it verified its signature. Every
 check here is a read, and every failure is the same 401 (VOZ-AC-B0-28 body), so a forged request moves nothing
