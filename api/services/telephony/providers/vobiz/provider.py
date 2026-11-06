@@ -751,13 +751,12 @@ class VobizProvider(TelephonyProvider):
         """
         from fastapi import Response
 
-        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_message_es
+        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_error_text
 
-        # Vobiz error responses should be valid XML like Plivo. ``message`` is for the
-        # operator; the caller hears the Spanish table text.
+        # Vobiz error responses should be valid XML like Plivo.
         vobiz_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Speak voice="WOMAN" language="{CALLER_LANGUAGE}">{caller_message_es(error_type)}</Speak>
+    <Speak voice="WOMAN" language="{CALLER_LANGUAGE}">{caller_error_text(error_type, message, provider=VobizProvider.PROVIDER_NAME)}</Speak>
     <Hangup/>
 </Response>"""
 

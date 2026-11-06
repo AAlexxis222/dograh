@@ -65,6 +65,14 @@ def caller_message_es(error) -> str:
         return UNAVAILABLE_MESSAGE_ES
 
 
+def caller_error_text(error_type, message: str, *, provider: str) -> str:
+    """What the caller hears from ``provider``'s ``generate_error_response``: ``caller_message_es(error_type)``.
+
+    ``message`` is the operator-facing text of the same error and is never spoken.
+    """
+    return caller_message_es(error_type)
+
+
 def failure_from_telephony_error(
     error: TelephonyError,
     *,

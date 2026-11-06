@@ -678,12 +678,11 @@ class ExotelProvider(TelephonyProvider):
 
     @staticmethod
     def generate_error_response(error_type: str, message: str):
-        from api.errors.telephony_errors import caller_message_es
+        from api.errors.telephony_errors import caller_error_text
 
-        # ``message`` is for the operator; the caller hears the Spanish table text.
         xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>{caller_message_es(error_type)}</Say>
+    <Say>{caller_error_text(error_type, message, provider=ExotelProvider.PROVIDER_NAME)}</Say>
     <Hangup/>
 </Response>"""
         return Response(content=xml, media_type="application/xml")

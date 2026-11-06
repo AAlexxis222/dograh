@@ -1351,12 +1351,11 @@ class CloudonixProvider(TelephonyProvider):
         """
         from fastapi import Response
 
-        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_message_es
+        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_error_text
 
-        # ``error_type`` and ``message`` are for the operator; the caller hears the Spanish table text.
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say language="{CALLER_LANGUAGE}">{caller_message_es(error_type)}</Say>
+    <Say language="{CALLER_LANGUAGE}">{caller_error_text(error_type, message, provider=CloudonixProvider.PROVIDER_NAME)}</Say>
     <Hangup/>
 </Response>"""
 
