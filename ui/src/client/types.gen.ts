@@ -242,6 +242,18 @@ export type ActiveCallsResponse = {
      * Loop Lag Max Ms
      */
     loop_lag_max_ms?: number;
+    /**
+     * Lag P99 Ms
+     */
+    lag_p99_ms?: number;
+    /**
+     * Draining
+     */
+    draining?: boolean;
+    /**
+     * K P
+     */
+    k_p?: number;
 };
 
 /**
