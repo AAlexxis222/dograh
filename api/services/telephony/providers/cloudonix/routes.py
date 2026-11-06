@@ -30,7 +30,9 @@ router = APIRouter()
 def _refuse_in_cell(request: Request) -> None:
     """Route dependency: ``CloudonixProvider.verify_inbound_signature`` accepts every request (its scheme is
     UNVERIFIED), so a cell, which fails closed, answers 401 before the handler reads anything."""
-    refuse_unverifiable_in_cell("cloudonix", f"POST {request.url.path}")
+    refuse_unverifiable_in_cell(
+        CloudonixProvider.PROVIDER_NAME, f"POST {request.url.path}"
+    )
 
 
 # Cloudonix session statuses that terminate a transfer without an answer.

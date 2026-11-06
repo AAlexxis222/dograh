@@ -53,6 +53,7 @@ from api.services.telephony.outbound_readiness import (
     OutboundSetupIncompleteError,
     resolve_outbound_configuration_id,
 )
+from api.services.telephony.providers.twilio.provider import TwilioProvider
 from api.services.telephony.transfer_event_protocol import (
     TransferEvent,
     TransferEventType,
@@ -1229,7 +1230,7 @@ async def complete_transfer_function_call(transfer_id: str, request: Request):
     # an unsigned or unattributable one is a 401 and changes nothing.
     transfer_context = await verify_transfer_callback(
         transfer_id,
-        provider_name="twilio",
+        provider_name=TwilioProvider.PROVIDER_NAME,
         where="POST /telephony/transfer-result/{transfer_id}",
         url=str(request.url),
         data=data,

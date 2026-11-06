@@ -233,7 +233,7 @@ async def handle_telnyx_transfer_result(transfer_id: str, request: Request):
     raw_body = (await request.body()).decode("utf-8", errors="replace")
     transfer_context = await verify_transfer_callback(
         transfer_id,
-        provider_name="telnyx",
+        provider_name=TelnyxProvider.PROVIDER_NAME,
         where="POST /telephony/telnyx/transfer-result/{transfer_id}",
         url="",
         data={},

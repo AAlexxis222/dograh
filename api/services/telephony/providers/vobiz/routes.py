@@ -20,6 +20,7 @@ from api.services.telephony.callback_auth import (
 from api.services.telephony.factory import (
     get_telephony_provider_for_run,
 )
+from api.services.telephony.providers.vobiz.provider import VobizProvider
 from api.services.telephony.status_processor import (
     StatusCallbackRequest,
     _process_status_update,
@@ -75,7 +76,7 @@ async def handle_vobiz_xml_webhook(
     where = "POST /telephony/vobiz-xml"
     _, _, provider = await provider_for_run(
         workflow_run_id,
-        provider_name="vobiz",
+        provider_name=VobizProvider.PROVIDER_NAME,
         where=where,
         expect_workflow_id=workflow_id,
         expect_organization_id=organization_id,
