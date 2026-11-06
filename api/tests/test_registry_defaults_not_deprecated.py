@@ -14,6 +14,20 @@ from api.services.configuration import registry
 # scheduled to retire fails here weeks ahead instead of passing until the day it breaks.
 GUARD_DATE = dt.date(2027, 2, 1)
 
+# Defaults known to retire before GUARD_DATE: (provider, model) -> (follow-up that moves it, why it stays for now).
+# test_every_exception_is_still_needed fails once an entry stops being needed, so the list cannot rot.
+EXCEPTIONS = {
+    ("openai", "gpt-4.1"): (
+        "VOZ-FU-N0-01b-llm-default",
+        "OpenAI retires it on 2027-01-14; the default moves together with the voicemail and UI fallbacks",
+    ),
+}
+
+
+def _provider(cls) -> str:
+    default = cls.model_fields["provider"].default
+    return str(getattr(default, "value", default))
+
 
 def _configs():
     for name, cls in inspect.getmembers(registry, inspect.isclass):
@@ -31,13 +45,7 @@ _DEFAULTS_DIR = Path(registry.__file__).parent
 
 def _service_deprecated_as_a_whole(cls) -> bool:
     """True when deprecations.yaml retires the class's whole service (``kind: service``, no 1:1 replacement)."""
-    provider = str(
-        getattr(
-            cls.model_fields["provider"].default,
-            "value",
-            cls.model_fields["provider"].default,
-        )
-    )
+    provider = _provider(cls)
     service_types = {
         t.name.lower()
         for t, by_provider in registry.REGISTRY.items()
@@ -64,17 +72,23 @@ def test_registry_defaults_not_deprecated(name, cls):
             f"{name} is deprecated as a service but is a default in {offenders}"
         )
         return
-    provider = str(
-        getattr(
-            cls.model_fields["provider"].default,
-            "value",
-            cls.model_fields["provider"].default,
-        )
-    )
+    provider = _provider(cls)
     model = cls.model_fields["model"].default
+    if (provider, model) in EXCEPTIONS:
+        return
     status = status_for(provider, model, today=GUARD_DATE)
     assert status.state in {"active", "warning_price"}, (
         f"{name}: default model {provider}/{model} is {status.state} ({status.reason}); hint: {status.hint}"
+    )
+
+
+@pytest.mark.parametrize("key", list(EXCEPTIONS))
+def test_every_exception_is_still_needed(key):
+    """An exception must name a current default that really is retiring at GUARD_DATE."""
+    defaults = {(_provider(cls), cls.model_fields["model"].default) for _, cls in _configs()}
+    assert key in defaults, f"{key} is no longer a registry default: drop it from EXCEPTIONS"
+    assert status_for(*key, today=GUARD_DATE).state not in {"active", "warning_price"}, (
+        f"{key} is no longer retiring at {GUARD_DATE}: drop it from EXCEPTIONS"
     )
 
 
