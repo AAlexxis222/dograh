@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from api.services.capabilities.deprecations import load_deprecations, status_for
+from api.services.capabilities.deprecations import (
+    blocking_patterns,
+    load_deprecations,
+    status_for,
+)
 from api.services.configuration import registry
 
 # A fixed guard date, not today: after every retirement up to the 2027-01-20 realtime wave, so a default that is
@@ -90,6 +94,14 @@ def test_every_exception_is_still_needed(key):
     assert status_for(*key, today=GUARD_DATE).state not in {"active", "warning_price"}, (
         f"{key} is no longer retiring at {GUARD_DATE}: drop it from EXCEPTIONS"
     )
+
+
+@pytest.mark.parametrize("model", registry.LMNT_TTS_MODELS)
+def test_every_lmnt_model_is_shutdown_for_status_and_text_regex(model):
+    """LMNT shut down as a whole: a stored config holds one of these ids, so each must fail the sweep both ways."""
+    retired = dt.date(2026, 11, 5)
+    assert status_for("lmnt", model, today=retired).state == "shutdown"
+    assert model in blocking_patterns(today=retired)
 
 
 def test_price_effect_only_warns():

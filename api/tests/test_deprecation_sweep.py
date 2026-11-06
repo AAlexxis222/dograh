@@ -161,6 +161,11 @@ def test_exit_code_is_1_for_shutdown(monkeypatch, capsys):
     assert code == 1 and "state=shutdown" in out
 
 
+def test_saved_lmnt_config_is_a_shutdown_hit(monkeypatch, capsys):
+    code, out = _run_main(monkeypatch, capsys, [("workflow", 1, {"tts": {"provider": "lmnt", "model": "aurora"}})])
+    assert code == 1 and "where=workflow#1:tts state=shutdown" in out
+
+
 def test_exit_code_is_0_when_only_legacy(monkeypatch, capsys):
     docs = [("workflow", 1, {"realtime": {"provider": "grok_realtime", "model": "grok-voice-think-fast-1.0"}})]
     code, out = _run_main(monkeypatch, capsys, docs)
