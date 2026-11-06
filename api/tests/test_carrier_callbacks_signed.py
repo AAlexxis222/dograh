@@ -1207,6 +1207,28 @@ def test_inbound_run_does_not_log_caller_or_called_numbers(
     _assert_logged_nothing_personal(log_lines)
 
 
+def test_vobiz_xml_does_not_log_the_media_url_or_its_token(client, world, log_lines):
+    token = secrets.token_hex(16)
+    stream_xml = (
+        f"<Response><Stream>wss://media.example/ws/{WORKFLOW_ID}/{ORG_ID}/{RUN_ID}/{token}"
+        "</Stream></Response>"
+    )
+    world.provider = _vobiz()
+    world.provider.get_webhook_response = AsyncMock(return_value=stream_xml)
+    path = "/telephony/vobiz-xml"
+
+    response = client.post(
+        f"{path}?{urlencode(VOBIZ_QUERY)}",
+        data={"CallUUID": "uuid-1"},
+        headers=_vobiz_headers(BASE + path),
+    )
+
+    assert response.status_code == 200 and token in response.text
+    text = "\n".join(log_lines)
+    assert text, "the sink saw nothing: the test would pass for the wrong reason"
+    assert token not in text and "wss://media.example" not in text
+
+
 # ---------------------------------------------------------------------------------------------------------
 # What the caller hears
 # ---------------------------------------------------------------------------------------------------------
