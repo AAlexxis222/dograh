@@ -44,6 +44,11 @@ TELEPHONY_ERROR_MESSAGES = {
 CALLER_LANGUAGE = "es-ES"
 _CAPACITY_MESSAGE_ES = "Lo sentimos, en este momento no podemos atender su llamada. Por favor, inténtelo de nuevo más tarde."
 UNAVAILABLE_MESSAGE_ES = "Lo sentimos, este número no está disponible en este momento. Por favor, inténtelo más tarde."
+# Twilio connect action: played when the media socket ended and the call did not finish normally.
+CALL_NOT_ATTENDED_MESSAGE_ES = (
+    "Ahora mismo no podemos atender tu llamada. "
+    "Por favor, inténtalo de nuevo en unos minutos."
+)
 _QUOTA_ERRORS = {
     TelephonyError.CONCURRENT_CALL_LIMIT,
     TelephonyError.QUOTA_EXCEEDED,

@@ -14,6 +14,7 @@ from starlette.responses import HTMLResponse, Response
 
 from api.db import db_client
 from api.enums import WorkflowRunState
+from api.errors.telephony_errors import CALL_NOT_ATTENDED_MESSAGE_ES, CALLER_LANGUAGE
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.factory import get_telephony_provider_for_run
@@ -33,12 +34,6 @@ from api.services.workflow.run_ending import get_run_ending
 
 router = APIRouter()
 
-# Played when the media socket ended and the call did not finish normally.
-_CALL_NOT_ATTENDED_ES = (
-    "Ahora mismo no podemos atender tu llamada. "
-    "Por favor, inténtalo de nuevo en unos minutos."
-)
-
 
 def _connect_action_twiml(call_ended: bool) -> str:
     """What the caller gets once the media socket is gone.
@@ -51,8 +46,8 @@ def _connect_action_twiml(call_ended: bool) -> str:
     if call_ended:
         return "<Response><Hangup/></Response>"
     return (
-        '<Response><Say language="es-ES">'
-        f"{escape(_CALL_NOT_ATTENDED_ES)}"
+        f'<Response><Say language="{CALLER_LANGUAGE}">'
+        f"{escape(CALL_NOT_ATTENDED_MESSAGE_ES)}"
         "</Say><Hangup/></Response>"
     )
 
