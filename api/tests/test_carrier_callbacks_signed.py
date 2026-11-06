@@ -850,7 +850,7 @@ def test_vobiz_xml_query_that_disagrees_with_the_run_is_401_even_if_signed(
 
 
 # ---------------------------------------------------------------------------------------------------------
-# Cloudonix: signature UNVERIFIED (verify_inbound_signature accepts everything), so a cell refuses
+# Cloudonix: signature UNVERIFIED (verify_inbound_signature accepts everything), so every deployment refuses
 # ---------------------------------------------------------------------------------------------------------
 
 CLOUDONIX_ROUTES = [
@@ -881,16 +881,19 @@ def test_cloudonix_callback_in_a_cell_is_401_and_moves_nothing(
 
 
 @pytest.mark.parametrize(("name", "path", "kind"), CLOUDONIX_ROUTES)
-def test_cloudonix_callback_outside_a_cell_is_unchanged(
-    client, world, monkeypatch, name, path, kind
+def test_cloudonix_callback_outside_a_cell_is_401_and_moves_nothing(
+    client, world, monkeypatch, log_lines, name, path, kind
 ):
+    # Cloudonix is disabled as a carrier in every deployment until its signing is verified (VOZ-N0-40):
+    # outside a cell its callbacks are refused exactly as inside one.
     monkeypatch.delenv("CELL_ROLE", raising=False)
-    world.manager.contexts.clear()
+    before = world.snapshot()
 
     response = _post_cloudonix(client, path, kind)
 
-    # The handler ran (it answers 200 with its own ignore/error body) instead of the guard answering 401.
-    assert response.status_code == 200
+    _assert_b028(response, code="cloudonix_signing_unverified")
+    assert world.snapshot() == before
+    assert any("cloudonix_signing_unverified" in line for line in log_lines)
 
 
 # ---------------------------------------------------------------------------------------------------------
