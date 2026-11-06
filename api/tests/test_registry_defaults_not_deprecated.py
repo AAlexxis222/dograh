@@ -192,6 +192,40 @@ def test_openai_stt_default_is_flagged_from_oct_2():
     )
 
 
+def test_dated_mini_transcribe_snapshot_keeps_its_own_date_over_the_broad_glob():
+    s = status_for(
+        "openai", "gpt-4o-mini-transcribe-2025-03-20", today=dt.date(2027, 1, 19)
+    )
+    assert s.date == dt.date(2027, 1, 20)
+
+
+def _literal_ids(entry):
+    ids = entry["model_or_feature"]
+    ids = ids if isinstance(ids, list) else [ids]
+    return [m for m in ids if not any(c in m for c in "*?[")]
+
+
+@pytest.mark.parametrize(
+    "provider,model,entry",
+    [
+        pytest.param(e["provider"], m, e, id=f"{e['provider']}:{m}")
+        for e in load_deprecations()
+        for m in _literal_ids(e)
+    ],
+)
+def test_no_entry_is_shadowed_by_an_earlier_one(provider, model, entry):
+    """status_for takes the first match: every literal id must resolve to the entry that lists it."""
+    if entry["date"] is None:
+        status = status_for(provider, model, today=TODAY)
+        assert status.state == "legacy"
+    else:
+        date = dt.date.fromisoformat(str(entry["date"]))
+        status = status_for(provider, model, today=date)
+        assert status.date == date
+    if entry.get("replacement"):
+        assert entry["replacement"] in status.hint
+
+
 def test_assemblyai_offered_pro_models_are_recognised_by_pinned_pipecat():
     from pipecat.services.assemblyai.stt import is_u3_pro_model
 

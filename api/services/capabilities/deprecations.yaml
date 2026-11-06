@@ -1,8 +1,8 @@
 # Single registry of model retirements and price changes (VOZ-AC-B1-80).
 # Fields: provider, kind, model_or_feature (str | list, fnmatch globs allowed), date (UTC, null for legacy),
 # effect (shutdown|price|legacy), replacement, warn_from (optional), source_url, read_at.
-# Dates/effects from spec v4 B1 §10 VOZ-AC-B1-80 (synthesis-voz-v4 §1.12); read_at = date of the recon pass
-# that read the source (research/voz-recon-2026-10/f1b-*.md, all 2026-10-02).
+# read_at = the date source_url was last read; each entry cites its own source.
+# status_for returns the FIRST matching entry: put a specific id above any broader glob of the same provider.
 entries:
   - provider: elevenlabs
     kind: tts
@@ -105,7 +105,7 @@ entries:
     replacement: gpt-realtime-2.1 (or gpt-realtime-2.1-mini)
     source_url: https://platform.openai.com/docs/deprecations
     read_at: 2026-10-02
-  - provider: openai
+  - provider: openai   # must stay above the broader "gpt-4o-mini-transcribe*" entry below (first match wins)
     kind: stt
     model_or_feature: gpt-4o-mini-transcribe-2025-03-20
     date: 2027-01-20
