@@ -24,6 +24,33 @@ function operatorHint(error: unknown): string | null {
     : null;
 }
 
+function TracesPublicToggle({
+  checked,
+  onCheckedChange,
+}: {
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="space-y-2 pt-2 border-t">
+      <div className="flex items-center space-x-2">
+        <Switch
+          id="langfuse-traces-public"
+          checked={checked}
+          onCheckedChange={onCheckedChange}
+        />
+        <Label htmlFor="langfuse-traces-public">Make traces publicly viewable</Label>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Off by default. When on, anyone holding a trace URL can open it without
+        logging in to Langfuse — including the full call transcript, prompts and
+        tool payloads. Turn it on only if you intend to share trace links outside
+        your Langfuse project.
+      </p>
+    </div>
+  );
+}
+
 export function TelemetrySection() {
   const { user, loading: authLoading } = useAuth();
   const [credentials, setCredentials] = useState<LangfuseCredentialsResponse>({
@@ -164,24 +191,12 @@ export function TelemetrySection() {
           build links to your traces.
         </p>
       </div>
-      <div className="space-y-2 pt-2 border-t">
-        <div className="flex items-center space-x-2">
-          <Switch
-            id="langfuse-traces-public"
-            checked={credentials.traces_public ?? false}
-            onCheckedChange={(checked) =>
-              setCredentials({ ...credentials, traces_public: checked })
-            }
-          />
-          <Label htmlFor="langfuse-traces-public">Make traces publicly viewable</Label>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Off by default. When on, anyone holding a trace URL can open it without
-          logging in to Langfuse — including the full call transcript, prompts and
-          tool payloads. Turn it on only if you intend to share trace links outside
-          your Langfuse project.
-        </p>
-      </div>
+      <TracesPublicToggle
+        checked={credentials.traces_public ?? false}
+        onCheckedChange={(checked) =>
+          setCredentials({ ...credentials, traces_public: checked })
+        }
+      />
       <div className="flex gap-2">
         <Button type="submit" disabled={saving}>
           {saving ? "Saving..." : "Save"}
