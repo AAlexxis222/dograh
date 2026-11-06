@@ -32,8 +32,11 @@ def rejected(
     reason: str = "the callback could not be authenticated against the telephony credentials of its organization",
     hint: str = "check that the carrier calls the URL this platform configured, and that the auth token or public key in the telephony configuration is the current one",
 ) -> HTTPException:
-    """The 401 for a callback that is not authenticated. ``why`` is for the log only."""
-    logger.warning(f"carrier callback refused: code={code} where={where} why={why}")
+    """The 401 for a callback that is not authenticated. ``why`` is for the log only.
+
+    ``where`` and ``why`` are logged as reprs: a request value inside them (a path segment) cannot start a line.
+    """
+    logger.warning(f"carrier callback refused: code={code} where={where!r} why={why!r}")
     return HTTPException(
         status_code=401,
         detail={"code": code, "where": where, "reason": reason, "hint": hint},
