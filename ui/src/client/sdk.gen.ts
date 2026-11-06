@@ -1513,7 +1513,7 @@ export const getDailyRunsDetailApiV1OrganizationsReportsDailyRunsGet = <ThrowOnE
  * Get time-limited TURN credentials for WebRTC connections.
  *
  * This endpoint generates ephemeral TURN credentials that are:
- * - Valid for the configured TTL (default: 24 hours)
+ * - Valid for the configured TTL (default: 5 minutes)
  * - Cryptographically bound to the user via HMAC
  * - Compatible with coturn's use-auth-secret mode
  *
