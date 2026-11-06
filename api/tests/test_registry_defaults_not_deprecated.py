@@ -38,9 +38,13 @@ EXCEPTIONS = {
 }
 
 
+def _provider_name(provider) -> str:
+    """A registry provider key (enum member or plain string) as the string deprecations.yaml uses."""
+    return str(getattr(provider, "value", provider))
+
+
 def _provider(cls) -> str:
-    default = cls.model_fields["provider"].default
-    return str(getattr(default, "value", default))
+    return _provider_name(cls.model_fields["provider"].default)
 
 
 def _configs():
@@ -139,11 +143,7 @@ def _offered_models():
             field = cls.model_fields.get("model")
             extra = field.json_schema_extra if field else None
             for model in extra.get("examples", ()) if isinstance(extra, dict) else ():
-                yield (
-                    service_type.name.lower(),
-                    str(getattr(provider, "value", provider)),
-                    model,
-                )
+                yield service_type.name.lower(), _provider_name(provider), model
 
 
 @pytest.mark.parametrize(
@@ -165,10 +165,7 @@ def _slot_class(kind, provider):
     """The registered class for a deprecations.yaml model kind and provider, or None."""
     for service_type, by_provider in registry.REGISTRY.items():
         for p, cls in by_provider.items():
-            if (
-                service_type.name.lower() == kind
-                and str(getattr(p, "value", p)) == provider
-            ):
+            if service_type.name.lower() == kind and _provider_name(p) == provider:
                 return cls
     return None
 
