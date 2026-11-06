@@ -99,11 +99,16 @@ def test_registry_defaults_not_deprecated(name, cls):
 @pytest.mark.parametrize("key", list(EXCEPTIONS))
 def test_every_exception_is_still_needed(key):
     """An exception must name a current default that really is retiring at GUARD_DATE."""
-    defaults = {(_provider(cls), cls.model_fields["model"].default) for _, cls in _configs()}
-    assert key in defaults, f"{key} is no longer a registry default: drop it from EXCEPTIONS"
-    assert status_for(*key, today=GUARD_DATE).state not in {"active", "warning_price"}, (
-        f"{key} is no longer retiring at {GUARD_DATE}: drop it from EXCEPTIONS"
+    defaults = {
+        (_provider(cls), cls.model_fields["model"].default) for _, cls in _configs()
+    }
+    assert key in defaults, (
+        f"{key} is no longer a registry default: drop it from EXCEPTIONS"
     )
+    assert status_for(*key, today=GUARD_DATE).state not in {
+        "active",
+        "warning_price",
+    }, f"{key} is no longer retiring at {GUARD_DATE}: drop it from EXCEPTIONS"
 
 
 @pytest.mark.parametrize("model", registry.LMNT_TTS_MODELS)
@@ -116,7 +121,9 @@ def test_every_lmnt_model_is_shutdown_for_status_and_text_regex(model):
 
 def test_azure_llm_model_is_a_deployment_name_and_is_never_matched_as_a_model_id():
     """AzureLLMService.model names a deployment, not the model it runs: an id-based entry would flag the wrong rows."""
-    assert "deployment name" in registry.AzureLLMService.model_fields["model"].description
+    assert (
+        "deployment name" in registry.AzureLLMService.model_fields["model"].description
+    )
     for today in (dt.date(2027, 4, 14), dt.date(2028, 1, 1)):
         assert status_for("azure", "gpt-4.1-mini", today=today).state == "active"
 
@@ -132,7 +139,11 @@ def _offered_models():
             field = cls.model_fields.get("model")
             extra = field.json_schema_extra if field else None
             for model in extra.get("examples", ()) if isinstance(extra, dict) else ():
-                yield service_type.name.lower(), str(getattr(provider, "value", provider)), model
+                yield (
+                    service_type.name.lower(),
+                    str(getattr(provider, "value", provider)),
+                    model,
+                )
 
 
 @pytest.mark.parametrize(
@@ -145,14 +156,19 @@ def _offered_models():
 )
 def test_offered_models_are_not_shutdown_at_the_next_wave(provider, model):
     status = status_for(provider, model, today=LIST_CHECK_DATE)
-    assert status.state != "shutdown", f"{provider}/{model} is still offered: {status.reason}"
+    assert status.state != "shutdown", (
+        f"{provider}/{model} is still offered: {status.reason}"
+    )
 
 
 def _slot_class(kind, provider):
     """The registered class for a deprecations.yaml model kind and provider, or None."""
     for service_type, by_provider in registry.REGISTRY.items():
         for p, cls in by_provider.items():
-            if service_type.name.lower() == kind and str(getattr(p, "value", p)) == provider:
+            if (
+                service_type.name.lower() == kind
+                and str(getattr(p, "value", p)) == provider
+            ):
                 return cls
     return None
 
@@ -172,14 +188,22 @@ def test_every_replacement_is_an_active_model_of_the_same_slot(entry):
     date = dt.date.fromisoformat(str(entry["date"])) if entry["date"] else GUARD_DATE
     cls = _slot_class(kind, provider)
     extra = cls.model_fields["model"].json_schema_extra if cls else None
-    for model in (t for t in re.findall(r"[^\s()]+", entry["replacement"]) if t != "or"):
+    for model in (
+        t for t in re.findall(r"[^\s()]+", entry["replacement"]) if t != "or"
+    ):
         status = status_for(provider, model, today=date)
-        assert status.state == "active", f"replacement {provider}/{model} is {status.state} on {date}"
+        assert status.state == "active", (
+            f"replacement {provider}/{model} is {status.state} on {date}"
+        )
         other_slots = {t for t, _, m in _offered_models() if m == model and t != kind}
-        assert not other_slots, f"replacement {model} is offered as {other_slots}, not as {kind}"
+        assert not other_slots, (
+            f"replacement {model} is offered as {other_slots}, not as {kind}"
+        )
         if isinstance(extra, dict) and not extra.get("allow_custom_input"):
             offered = [*extra.get("examples", ()), cls.model_fields["model"].default]
-            assert model in offered, f"replacement {model} cannot be picked in the {provider} {kind} slot: {offered}"
+            assert model in offered, (
+                f"replacement {model} cannot be picked in the {provider} {kind} slot: {offered}"
+            )
 
 
 @pytest.mark.parametrize("model", ["openai/gpt-4.1", "openai/gpt-4.1-mini"])
@@ -299,7 +323,9 @@ def test_tts_1_dated_snapshots_and_gpt5_snapshots_match():
 
 
 def test_openai_stt_default_is_flagged_from_oct_2():
-    assert status_for("openai", "gpt-4o-transcribe", today=GUARD_DATE).state == "warning"
+    assert (
+        status_for("openai", "gpt-4o-transcribe", today=GUARD_DATE).state == "warning"
+    )
     assert (
         status_for("openai", "whisper-1", today=dt.date(2026, 10, 1)).state == "active"
     )
