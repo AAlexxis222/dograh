@@ -186,6 +186,17 @@ def test_a_provider_less_id_next_to_a_resolved_pair_is_still_unstructured(monkey
     assert code == 1 and "unstructured_hit where=workflow#1:" in out
 
 
+@pytest.mark.parametrize("doc", [
+    {"tts": {"provider": "cartesia", "model": "sonic-3.6"}, "nodes": [{"data": {"name": "Aurora"}}]},
+    {"tts": {"provider": "elevenlabs", "model": "eleven_flash_v2_5", "voice": "Blizzard"}},
+    {"llm": {"provider": "azure", "model": "gpt-4.1-mini"}, "nodes": [{"data": {"name": "Aurora"}}]},
+], ids=["node-named-Aurora", "voice-named-Blizzard", "node-named-Aurora-next-to-a-resolved-pair"])
+def test_a_name_that_differs_from_a_retired_id_only_in_case_is_not_a_hit(monkeypatch, capsys, doc):
+    """status_for matches ids case-sensitively, so a persona "Aurora" is not LMNT's retired ``aurora`` here either."""
+    code, out = _run_main_with_sql_regex(monkeypatch, capsys, [("workflow", 1, doc)])
+    assert out == "" and code == 0
+
+
 def test_the_walk_looks_inside_a_resolved_pair():
     doc = {"tts": {"provider": "cartesia", "model": "sonic-3.6", "fallback": {"provider": "cartesia", "model": "sonic-2"}}}
     hits = find_deprecated_usage([("workflow", 1, doc)], today=TODAY, horizon_days=14)
