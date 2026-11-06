@@ -1,4 +1,4 @@
-SONIOX_STT_MODELS = ("stt-rt-v6", "stt-rt-v5")   # v5 stays listed until its shutdown date in deprecations.yaml
+SONIOX_STT_MODELS = ("stt-rt-v6",)   # stt-rt-v5 no longer offered (shutdown in deprecations.yaml); saved configs still load
 
 SONIOX_STT_LANGUAGES = (
     "multi",
