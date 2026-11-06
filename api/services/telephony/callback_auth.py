@@ -34,10 +34,19 @@ def rejected(
     )
 
 
-async def provider_for_run(workflow_run_id: int, *, provider_name: str, where: str):
+async def provider_for_run(
+    workflow_run_id: int,
+    *,
+    provider_name: str,
+    where: str,
+    expect_workflow_id: int | None = None,
+    expect_organization_id: int | None = None,
+):
     """``(run, workflow, provider)``: the provider the run's own organization configured, or a 401.
 
-    The organization comes from the run's workflow, never from the request.
+    The organization comes from the run's workflow, never from the request. ``expect_workflow_id`` and
+    ``expect_organization_id`` are ids a request carries outside its signature (an unsigned query): each one
+    given must agree with the run, which decides.
     """
     run = await db_client.get_workflow_run_by_id(workflow_run_id)
     workflow = await db_client.get_workflow_by_id(run.workflow_id) if run else None
@@ -53,6 +62,11 @@ async def provider_for_run(workflow_run_id: int, *, provider_name: str, where: s
         raise rejected(
             where, why=f"run is on {provider.PROVIDER_NAME}, not {provider_name}"
         )
+    if (expect_workflow_id is not None and run.workflow_id != expect_workflow_id) or (
+        expect_organization_id is not None
+        and workflow.organization_id != expect_organization_id
+    ):
+        raise rejected(where, why=f"query does not match run {workflow_run_id}")
     return run, workflow, provider
 
 

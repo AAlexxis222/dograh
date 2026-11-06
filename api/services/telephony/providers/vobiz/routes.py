@@ -15,7 +15,6 @@ from starlette.responses import HTMLResponse
 from api.db import db_client
 from api.services.telephony.callback_auth import (
     provider_for_run,
-    rejected,
     verify_signature,
 )
 from api.services.telephony.factory import (
@@ -74,14 +73,13 @@ async def handle_vobiz_xml_webhook(
     """
     set_current_run_id(workflow_run_id)
     where = "POST /telephony/vobiz-xml"
-    workflow_run, workflow, provider = await provider_for_run(
-        workflow_run_id, provider_name="vobiz", where=where
+    _, _, provider = await provider_for_run(
+        workflow_run_id,
+        provider_name="vobiz",
+        where=where,
+        expect_workflow_id=workflow_id,
+        expect_organization_id=organization_id,
     )
-    if (
-        workflow_run.workflow_id != workflow_id
-        or workflow.organization_id != organization_id
-    ):
-        raise rejected(where, why=f"query does not match run {workflow_run_id}")
     callback_data, raw_body = await parse_webhook_request(request)
     await verify_signature(
         provider,
