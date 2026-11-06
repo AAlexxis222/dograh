@@ -10,7 +10,9 @@ from pydantic import BaseModel
 from api.services.capabilities.deprecations import load_deprecations, status_for
 from api.services.configuration import registry
 
-TODAY = dt.date(2026, 12, 14)
+# A fixed guard date, not today: after every retirement up to the 2027-01-20 realtime wave, so a default that is
+# scheduled to retire fails here weeks ahead instead of passing until the day it breaks.
+GUARD_DATE = dt.date(2027, 2, 1)
 
 
 def _configs():
@@ -70,7 +72,7 @@ def test_registry_defaults_not_deprecated(name, cls):
         )
     )
     model = cls.model_fields["model"].default
-    status = status_for(provider, model, today=TODAY)
+    status = status_for(provider, model, today=GUARD_DATE)
     assert status.state in {"active", "warning_price"}, (
         f"{name}: default model {provider}/{model} is {status.state} ({status.reason}); hint: {status.hint}"
     )
@@ -94,7 +96,7 @@ def test_every_entry_has_source_and_read_at():
 
 
 def test_legacy_entry_has_no_date_and_is_legacy():
-    s = status_for("grok_realtime", "grok-voice-think-fast-1.0", today=TODAY)
+    s = status_for("grok_realtime", "grok-voice-think-fast-1.0", today=GUARD_DATE)
     assert s.state == "legacy" and "grok-voice-latest" in s.hint
 
 
@@ -125,7 +127,7 @@ def test_cartesia_sunset_models_and_dated_snapshots_are_shutdown(model):
     ],
 )
 def test_cartesia_models_already_sunset_in_june_are_shutdown_now(model):
-    assert status_for("cartesia", model, today=TODAY).state == "shutdown"
+    assert status_for("cartesia", model, today=GUARD_DATE).state == "shutdown"
 
 
 @pytest.mark.parametrize(
@@ -186,7 +188,7 @@ def test_tts_1_dated_snapshots_and_gpt5_snapshots_match():
 
 
 def test_openai_stt_default_is_flagged_from_oct_2():
-    assert status_for("openai", "gpt-4o-transcribe", today=TODAY).state == "warning"
+    assert status_for("openai", "gpt-4o-transcribe", today=GUARD_DATE).state == "warning"
     assert (
         status_for("openai", "whisper-1", today=dt.date(2026, 10, 1)).state == "active"
     )
@@ -216,7 +218,7 @@ def _literal_ids(entry):
 def test_no_entry_is_shadowed_by_an_earlier_one(provider, model, entry):
     """status_for takes the first match: every literal id must resolve to the entry that lists it."""
     if entry["date"] is None:
-        status = status_for(provider, model, today=TODAY)
+        status = status_for(provider, model, today=GUARD_DATE)
         assert status.state == "legacy"
     else:
         date = dt.date.fromisoformat(str(entry["date"]))
