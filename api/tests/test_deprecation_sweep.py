@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from api.services.capabilities.deprecations import blocking_patterns
+from api.services.capabilities.deprecations import blocking_patterns, status_for
 from scripts.xpand import deprecation_sweep as sweep
 from scripts.xpand.deprecation_sweep import (
     build_text_regex,
@@ -257,6 +257,31 @@ def test_sources_cover_draft_definitions_templates_and_user_configs_with_real_co
             assert "'draft'" in s.where and "'published'" in s.where
 
 
+def _retired_at_horizon(provider, model):
+    return status_for(provider, model, today=TODAY + dt.timedelta(days=14)).state == "shutdown"
+
+
+@pytest.mark.parametrize("model", ["sonic-2", "Sonic-2", "SONIC-2"])
+async def test_the_sql_text_pass_marks_a_pair_model_only_where_status_for_retires_it(
+    setup_test_database, test_engine, model
+):
+    """The Postgres text match agrees with status_for (case-sensitive), run on a real row by the sweep's own query."""
+    from sqlalchemy import text
+
+    doc = json.dumps({"tts": {"provider": "cartesia", "model": model}})
+    async with test_engine.begin() as conn:
+        row_id = (await conn.execute(text(
+            "INSERT INTO workflow_templates (template_name, template_description, template_json) "
+            "VALUES ('deprecation-sweep-case', 'deprecation-sweep-case', CAST(:doc AS json)) RETURNING id"
+        ), {"doc": doc})).scalar_one()
+    try:
+        _docs, text_rows = await sweep._load_rows(setup_test_database, _sweep_regex())
+    finally:
+        async with test_engine.begin() as conn:
+            await conn.execute(text("DELETE FROM workflow_templates WHERE id = :id"), {"id": row_id})
+    assert (("workflow_template", row_id) in text_rows) == _retired_at_horizon("cartesia", model)
+
+
 def test_script_runs_from_repo_root_without_pythonpath():
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "DATABASE_URL")}
     r = subprocess.run([sys.executable, "scripts/xpand/deprecation_sweep.py"], cwd=REPO_ROOT, env=env,
@@ -326,6 +351,16 @@ def test_a_double_encoded_token_text_is_opened_too(monkeypatch, capsys):
     _key_value, token = _whole_token(monkeypatch, "organization_configurations", 6, "value", document)
     code, out = _run_main(monkeypatch, capsys, [("org", 6, json.dumps(token))])
     assert code == 1 and "where=org#6:tts state=shutdown" in out
+
+
+@pytest.mark.parametrize("model", ["sonic-2", "Sonic-2", "SONIC-2"])
+def test_the_python_text_pass_marks_a_pair_model_only_where_status_for_retires_it(monkeypatch, model):
+    _key_value, token = _whole_token(
+        monkeypatch, "organization_configurations", 5, "value", {"tts": {"provider": "cartesia", "model": model}}
+    )
+    _docs, rows, unreadable = sweep.open_encrypted_rows([("org", 5, token)], [], _sweep_regex())
+    assert unreadable == []
+    assert (rows == [("org", 5)]) == _retired_at_horizon("cartesia", model)
 
 
 def _leaf_sealed_workflow(monkeypatch):
