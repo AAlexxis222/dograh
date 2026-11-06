@@ -39,6 +39,7 @@ from api.services.quota_service import authorize_workflow_run_start
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.callback_auth import (
+    provider_for_inbound_webhook,
     rejected,
     verify_signature,
     verify_transfer_callback,
@@ -1044,19 +1045,13 @@ async def handle_inbound_fallback(request: Request):
     provider_class = await _detect_provider(webhook_data, headers)
     if not provider_class:
         raise rejected(where, why="no provider recognises the request")
-    try:
-        normalized_data = normalize_webhook_data(provider_class, webhook_data, headers)
-        match = await _find_inbound_route(provider_class, normalized_data)
-        if not match:
-            raise rejected(where, why="no inbound route matches the webhook")
-        config, _ = match
-        provider = await get_telephony_provider_by_id(config.id, config.organization_id)
-    except HTTPException:
-        raise
-    except Exception as exc:  # any failure to resolve the credentials fails closed
-        raise rejected(
-            where, why=f"credentials unavailable ({type(exc).__name__})"
-        ) from exc
+    normalized_data, provider = await provider_for_inbound_webhook(
+        provider_class,
+        webhook_data,
+        headers,
+        where=where,
+        find_route=_find_inbound_route,
+    )
     await verify_signature(
         provider,
         where=where,

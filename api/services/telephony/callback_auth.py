@@ -12,8 +12,12 @@ from loguru import logger
 from api.db import db_client
 from api.services.runtime.cell_state import is_cell
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
-from api.services.telephony.factory import get_telephony_provider_for_run
+from api.services.telephony.factory import (
+    get_telephony_provider_by_id,
+    get_telephony_provider_for_run,
+)
 from api.services.telephony.transfer_event_protocol import TransferContext
+from api.utils.telephony_helper import normalize_webhook_data
 
 UNAUTHENTICATED = "carrier_callback_unauthenticated"
 
@@ -68,6 +72,31 @@ async def provider_for_run(
     ):
         raise rejected(where, why=f"query does not match run {workflow_run_id}")
     return run, workflow, provider
+
+
+async def provider_for_inbound_webhook(
+    provider_class, webhook_data: dict, headers: dict, *, where: str, find_route
+):
+    """``(normalized_data, provider)``: the provider of the telephony configuration an inbound webhook belongs to,
+    or a 401.
+
+    The configuration is the inbound route ``find_route(provider_class, normalized_data)`` matches, never one the
+    request names. Any failure to normalize the webhook, match a route or build the provider fails closed.
+    """
+    try:
+        normalized_data = normalize_webhook_data(provider_class, webhook_data, headers)
+        match = await find_route(provider_class, normalized_data)
+        if not match:
+            raise rejected(where, why="no inbound route matches the webhook")
+        config, _ = match
+        provider = await get_telephony_provider_by_id(config.id, config.organization_id)
+    except HTTPException:
+        raise
+    except Exception as exc:  # any failure to resolve the credentials fails closed
+        raise rejected(
+            where, why=f"credentials unavailable ({type(exc).__name__})"
+        ) from exc
+    return normalized_data, provider
 
 
 async def verify_signature(

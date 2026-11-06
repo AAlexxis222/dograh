@@ -422,7 +422,7 @@ def fallback_provider(world):
     """The provider the matched config builds: real Twilio, so the real signature check runs."""
     _route_for_twilio(world)
     with patch(
-        "api.routes.telephony.get_telephony_provider_by_id",
+        "api.services.telephony.callback_auth.get_telephony_provider_by_id",
         new=AsyncMock(return_value=world.provider),
     ) as built:
         yield built
@@ -458,7 +458,7 @@ def test_fallback_unknown_account_is_401(client, world, fallback_provider):
 def test_fallback_that_fails_to_build_its_provider_is_401(client, world):
     _route_for_twilio(world)
     with patch(
-        "api.routes.telephony.get_telephony_provider_by_id",
+        "api.services.telephony.callback_auth.get_telephony_provider_by_id",
         new=AsyncMock(side_effect=ValueError("config parked")),
     ):
         response = _post_fallback(client, _fallback_form())
