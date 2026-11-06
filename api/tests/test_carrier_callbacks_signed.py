@@ -1360,3 +1360,15 @@ def test_no_english_audible_error_texts_in_the_telephony_sources():
         for m in english.finditer(path.read_text(encoding="utf-8"))
     ]
     assert offenders == []
+
+
+@pytest.mark.parametrize("provider", sorted(PROVIDER_CLASSES))
+def test_generic_error_logs_the_operator_text(provider, log_lines):
+    # The second argument of generate_error_response is for the operator: logged, never spoken.
+    cls = PROVIDER_CLASSES[provider]
+
+    cls.generate_error_response("auth_failed", "Debug detail for the operator")
+
+    logged = [line for line in log_lines if "Debug detail for the operator" in line]
+    assert len(logged) == 1
+    assert "auth_failed" in logged[0] and provider in logged[0]
