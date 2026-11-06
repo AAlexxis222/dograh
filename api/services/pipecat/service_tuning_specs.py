@@ -1372,6 +1372,37 @@ def _validate_openai_stt(tuning: dict[str, Any]) -> list[str]:
     ]
 
 
+def _setting_error(
+    kind: str,
+    provider: str,
+    spec: TuningSpec,
+    nullable: frozenset[str],
+    name: str,
+    value: Any,
+) -> str | None:
+    """The error for one ``settings`` entry of a provider, or ``None``.
+
+    A ``KnobRefusal`` from the xAI language hint propagates: it is the named
+    422 of that knob, not a message in the list.
+    """
+    path = f"{kind}.{provider}.settings.{name}"
+    # A name in the allow-list wins even when it is also a REGISTRY_OWNED
+    # identity field elsewhere (e.g. tts.openai exposes "voice" as a tunable
+    # setting, B6).
+    if name in spec.settings_allowed:
+        error = _settings_value_error(spec, nullable, path, name, value)
+        if error is None:
+            error = _provider_turn_error(kind, provider, "settings", name, value)
+        if error:
+            return error
+        if (kind, provider, name) == ("realtime", "grok_realtime", "language_hint"):
+            grok_language_hint(value)  # KnobRefusal: the named 422
+        return None
+    if name in REGISTRY_OWNED:
+        return f"{path}: owned by the model configuration"
+    return f"{path}: unknown setting"
+
+
 def validate_service_tuning(document: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     for kind in KINDS:
@@ -1384,28 +1415,9 @@ def validate_service_tuning(document: dict[str, Any]) -> list[str]:
             tuning = tuning or {}
             nullable = spec.nullable()
             for name, value in (tuning.get("settings") or {}).items():
-                path = f"{kind}.{provider}.settings.{name}"
-                # A name in the allow-list wins even when it is also a
-                # REGISTRY_OWNED identity field elsewhere (e.g. tts.openai
-                # exposes "voice" as a tunable setting, B6).
-                if name in spec.settings_allowed:
-                    error = _settings_value_error(spec, nullable, path, name, value)
-                    if error is None:
-                        error = _provider_turn_error(
-                            kind, provider, "settings", name, value
-                        )
-                    if error:
-                        errors.append(error)
-                    elif (kind, provider, name) == (
-                        "realtime",
-                        "grok_realtime",
-                        "language_hint",
-                    ):
-                        grok_language_hint(value)  # KnobRefusal: the named 422
-                elif name in REGISTRY_OWNED:
-                    errors.append(f"{path}: owned by the model configuration")
-                else:
-                    errors.append(f"{path}: unknown setting")
+                error = _setting_error(kind, provider, spec, nullable, name, value)
+                if error:
+                    errors.append(error)
             for name, value in (tuning.get("ctor") or {}).items():
                 path = f"{kind}.{provider}.ctor.{name}"
                 if name not in spec.ctor_allowed:
