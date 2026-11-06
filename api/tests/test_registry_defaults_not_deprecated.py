@@ -2,12 +2,14 @@
 
 import datetime as dt
 import inspect
+import re
 from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
 
 from api.services.capabilities.deprecations import (
+    MODEL_KINDS,
     blocking_patterns,
     load_deprecations,
     status_for,
@@ -140,6 +142,40 @@ def _offered_models():
 def test_offered_models_are_not_shutdown_at_the_next_wave(provider, model):
     status = status_for(provider, model, today=LIST_CHECK_DATE)
     assert status.state != "shutdown", f"{provider}/{model} is still offered: {status.reason}"
+
+
+def _slot_class(kind, provider):
+    """The registered class for a deprecations.yaml model kind and provider, or None."""
+    for service_type, by_provider in registry.REGISTRY.items():
+        for p, cls in by_provider.items():
+            if service_type.name.lower() == kind and str(getattr(p, "value", p)) == provider:
+                return cls
+    return None
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        pytest.param(e, id=f"{e['provider']}:{e['replacement']}")
+        for e in load_deprecations()
+        if e.get("replacement")
+    ],
+)
+def test_every_replacement_is_an_active_model_of_the_same_slot(entry):
+    """A hint must not send an operator to another slot's model, nor to a model that is retiring itself."""
+    kind, provider = entry["kind"], entry["provider"]
+    assert kind in MODEL_KINDS, f"only model entries can name a replacement: {entry}"
+    date = dt.date.fromisoformat(str(entry["date"])) if entry["date"] else GUARD_DATE
+    cls = _slot_class(kind, provider)
+    extra = cls.model_fields["model"].json_schema_extra if cls else None
+    for model in (t for t in re.findall(r"[^\s()]+", entry["replacement"]) if t != "or"):
+        status = status_for(provider, model, today=date)
+        assert status.state == "active", f"replacement {provider}/{model} is {status.state} on {date}"
+        other_slots = {t for t, _, m in _offered_models() if m == model and t != kind}
+        assert not other_slots, f"replacement {model} is offered as {other_slots}, not as {kind}"
+        if isinstance(extra, dict) and not extra.get("allow_custom_input"):
+            offered = [*extra.get("examples", ()), cls.model_fields["model"].default]
+            assert model in offered, f"replacement {model} cannot be picked in the {provider} {kind} slot: {offered}"
 
 
 def test_price_effect_only_warns():
