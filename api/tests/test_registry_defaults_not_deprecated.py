@@ -178,6 +178,13 @@ def test_every_replacement_is_an_active_model_of_the_same_slot(entry):
             assert model in offered, f"replacement {model} cannot be picked in the {provider} {kind} slot: {offered}"
 
 
+@pytest.mark.parametrize("model", ["openai/gpt-4.1", "openai/gpt-4.1-mini"])
+def test_openrouter_proxies_of_the_retiring_gpt_4_1_family_are_flagged(model):
+    """status_for filters by provider, so OpenAI's own entry never reaches the OpenRouter slugs of the same models."""
+    assert model in registry.OPENROUTER_MODELS
+    assert status_for("openrouter", model, today=GUARD_DATE).state == "legacy"
+
+
 def test_price_effect_only_warns():
     s = status_for("elevenlabs", "eleven_v4_turbo", today=dt.date(2026, 10, 13))
     assert s.state == "warning_price"
