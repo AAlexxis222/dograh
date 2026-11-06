@@ -132,8 +132,20 @@ def test_azure_llm_model_is_a_deployment_name_and_is_never_matched_as_a_model_id
         assert status_for("azure", "gpt-4.1-mini", today=today).state == "active"
 
 
-# The next retirement wave: no model picker may still offer an id that is shut down by then.
-LIST_CHECK_DATE = dt.date(2026, 12, 15)
+# The offered lists are checked at the next retirement wave, not at GUARD_DATE (RUL-r1-8): no model picker may still
+# offer an id that is shut down by NEXT_WAVE_DATE, while the ids that shut down between it and GUARD_DATE stay
+# offered until the follow-up named in OFFERED_UNTIL_FOLLOW_UP removes them.
+NEXT_WAVE_DATE = dt.date(2026, 12, 15)
+
+# Offered ids shut down at GUARD_DATE that stay listed for now: (provider, model) -> follow-up that removes them.
+# test_offered_until_follow_up_is_exact fails when an id is missing here or no longer needs to be.
+OFFERED_UNTIL_FOLLOW_UP = {
+    ("openai", "gpt-4.1"): "VOZ-FU-N0-01b-offered-lists-2027",
+    ("openai", "gpt-4.1-mini"): "VOZ-FU-N0-01b-offered-lists-2027",
+    ("openai", "gpt-4o-mini-tts"): "VOZ-FU-N0-01b-offered-lists-2027",
+    ("azure_realtime", "gpt-realtime"): "VOZ-FU-N0-01b-offered-lists-2027",
+    ("azure_realtime", "gpt-realtime-mini"): "VOZ-FU-N0-01b-offered-lists-2027",
+}
 
 
 def _offered_models():
@@ -155,9 +167,25 @@ def _offered_models():
     ],
 )
 def test_offered_models_are_not_shutdown_at_the_next_wave(provider, model):
-    status = status_for(provider, model, today=LIST_CHECK_DATE)
+    status = status_for(provider, model, today=NEXT_WAVE_DATE)
     assert status.state != "shutdown", (
         f"{provider}/{model} is still offered: {status.reason}"
+    )
+
+
+def test_offered_until_follow_up_is_exact():
+    """OFFERED_UNTIL_FOLLOW_UP names exactly the offered ids that are shut down at GUARD_DATE."""
+    retiring = {
+        (p, m)
+        for _, p, m in _offered_models()
+        if status_for(p, m, today=GUARD_DATE).state == "shutdown"
+    }
+    named = set(OFFERED_UNTIL_FOLLOW_UP)
+    assert not retiring - named, (
+        f"offered and shut down at {GUARD_DATE}, name a follow-up: {sorted(retiring - named)}"
+    )
+    assert not named - retiring, (
+        f"no longer offered or no longer retiring: drop {sorted(named - retiring)}"
     )
 
 
