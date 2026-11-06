@@ -4,8 +4,6 @@ Mounted under ``/api/v1/telephony`` by ``api.routes.telephony`` via the
 provider registry — see ProviderSpec.router.
 """
 
-import json
-
 from fastapi import APIRouter, Depends, Request
 from loguru import logger
 from pipecat.utils.run_context import set_current_run_id
@@ -149,9 +147,7 @@ async def handle_cloudonix_status_callback(
         form_data = await request.form()
         callback_data = dict(form_data)
 
-    logger.info(
-        f"[run {workflow_run_id}] Received Cloudonix status callback: {json.dumps(callback_data)}"
-    )
+    logger.info(f"[run {workflow_run_id}] Received Cloudonix status callback")
 
     # Get workflow run to find organization
     workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
@@ -214,7 +210,7 @@ async def handle_cloudonix_cdr(request: Request):
     # Extract call_id to find workflow run
     session = cdr_data.get("session")
     call_id = session.get("token") if isinstance(session, dict) else None
-    logger.info(f"Cloudonix CDR data for call id {call_id} - {cdr_data}")
+    logger.info(f"Cloudonix CDR for call id {call_id}")
     if not call_id:
         logger.warning("Cloudonix CDR missing call_id field")
         return {"status": "error", "message": "Missing call_id field"}

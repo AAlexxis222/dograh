@@ -127,7 +127,6 @@ async def handle_telnyx_events(
     logger.info(
         f"[run {workflow_run_id}] Received Telnyx event: event_type={event_type}"
     )
-    logger.debug(f"[run {workflow_run_id}] Telnyx event body: {json.dumps(event_data)}")
 
     # Get workflow run and provider
     workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
@@ -242,10 +241,7 @@ async def handle_telnyx_transfer_result(transfer_id: str, request: Request):
     )
 
     event_data = await request.json()
-    logger.info(
-        f"Telnyx transfer-result webhook (transfer_id={transfer_id}): "
-        f"{json.dumps(event_data)}"
-    )
+    logger.info(f"Telnyx transfer-result webhook (transfer_id={transfer_id!r})")
 
     data = event_data.get("data", {})
     event_type = normalize_event_type(data.get("event_type", ""))

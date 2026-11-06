@@ -4,7 +4,6 @@ Mounted under ``/api/v1/telephony`` by ``api.routes.telephony`` via the
 provider registry — see ProviderSpec.router.
 """
 
-import json
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, HTTPException, Request
@@ -108,7 +107,8 @@ async def handle_twilio_status_callback(
     callback_data = dict(form_data)
 
     logger.info(
-        f"[run {workflow_run_id}] Received status callback: {json.dumps(callback_data)}"
+        f"[run {workflow_run_id}] Received Twilio status callback for call "
+        f"{callback_data.get('CallSid')} status={callback_data.get('CallStatus')}"
     )
 
     # Get workflow run to find organization

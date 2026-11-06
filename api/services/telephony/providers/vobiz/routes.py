@@ -4,7 +4,6 @@ Mounted under ``/api/v1/telephony`` by ``api.routes.telephony`` via the
 provider registry — see ProviderSpec.router.
 """
 
-import json
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Request
@@ -127,7 +126,8 @@ async def handle_vobiz_hangup_callback(
     callback_data, raw_body = await parse_webhook_request(request)
 
     logger.info(
-        f"[run {workflow_run_id}] Received Vobiz hangup callback {json.dumps(callback_data)}"
+        f"[run {workflow_run_id}] Received Vobiz hangup callback for call "
+        f"{callback_data.get('CallUUID')}"
     )
 
     workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
@@ -206,7 +206,8 @@ async def handle_vobiz_ring_callback(
     callback_data, raw_body = await parse_webhook_request(request)
 
     logger.info(
-        f"[run {workflow_run_id}] Received Vobiz ring callback {json.dumps(callback_data)}"
+        f"[run {workflow_run_id}] Received Vobiz ring callback for call "
+        f"{callback_data.get('CallUUID')}"
     )
 
     workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
@@ -278,7 +279,7 @@ async def handle_vobiz_hangup_callback_by_workflow(
 
     call_uuid = callback_data.get("CallUUID") or callback_data.get("call_uuid")
     logger.info(
-        f"[workflow {workflow_id}] Received Vobiz hangup callback for call {call_uuid}: {json.dumps(callback_data)}"
+        f"[workflow {workflow_id}] Received Vobiz hangup callback for call {call_uuid}"
     )
 
     if not call_uuid:

@@ -4,7 +4,6 @@ Mounted under ``/api/v1/telephony`` by ``api.routes.telephony`` via the
 provider registry — see ProviderSpec.router.
 """
 
-import json
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Request
@@ -58,7 +57,8 @@ async def _handle_plivo_status_callback(
     form_data = await request.form()
     callback_data = dict(form_data)
     logger.info(
-        f"[run {workflow_run_id}] Received Plivo callback: {json.dumps(callback_data)}"
+        f"[run {workflow_run_id}] Received Plivo callback for call "
+        f"{callback_data.get('CallUUID')}"
     )
 
     workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)

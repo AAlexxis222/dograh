@@ -340,7 +340,7 @@ async def _verify_organization_phone_number(
         )
         if match and match.telephony_configuration_id == telephony_configuration_id:
             logger.info(
-                f"Phone number {phone_number} matched row {match.id} for org "
+                f"Called number matched row {match.id} for org "
                 f"{organization_id} / config {telephony_configuration_id}"
             )
             return match.id
@@ -353,13 +353,13 @@ async def _verify_organization_phone_number(
                 continue
             if numbers_match(phone_number, row.address, to_country, from_country):
                 logger.info(
-                    f"Phone number {phone_number} matched (fuzzy) row {row.id} "
+                    f"Called number matched (fuzzy) row {row.id} "
                     f"for config {telephony_configuration_id}"
                 )
                 return row.id
 
         logger.warning(
-            f"Phone number {phone_number} not registered to config "
+            f"Called number not registered to config "
             f"{telephony_configuration_id} (org={organization_id}, "
             f"to_country={to_country}, from_country={from_country})"
         )
@@ -367,7 +367,7 @@ async def _verify_organization_phone_number(
 
     except Exception as e:
         logger.error(
-            f"Error verifying phone number {phone_number} for organization "
+            f"Error verifying the called number for organization "
             f"{organization_id} / config {telephony_configuration_id}: {e}"
         )
         return None
@@ -1112,7 +1112,6 @@ async def handle_inbound_telephony(
 
     try:
         webhook_data, raw_body = await parse_webhook_request(request)
-        logger.info(f"Inbound call data: {dict(webhook_data)}")
         headers = dict(request.headers)
 
         # Detect provider and normalize data
@@ -1123,8 +1122,10 @@ async def handle_inbound_telephony(
 
         normalized_data = normalize_webhook_data(provider_class, webhook_data, headers)
 
-        logger.info(f"Inbound call - Provider: {normalized_data.provider}")
-        logger.info(f"Normalized data: {normalized_data}")
+        # Provider and call id only: the body and NormalizedInboundData carry names, numbers and SIP headers.
+        logger.info(
+            f"Inbound call - provider={normalized_data.provider} call_id={normalized_data.call_id}"
+        )
 
         # Validate inbound direction
         if normalized_data.direction != "inbound":
