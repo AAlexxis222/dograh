@@ -897,7 +897,6 @@ async def handle_inbound_run(request: Request):
         normalized_data = normalize_webhook_data(provider_class, webhook_data, headers)
         logger.info(
             f"/inbound/run normalized data — provider={normalized_data.provider} "
-            f"to={normalized_data.to_number} from={normalized_data.from_number} "
             f"account_id={normalized_data.account_id!r} "
             f"direction={normalized_data.direction} "
             f"call_id={normalized_data.call_id} "
@@ -920,7 +919,7 @@ async def handle_inbound_run(request: Request):
                 f"/inbound/run: no inbound route matched "
                 f"provider={provider_class.PROVIDER_NAME} "
                 f"account_id={normalized_data.account_id} "
-                f"to={normalized_data.to_number}"
+                f"call_id={normalized_data.call_id}"
             )
             return provider_class.generate_validation_error_response(
                 TelephonyError.PHONE_NUMBER_NOT_CONFIGURED
@@ -935,13 +934,13 @@ async def handle_inbound_run(request: Request):
             f"/inbound/run matched route — org={config.organization_id} "
             f"config={config.id} name={config.name!r} "
             f"webhook_account_id={normalized_data.account_id!r} "
-            f"phone={phone_row.id} address={phone_row.address!r} "
+            f"phone={phone_row.id} "
             f"inbound_workflow_id={phone_row.inbound_workflow_id}"
         )
 
         if not phone_row.inbound_workflow_id:
             logger.warning(
-                f"/inbound/run: number {normalized_data.to_number} has no "
+                f"/inbound/run: phone number {phone_row.id} has no "
                 f"inbound_workflow_id assigned"
             )
             return provider_class.generate_validation_error_response(
