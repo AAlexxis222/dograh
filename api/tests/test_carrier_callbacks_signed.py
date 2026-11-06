@@ -33,7 +33,7 @@ from api.errors.telephony_errors import (
     TelephonyError,
 )
 from api.routes.telephony import router
-from api.services.runtime.cell_startup import is_cell
+from api.services.runtime.cell_state import is_cell
 from api.services.telephony.providers.cloudonix.provider import CloudonixProvider
 from api.services.telephony.providers.exotel.provider import ExotelProvider
 from api.services.telephony.providers.plivo.provider import PlivoProvider

@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from loguru import logger
 
 from api.db import db_client
-from api.services.runtime.cell_startup import is_cell
+from api.services.runtime.cell_state import is_cell
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.factory import get_telephony_provider_for_run
 from api.services.telephony.transfer_event_protocol import TransferContext

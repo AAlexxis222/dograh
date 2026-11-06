@@ -7,7 +7,7 @@ Light on purpose (no FastAPI import): the api lifespan calls it, and scripts/xpa
 import os
 import sys
 
-from api.services.runtime.cell_state import parse_call_k_p
+from api.services.runtime.cell_state import is_cell, parse_call_k_p
 from api.services.security import credential_box
 from api.services.security.egress_flag import URL_GUARD_FLAG, url_guard_enforced
 
@@ -45,12 +45,6 @@ def _require_valid_master_key(where: str) -> None:
         raise CellStartupError(
             e.code, where, f"{e.where}: {e.reason}", e.hint
         ) from None
-
-
-def is_cell() -> bool:
-    """True when this process runs in a cell: CELL_ROLE is non-empty. The one marker, so a control that fails
-    closed in a cell asks here. Never CARRIER_REGION_POLICY (that selects a carrier region, not a deployment)."""
-    return bool(os.environ.get("CELL_ROLE"))
 
 
 def assert_cell_startup_config(where: str = "api.app") -> None:
