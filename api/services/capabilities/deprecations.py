@@ -33,16 +33,19 @@ def status_for(provider: str, model: str, *, today: dt.date) -> Status:
         if e["provider"] != provider or not _matches(model, e["model_or_feature"]):
             continue
         hint = f"replace with {e['replacement']}" if e.get("replacement") else "pick another model of this kind"
+        note = e.get("note")   # a scope the effect does not cover (e.g. tiers it spares), printed with the reason
+        cite = f"deprecations.yaml; {note}" if note else "deprecations.yaml"
+        tail = f" ({note})" if note else ""
         if e["effect"] == "legacy":
-            return Status("legacy", f"{provider}/{model} is legacy (deprecations.yaml)", hint)
+            return Status("legacy", f"{provider}/{model} is legacy ({cite})", hint)
         date = dt.date.fromisoformat(str(e["date"]))
         if e["effect"] == "price":
-            return Status("warning_price", f"{provider}/{model} price change on {date}", "review cost", date)
+            return Status("warning_price", f"{provider}/{model} price change on {date}{tail}", "review cost", date)
         if today >= date - BLOCK_MARGIN:
-            return Status("shutdown", f"{provider}/{model} retired on {date} (deprecations.yaml)", hint, date)
+            return Status("shutdown", f"{provider}/{model} retired on {date} ({cite})", hint, date)
         warn_from = dt.date.fromisoformat(str(e["warn_from"])) if e.get("warn_from") else date - dt.timedelta(days=WARN_DAYS)
         if today >= warn_from:
-            return Status("warning", f"{provider}/{model} retires on {date}", hint, date)
+            return Status("warning", f"{provider}/{model} retires on {date}{tail}", hint, date)
     return Status("active")
 
 

@@ -1,9 +1,10 @@
 # Single registry of model retirements and price changes (VOZ-AC-B1-80).
 # Fields: provider, kind, model_or_feature (str | list, fnmatch globs allowed), date (UTC, null for legacy),
-# effect (shutdown|price|legacy), replacement, warn_from (optional), source_url, read_at.
+# effect (shutdown|price|legacy), replacement, warn_from (optional), note (optional), source_url, read_at.
 # read_at = the date source_url was last read; each entry cites its own source.
 # Scope: the vendors' public tiers only. There is no tier dimension (status_for takes provider and model), so a
-# retirement that spares a paid or enterprise tier is still recorded with its public-tier effect.
+# retirement that spares a paid or enterprise tier is still recorded with its public-tier effect, and its `note` names
+# the tiers it spares: status_for appends the note to the reason the sweep prints.
 # status_for returns the FIRST matching entry: put a specific id above any broader glob of the same provider.
 # A non-null replacement must be a model of the same provider and slot that is still active on the entry's date
 # (test_every_replacement_is_an_active_model_of_the_same_slot); otherwise null ("pick another model of this kind").
@@ -220,8 +221,9 @@ entries:
   - provider: groq
     kind: llm
     model_or_feature: llama-3.3-70b-versatile
-    date: 2026-08-16   # free and developer tiers; committed-spend enterprise orgs keep it, but this file models public tiers only
+    date: 2026-08-16
     effect: shutdown
+    note: free and developer tiers only, committed-spend enterprise orgs keep it
     replacement: openai/gpt-oss-120b   # the vendor page also names qwen/qwen3.6-27b
     source_url: https://console.groq.com/docs/deprecations
     read_at: 2026-11-05
