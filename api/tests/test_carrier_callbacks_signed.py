@@ -30,6 +30,7 @@ from twilio.request_validator import RequestValidator
 
 from api import constants
 from api.errors.telephony_errors import (
+    CALL_NOT_ATTENDED_MESSAGE_ES,
     CALLER_MESSAGES_ES,
     TELEPHONY_ERROR_MESSAGES,
     TelephonyError,
@@ -1676,23 +1677,135 @@ def test_every_spanish_twilio_say_names_a_voice_that_speaks_es_es():
         assert says == [TWILIO_SPANISH_SAY], name
 
 
-def test_no_english_audible_error_texts_in_the_telephony_sources():
-    """Grep guard: no <Say>/<Speak>/talk text with the old English error wording is left in routes or providers."""
+TRANSFER_GREETING = "Tiene una llamada transferida. Le conectamos ahora."
+# What a caller or a transfer destination may hear, and the names that produce it in the sources.
+AUDIBLE_TEXTS = set(CALLER_MESSAGES_ES.values()) | {
+    TRANSFER_GREETING,
+    CALL_NOT_ATTENDED_MESSAGE_ES,
+}
+AUDIBLE_PRODUCERS = (
+    "caller_message_es(",
+    "caller_error_text(",
+    "UNAVAILABLE_MESSAGE_ES",
+    "TRANSFER_GREETING_ES",
+    "CALL_NOT_ATTENDED_MESSAGE_ES",
+)
+SOURCE_SPEECH = re.compile(r"<(Say|Speak)\b[^>]*>(.*?)</\1>", re.S)
+SOURCE_TALK_TEXT = re.compile(r'"text":\s*([^\n]+)')
+# The seam between two adjacent string literals of one implicitly concatenated string.
+LITERAL_SEAM = re.compile(r"""["']\s*f?["']""")
+
+
+def _audible(source: str) -> bool:
+    """Whether ``source`` (what a <Say>/<Speak> or a talk "text" holds in the code) can only be an agreed text:
+    a literal of AUDIBLE_TEXTS, or one expression of an AUDIBLE_PRODUCERS name."""
+    text = LITERAL_SEAM.sub("", source).strip().rstrip(",").strip()
+    if text[:1] == "{" and text[-1:] == "}" and text.count("{") == 1:
+        text = text[1:-1]
+    elif text[:1] in "\"'" and text[-1:] == text[:1]:
+        return text[1:-1] in AUDIBLE_TEXTS
+    elif text in AUDIBLE_TEXTS:
+        return True
+    return text.startswith(AUDIBLE_PRODUCERS) or any(
+        f"({name}" in text for name in AUDIBLE_PRODUCERS
+    )
+
+
+def test_no_audible_text_outside_the_agreed_set_in_the_telephony_sources():
+    """Grep guard: every literal inside <Say>/<Speak> and every talk text in the telephony routes and services is
+    one of the agreed Spanish texts (VOZ-AC-B4-46b: no English, no free text)."""
     files = [API_ROOT / "routes" / "telephony.py"] + sorted(
-        (API_ROOT / "services" / "telephony" / "providers").glob("*/*.py")
+        (API_ROOT / "services" / "telephony").rglob("*.py")
     )
-    english = re.compile(
-        r"(?:<(?:Say|Speak)\b[^>]*>[^<{]*"
-        r"(?:Sorry|temporarily unavailable|error|failed|not configured|Invalid|occurred)"
-        r"|\"text\":\s*f?\"[^\"]*(?:Sorry|error))",
-        re.I,
-    )
-    offenders = [
-        f"{path.relative_to(API_ROOT)}: {m.group(0)[:80]}"
-        for path in files
-        for m in english.finditer(path.read_text(encoding="utf-8"))
-    ]
+    offenders = []
+    for path in files:
+        source = path.read_text(encoding="utf-8")
+        spoken = [m.group(2) for m in SOURCE_SPEECH.finditer(source)]
+        spoken += [m.group(1) for m in SOURCE_TALK_TEXT.finditer(source)]
+        offenders += [
+            f"{path.relative_to(API_ROOT)}: {text.strip()[:80]}"
+            for text in spoken
+            if not _audible(text)
+        ]
     assert offenders == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "Connecting you now.",
+        '"Sorry, an error occurred",',
+        "Hola {name}",
+        "{escape(message)}",
+        "{message}",
+        "{UNAVAILABLE_MESSAGE_ES} {name}",
+    ],
+)
+def test_the_audible_text_guard_refuses_free_or_english_text(source):
+    assert not _audible(source)
+
+
+def _twilio_transfer_twiml() -> str:
+    """The inline TwiML Twilio's transfer_call sends for the destination leg, captured before it is sent."""
+    sent = []
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def post(self, url, data=None, **kwargs):
+            sent.append(data)
+            raise RuntimeError("test: stop after building the request")
+
+    module = "api.services.telephony.providers.twilio.provider"
+    with (
+        patch(f"{module}.aiohttp.ClientSession", lambda **kwargs: Session()),
+        patch(
+            f"{module}.get_backend_endpoints",
+            new=AsyncMock(return_value=("https://backend.test", "")),
+        ),
+    ):
+        try:
+            asyncio.run(
+                _twilio().transfer_call(
+                    destination="+34911222333",
+                    transfer_id=TRANSFER_ID,
+                    conference_name="conf-1",
+                )
+            )
+        except Exception:
+            pass
+    return sent[0]["Twiml"]
+
+
+def _plivo_transfer_xml() -> str:
+    from api.services.telephony.providers.plivo.routes import _conference_xml_response
+
+    return _conference_xml_response("conf-1").body.decode("utf-8")
+
+
+@pytest.mark.parametrize(
+    ("build", "tag"),
+    [
+        (_twilio_transfer_twiml, TWILIO_SPANISH_SAY),
+        (_plivo_transfer_xml, '<Speak language="es-ES">'),
+        (
+            lambda: CloudonixProvider._conference_join_cxml(
+                "conf-1", "https://backend.test/cb"
+            ),
+            '<Say language="es-ES">',
+        ),
+    ],
+    ids=["twilio", "plivo", "cloudonix"],
+)
+def test_transfer_greeting_is_the_spanish_sentence_in_a_spanish_voice(build, tag):
+    body = build()
+
+    assert re.findall(r"<(?:Say|Speak)\b[^>]*>", body) == [tag]
+    assert _spoken(body) == [TRANSFER_GREETING]
 
 
 @pytest.mark.parametrize("provider", sorted(PROVIDER_CLASSES))
