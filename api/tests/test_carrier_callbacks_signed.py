@@ -20,9 +20,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import urlencode
 
+import asyncpg.exceptions
 import jwt
 import nacl.signing
 import pytest
+import sqlalchemy.exc
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from loguru import logger
@@ -562,6 +564,108 @@ def test_fallback_for_a_provider_nobody_recognises_does_not_log_headers_or_body(
     assert text
     assert CALLER not in text and BODY_MARKER not in text
     assert "x-custom-probe" not in text and "custom-header-value" not in text
+
+
+def _db_error(cls, *, invalidated: bool):
+    return cls(
+        "SELECT 1", {}, Exception("driver error"), connection_invalidated=invalidated
+    )
+
+
+# What this stack raises when Postgres is down, restarting, saturated or drops the connection.
+LOOKUP_OUTAGES = {
+    "connection_refused": lambda: ConnectionRefusedError("connection refused"),
+    "builtin_timeout": lambda: TimeoutError(),
+    "pool_exhausted": lambda: sqlalchemy.exc.TimeoutError("QueuePool limit reached"),
+    "interface_error": lambda: _db_error(
+        sqlalchemy.exc.InterfaceError, invalidated=False
+    ),
+    "connection_invalidated": lambda: _db_error(
+        sqlalchemy.exc.OperationalError, invalidated=True
+    ),
+    "cannot_connect_now": lambda: asyncpg.exceptions.CannotConnectNowError(
+        "the database system is starting up"
+    ),
+    "too_many_connections": lambda: asyncpg.exceptions.TooManyConnectionsError(
+        "too many connections"
+    ),
+    "admin_shutdown": lambda: asyncpg.exceptions.AdminShutdownError("shutting down"),
+    "connection_lost": lambda: asyncpg.exceptions.PostgresConnectionError("lost"),
+}
+
+
+def _lookup_raises(world, stage: str, error: Exception):
+    """Make the fallback's credential lookup raise ``error`` at ``stage``: the inbound route or the configuration."""
+    _route_for_twilio(world)
+    if stage == "route":
+        world.db.find_inbound_route_by_account = AsyncMock(side_effect=error)
+        return patch(
+            "api.services.telephony.callback_auth.get_telephony_provider_by_id",
+            new=AsyncMock(return_value=world.provider),
+        )
+    return patch(
+        "api.services.telephony.callback_auth.get_telephony_provider_by_id",
+        new=AsyncMock(side_effect=error),
+    )
+
+
+@pytest.mark.parametrize("stage", ["route", "configuration"])
+@pytest.mark.parametrize("outage", sorted(LOOKUP_OUTAGES))
+def test_fallback_during_a_database_outage_speaks_the_unavailable_sentence(
+    client, world, log_lines, stage, outage
+):
+    # Twilio calls the fallback exactly when /inbound/run failed: in an outage the caller hears the Spanish
+    # sentence, not the carrier's English application error. Nothing is written and nothing personal is logged.
+    before = world.snapshot()
+    with _lookup_raises(world, stage, LOOKUP_OUTAGES[outage]()):
+        response = _post_fallback(client, _fallback_form())
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/xml")
+    assert _spoken(response.text) == [UNAVAILABLE_ES]
+    assert world.snapshot() == before
+    text = "\n".join(log_lines).lower()
+    assert "ca-fallback" in text
+    assert CALLER not in text and "612345678" not in text and BODY_MARKER not in text
+    assert "custom-header-value" not in text and "twilioproxy" not in text
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        lambda: _db_error(sqlalchemy.exc.DataError, invalidated=False),
+        lambda: _db_error(sqlalchemy.exc.ProgrammingError, invalidated=False),
+        lambda: _db_error(sqlalchemy.exc.OperationalError, invalidated=False),
+        lambda: ValueError("config parked"),
+        lambda: AttributeError("'int' object has no attribute 'upper'"),
+    ],
+    ids=["data_error", "programming_error", "operational_alive", "value", "attribute"],
+)
+@pytest.mark.parametrize("stage", ["route", "configuration"])
+def test_fallback_lookup_error_that_is_not_an_outage_stays_the_401(
+    client, world, stage, error
+):
+    before = world.snapshot()
+    with _lookup_raises(world, stage, error()):
+        response = _post_fallback(client, _fallback_form())
+
+    _assert_b028(response)
+    assert world.snapshot() == before
+
+
+def test_fallback_with_a_malformed_unsigned_body_is_401(
+    client, world, fallback_provider
+):
+    before = world.snapshot()
+
+    response = client.post(
+        FALLBACK_PATH,
+        json={**_fallback_form(), "ToCountry": 123, "To": 34911000111},
+        headers={"User-Agent": "TwilioProxy/1.1"},
+    )
+
+    _assert_b028(response)
+    assert world.snapshot() == before
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -1550,9 +1654,7 @@ def test_validation_error_given_as_its_string_value_is_spoken_from_the_table(
 ):
     cls = PROVIDER_CLASSES[provider]
 
-    body = cls.generate_validation_error_response("QUOTA_EXCEEDED").body.decode(
-        "utf-8"
-    )
+    body = cls.generate_validation_error_response("QUOTA_EXCEEDED").body.decode("utf-8")
 
     assert _spoken(body) == [CAPACITY_ES]
 
