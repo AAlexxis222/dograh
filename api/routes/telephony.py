@@ -457,14 +457,22 @@ async def _validate_inbound_request(
     # Verify webhook signature using the matched config's credentials. The
     # provider extracts its own signature/timestamp/nonce headers from the
     # dict, so this dispatcher stays generic.
-    provider_instance, refusal = await _verified_inbound_provider(
-        telephony_configuration_id,
-        organization_id,
-        webhook_url,
-        webhook_data,
-        headers,
-        raw_body,
-    )
+    try:
+        provider_instance, refusal = await _verified_inbound_provider(
+            telephony_configuration_id,
+            organization_id,
+            webhook_url,
+            webhook_data,
+            headers,
+            raw_body,
+        )
+    except (
+        Exception
+    ) as e:  # a provider build or verifier that raises authenticates nothing
+        logger.warning(
+            f"Inbound webhook could not be verified (config {telephony_configuration_id}): {type(e).__name__}"
+        )
+        return False, TelephonyError.SIGNATURE_VALIDATION_FAILED, {}, None
     if refusal:
         return False, refusal, {}, None
 
@@ -1103,6 +1111,9 @@ async def handle_inbound_telephony(
     their provider at ``/inbound/run``; this route is kept only for
     existing provider configurations that still encode ``workflow_id``
     in the URL.
+
+    It is in the closed route list of VOZ-N0-29: every refusal before the
+    request is authenticated is the B0-28 401, never a TwiML document.
     """
     logger.info(
         f"[legacy /inbound/{{workflow_id}}] Inbound call received for workflow_id: {workflow_id}"
@@ -1146,6 +1157,12 @@ async def handle_inbound_telephony(
         )
 
         if not is_valid:
+            if error_type != TelephonyError.CARRIER_SIGNING_UNVERIFIED:
+                # Every other refusal comes before the request is authenticated: one 401, so an unsigned request
+                # cannot tell an existing workflow or number from a missing one.
+                raise rejected(
+                    "POST /telephony/inbound/{workflow_id}", why=error_type.value
+                )
             logger.error(f"Request validation failed: {error_type}")
             return provider_class.generate_validation_error_response(error_type)
 
@@ -1228,6 +1245,8 @@ async def handle_inbound_telephony(
         logger.error(f"Request parsing error: {e}")
         return generic_hangup_response()
     except Exception as e:
+        if isinstance(e, HTTPException) and e.status_code == 401:
+            raise  # the refusal above: never turned into a hangup
         logger.error(f"Error processing inbound call: {e}")
         return generic_hangup_response()
 
