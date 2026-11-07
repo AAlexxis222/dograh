@@ -23,6 +23,8 @@ from api.services.telephony.transfer_event_protocol import TransferContext
 from api.utils.telephony_helper import normalize_webhook_data
 
 UNAUTHENTICATED = "carrier_callback_unauthenticated"
+DEFAULT_REASON = "the callback could not be authenticated against the telephony credentials of its organization"
+DEFAULT_HINT = "check that the carrier calls the URL this platform configured, and that the auth token or public key in the telephony configuration is the current one"
 
 
 def rejected(
@@ -30,14 +32,24 @@ def rejected(
     *,
     why: str,
     code: str = UNAUTHENTICATED,
-    reason: str = "the callback could not be authenticated against the telephony credentials of its organization",
-    hint: str = "check that the carrier calls the URL this platform configured, and that the auth token or public key in the telephony configuration is the current one",
+    reason: str = DEFAULT_REASON,
+    hint: str = DEFAULT_HINT,
 ) -> HTTPException:
     """The 401 for a callback that is not authenticated. ``why`` is for the log only.
 
     ``where`` and ``why`` are logged as reprs: a request value inside them (a path segment) cannot start a line.
     """
     logger.warning(f"carrier callback refused: code={code} where={where!r} why={why!r}")
+    return _unauthenticated(where, code=code, reason=reason, hint=hint)
+
+
+def _unauthenticated(
+    where: str,
+    *,
+    code: str = UNAUTHENTICATED,
+    reason: str = DEFAULT_REASON,
+    hint: str = DEFAULT_HINT,
+) -> HTTPException:
     return HTTPException(
         status_code=401,
         detail={"code": code, "where": where, "reason": reason, "hint": hint},
@@ -162,13 +174,19 @@ async def verify_transfer_callback(
 
     The credentials come from the TransferContext in Redis: transfer_id -> workflow_run_id -> organization ->
     telephony configuration. A transfer with no context, or a context without a run, has no credentials to
-    verify against and is refused.
+    verify against and is refused. No context is what every successful transfer leaves behind once its strategy
+    removes it (the carrier's later 'completed' or 'call.hangup'), so it is logged at INFO, not as a refusal; the
+    caller still gets the same 401.
     """
     context = await (await get_call_transfer_manager()).get_transfer_context(
         transfer_id
     )
     if not context:
-        raise rejected(where, why=f"no transfer context for {transfer_id}")
+        logger.info(
+            f"carrier callback for a gone transfer: code=transfer_context_gone where={where!r} "
+            f"transfer_id={transfer_id!r} (transfer already finished or unknown; nothing to change)"
+        )
+        raise _unauthenticated(where)
     if not context.workflow_run_id:
         raise rejected(where, why=f"transfer {transfer_id} has no workflow_run_id")
     _, _, provider = await provider_for_run(

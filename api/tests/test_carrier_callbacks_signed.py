@@ -1475,7 +1475,8 @@ def test_refusal_log_cannot_be_split_by_a_request_value(client, world, log_lines
     )
 
     _assert_b028(response)
-    refusals = [line for line in log_lines if "carrier callback refused" in line]
+    # No such transfer: logged as transfer_context_gone, with the same repr guard as a refusal.
+    refusals = [line for line in log_lines if "code=" in line]
     assert refusals
     for line in refusals:
         assert "\n2026-11-06" not in line
