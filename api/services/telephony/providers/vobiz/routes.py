@@ -72,8 +72,8 @@ async def handle_vobiz_xml_webhook(
     Vobiz uses Plivo-compatible XML format similar to Twilio's TwiML.
 
     The XML carries the media-stream URL and its token, so the request must be signed
-    with the token of the run's own organization (401 otherwise). Vobiz signs the URL
-    without its query string, so the signature does not cover ``workflow_id`` and
+    with the token of the run's own organization (401 otherwise). Vobiz signs the public
+    URL the platform gave it, without its query string, so the signature does not cover ``workflow_id`` and
     ``organization_id``: they must agree with the run, which decides. Nor does it bind the run, so ``t`` must be
     the answer-URL token of ``workflow_run_id`` (``require_answer_url_token``).
     """
@@ -87,10 +87,13 @@ async def handle_vobiz_xml_webhook(
         expect_organization_id=organization_id,
     )
     callback_data, raw_body = await parse_webhook_request(request)
+    # The URL the platform gave Vobiz, as the sibling callbacks verify: behind a proxy or tunnel the scheme or
+    # host this app sees in request.url differs from the public one Vobiz signed.
+    backend_endpoint, _ = await get_backend_endpoints()
     await verify_signature(
         provider,
         where=where,
-        url=str(request.url),
+        url=f"{backend_endpoint}/api/v1/telephony/vobiz-xml",
         data=callback_data,
         headers=dict(request.headers),
         body=raw_body,

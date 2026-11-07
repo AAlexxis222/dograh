@@ -880,15 +880,26 @@ def _vobiz_headers(path_url: str, token: str = VOBIZ_TOKEN) -> dict:
     }
 
 
-def _post_vobiz_xml(client, world, *, query=None, headers=None):
+PUBLIC_BACKEND = "https://public.example"
+# What Vobiz signs: the public URL the platform gave it (get_backend_endpoints), not the one the app sees.
+VOBIZ_SIGNED_URL = f"{PUBLIC_BACKEND}/api/v1/telephony/vobiz-xml"
+
+
+def _post_vobiz_xml(client, world, *, query=None, headers=None, build="<Response/>"):
     world.provider = _vobiz()
-    world.provider.get_webhook_response = AsyncMock(return_value="<Response/>")
+    world.provider.get_webhook_response = AsyncMock(return_value=build)
     path = "/telephony/vobiz-xml"
-    response = client.post(
-        f"{path}?{urlencode(query or VOBIZ_QUERY)}",
-        data={"CallUUID": "uuid-1"},
-        headers=headers if headers is not None else _vobiz_headers(BASE + path),
-    )
+    with patch(
+        "api.services.telephony.providers.vobiz.routes.get_backend_endpoints",
+        new=AsyncMock(return_value=(PUBLIC_BACKEND, "wss://public.example")),
+    ):
+        response = client.post(
+            f"{path}?{urlencode(query or VOBIZ_QUERY)}",
+            data={"CallUUID": "uuid-1"},
+            headers=headers
+            if headers is not None
+            else _vobiz_headers(VOBIZ_SIGNED_URL),
+        )
     return response, world.provider.get_webhook_response
 
 
@@ -909,7 +920,7 @@ def test_vobiz_xml_bad_signature_is_401_and_builds_no_stream_url(
             "x-vobiz-signature-v3-nonce": "12345678901234567890",
         }
     elif headers == "other_token":
-        headers = _vobiz_headers(BASE + "/telephony/vobiz-xml", token=OTHER_TOKEN)
+        headers = _vobiz_headers(VOBIZ_SIGNED_URL, token=OTHER_TOKEN)
     before = world.snapshot()
 
     response, build = _post_vobiz_xml(client, world, headers=headers)
@@ -930,9 +941,6 @@ def test_vobiz_xml_query_that_disagrees_with_the_run_is_401_even_if_signed(
 
     _assert_b028(response)
     build.assert_not_awaited()
-
-
-PUBLIC_BACKEND = "https://public.example"
 
 
 def test_vobiz_xml_verifies_the_public_url_vobiz_signed_not_the_one_the_app_sees(
@@ -1451,15 +1459,7 @@ def test_vobiz_xml_does_not_log_the_media_url_or_its_token(client, world, log_li
         f"<Response><Stream>wss://media.example/ws/{WORKFLOW_ID}/{ORG_ID}/{RUN_ID}/{token}"
         "</Stream></Response>"
     )
-    world.provider = _vobiz()
-    world.provider.get_webhook_response = AsyncMock(return_value=stream_xml)
-    path = "/telephony/vobiz-xml"
-
-    response = client.post(
-        f"{path}?{urlencode(VOBIZ_QUERY)}",
-        data={"CallUUID": "uuid-1"},
-        headers=_vobiz_headers(BASE + path),
-    )
+    response, _ = _post_vobiz_xml(client, world, build=stream_xml)
 
     assert response.status_code == 200 and token in response.text
     text = "\n".join(log_lines)
