@@ -225,7 +225,7 @@ def test_action_callback_decides_by_run_state(
     assert expected in resp.text and forbidden not in resp.text
     assert "<Hangup/>" in resp.text
     if run_state != "completed":
-        assert '<Say language="es-ES">' in resp.text
+        assert '<Say voice="Polly.Lucia" language="es-ES">' in resp.text
         assert "Ahora mismo no podemos atender tu llamada." in resp.text
 
 

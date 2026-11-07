@@ -65,6 +65,8 @@ CALLER = "+34612345678"
 
 CAPACITY_ES = CALLER_MESSAGES_ES[TelephonyError.CONCURRENT_CALL_LIMIT]
 UNAVAILABLE_ES = CALLER_MESSAGES_ES[TelephonyError.PHONE_NUMBER_NOT_CONFIGURED]
+# The tag of every Spanish Twilio <Say>: a voice that speaks es-ES, and the language.
+TWILIO_SPANISH_SAY = '<Say voice="Polly.Lucia" language="es-ES">'
 
 TELNYX_KEY = nacl.signing.SigningKey.generate()
 TELNYX_PUBLIC = base64.b64encode(bytes(TELNYX_KEY.verify_key)).decode("ascii")
@@ -514,7 +516,7 @@ def test_fallback_signed_answers_in_spanish(client, world, fallback_provider):
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/xml")
-    assert re.search(r'<Say language="es-ES">([^<]+)</Say>', response.text)
+    assert re.search(re.escape(TWILIO_SPANISH_SAY) + r"([^<]+)</Say>", response.text)
     spoken = re.search(r"<Say[^>]*>([^<]+)</Say>", response.text).group(1)
     assert spoken in CALLER_MESSAGES_ES.values()
     assert "Sorry" not in response.text and "temporarily" not in response.text
@@ -1639,7 +1641,7 @@ def test_generic_error_is_spoken_in_spanish_and_never_speaks_the_debug_text(
 @pytest.mark.parametrize(
     ("provider", "marker"),
     [
-        ("twilio", '<Say language="es-ES">'),
+        ("twilio", TWILIO_SPANISH_SAY),
         ("cloudonix", '<Say language="es-ES">'),
         ("plivo", 'language="es-ES"'),
         ("vobiz", 'language="es-ES"'),
@@ -1653,6 +1655,25 @@ def test_spoken_errors_name_the_language(provider, marker):
     response = response[0] if isinstance(response, tuple) else response
 
     assert marker in response.body.decode("utf-8")
+
+
+def test_every_spanish_twilio_say_names_a_voice_that_speaks_es_es():
+    # Twilio's default voice ("man") does not list es-ES and "alice" is retired: each Spanish <Say> names the
+    # Polly voice, or Twilio reads the sentence with the wrong voice or drops it.
+    from api.services.telephony.providers.twilio.routes import _connect_action_twiml
+
+    bodies = {
+        "error": TwilioProvider.generate_error_response("SYSTEM_UNAVAILABLE", "x"),
+        "validation": TwilioProvider.generate_validation_error_response(
+            TelephonyError.CONCURRENT_CALL_LIMIT
+        ),
+    }
+    bodies = {name: r.body.decode("utf-8") for name, r in bodies.items()}
+    bodies["connect-action"] = _connect_action_twiml(call_ended=False)
+
+    for name, body in bodies.items():
+        says = re.findall(r"<Say\b[^>]*>", body)
+        assert says == [TWILIO_SPANISH_SAY], name
 
 
 def test_no_english_audible_error_texts_in_the_telephony_sources():
