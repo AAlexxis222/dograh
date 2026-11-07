@@ -14,6 +14,7 @@ from starlette.responses import HTMLResponse
 from api.db import db_client
 from api.services.telephony.callback_auth import (
     provider_for_run,
+    rejected,
     require_answer_url_token,
     verify_signature,
 )
@@ -57,6 +58,18 @@ async def _verify_vobiz_callback(
         raise HTTPException(status_code=403, detail="Invalid webhook signature")
 
 
+async def _parse_vobiz_callback(request: Request, *, log_prefix: str):
+    """``(callback_data, raw_body)`` of a Vobiz callback, or the 403 the callback answers for a bad signature:
+    a body with no fields to read cannot be a signed Vobiz callback."""
+    try:
+        return await parse_webhook_request(request)
+    except ValueError:
+        logger.warning(f"{log_prefix} Vobiz callback without a parseable body")
+        raise HTTPException(
+            status_code=403, detail="Invalid webhook signature"
+        ) from None
+
+
 @router.post("/vobiz-xml", include_in_schema=False)
 async def handle_vobiz_xml_webhook(
     workflow_id: int,
@@ -79,6 +92,10 @@ async def handle_vobiz_xml_webhook(
     """
     set_current_run_id(workflow_run_id)
     where = "POST /telephony/vobiz-xml"
+    try:
+        callback_data, raw_body = await parse_webhook_request(request)
+    except ValueError:
+        raise rejected(where, why="no parseable body") from None
     _, _, provider = await provider_for_run(
         workflow_run_id,
         provider_name=VobizProvider.PROVIDER_NAME,
@@ -86,7 +103,6 @@ async def handle_vobiz_xml_webhook(
         expect_workflow_id=workflow_id,
         expect_organization_id=organization_id,
     )
-    callback_data, raw_body = await parse_webhook_request(request)
     # The URL the platform gave Vobiz, as the sibling callbacks verify: behind a proxy or tunnel the scheme or
     # host this app sees in request.url differs from the public one Vobiz signed.
     backend_endpoint, _ = await get_backend_endpoints()
@@ -129,7 +145,9 @@ async def handle_vobiz_hangup_callback(
 
     # Parse the callback data from the raw body so signed webhooks can verify
     # the exact bytes Vobiz sent without draining the request stream first.
-    callback_data, raw_body = await parse_webhook_request(request)
+    callback_data, raw_body = await _parse_vobiz_callback(
+        request, log_prefix=f"[run {workflow_run_id}]"
+    )
 
     logger.info(
         f"[run {workflow_run_id}] Received Vobiz hangup callback for call "
@@ -209,7 +227,9 @@ async def handle_vobiz_ring_callback(
 
     # Parse the callback data from the raw body so signed webhooks can verify
     # the exact bytes Vobiz sent without draining the request stream first.
-    callback_data, raw_body = await parse_webhook_request(request)
+    callback_data, raw_body = await _parse_vobiz_callback(
+        request, log_prefix=f"[run {workflow_run_id}]"
+    )
 
     logger.info(
         f"[run {workflow_run_id}] Received Vobiz ring callback for call "

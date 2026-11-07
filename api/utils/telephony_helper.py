@@ -140,7 +140,9 @@ async def parse_webhook_request(request: Request) -> tuple[dict, str]:
 
     Returns ``(webhook_data, raw_body)`` where ``raw_body`` is the
     request body decoded as UTF-8 — kept around for providers (e.g.
-    Vobiz) whose signature is computed over the raw bytes.
+    Vobiz) whose signature is computed over the raw bytes. A body that names
+    no fields (nothing parsed, or JSON that is not an object) raises
+    ``ValueError``.
 
     Some providers (Exotel Voicebot dynamic URL) call the webhook as GET
     with call context in query parameters. Starlette's ``request.form()``
@@ -159,7 +161,7 @@ async def parse_webhook_request(request: Request) -> tuple[dict, str]:
 
     if not webhook_data:
         webhook_data = dict(request.query_params)
-    if not webhook_data:
+    if not webhook_data or not isinstance(webhook_data, dict):
         raise ValueError("Unable to parse webhook data")
 
     return webhook_data, raw_body
