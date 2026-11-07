@@ -359,6 +359,31 @@ def test_transfer_result_without_a_credential_context_is_401_even_if_signed(
     assert world.snapshot() == before
 
 
+@pytest.mark.parametrize("carrier", ["twilio", "telnyx"])
+def test_signed_callback_of_a_finished_transfer_is_401_logged_as_info_not_refused(
+    client, world, log_lines, carrier
+):
+    # The strategy removes the context once the transfer completes; the carrier's later 'completed' or
+    # 'call.hangup' is genuine. It keeps the 401, but it is not an attack and is not logged as one.
+    world.manager.contexts.clear()
+    before = world.snapshot()
+    if carrier == "twilio":
+        response = _post_transfer_result(
+            client, signed=True, form={"CallStatus": "completed"}
+        )
+    else:
+        world.provider = _telnyx()
+        body = _telnyx_body()
+        response = _post_telnyx(client, body, _telnyx_headers(body))
+
+    _assert_b028(response, code="carrier_callback_unauthenticated")
+    assert world.snapshot() == before
+    gone = [line for line in log_lines if "code=transfer_context_gone" in line]
+    assert len(gone) == 1 and "| INFO" in gone[0], log_lines
+    assert not [line for line in log_lines if "carrier callback refused" in line]
+    assert not [line for line in log_lines if "| WARNING" in line]
+
+
 def test_transfer_result_signed_answer_publishes_destination_answered(client, world):
     response = _post_transfer_result(client, signed=True)
 
