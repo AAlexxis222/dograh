@@ -6,6 +6,8 @@ Consolidated from split modules for easier maintenance.
 import uuid
 from typing import Optional
 
+import asyncpg.exceptions
+import sqlalchemy.exc
 from fastapi import (
     APIRouter,
     Depends,
@@ -1055,12 +1057,44 @@ async def handle_inbound_run(request: Request):
         return generic_hangup_response()
 
 
+# What this stack (SQLAlchemy async + asyncpg) raises when Postgres is down, restarting, saturated or drops the
+# connection. OSError covers ConnectionError, ConnectionRefusedError and the builtin TimeoutError;
+# sqlalchemy.exc.TimeoutError is an exhausted pool.
+_LOOKUP_OUTAGE_ERRORS = (
+    OSError,
+    sqlalchemy.exc.TimeoutError,
+    sqlalchemy.exc.InterfaceError,
+    asyncpg.exceptions.PostgresConnectionError,
+    asyncpg.exceptions.CannotConnectNowError,
+    asyncpg.exceptions.TooManyConnectionsError,
+    asyncpg.exceptions.AdminShutdownError,
+)
+
+
+def _is_lookup_outage(exc: BaseException) -> bool:
+    """Whether a credential lookup failed because its store could not be reached, not because of the request: one
+    of _LOOKUP_OUTAGE_ERRORS, or a DBAPIError whose connection really closed."""
+    return isinstance(exc, _LOOKUP_OUTAGE_ERRORS) or (
+        isinstance(exc, sqlalchemy.exc.DBAPIError) and exc.connection_invalidated
+    )
+
+
+def _fallback_unavailable(provider_class):
+    # The second argument is logged for the operator; the caller hears the Spanish table text.
+    return provider_class.generate_error_response(
+        "SYSTEM_UNAVAILABLE",
+        "Our system is temporarily unavailable. Please try again later.",
+    )
+
+
 @router.post("/inbound/fallback")
 async def handle_inbound_fallback(request: Request):
     """Fallback endpoint that returns audio message when calls cannot be processed."""
     # Authenticated like /inbound/run: the account id of the webhook names the telephony
     # configuration, and that configuration's credentials must verify the signature. Anything
-    # else is a 401. Neither the headers nor the body are logged, only the call id.
+    # else is a 401, except a database outage during that lookup: the carrier calls this URL
+    # precisely when /inbound/run failed, so the caller hears the static Spanish sentence
+    # and nothing is written. Neither the headers nor the body are logged, only the call id.
     # (Comments, not docstring: the docstring is published in openapi.json and the generated clients.)
     where = "POST /telephony/inbound/fallback"
     try:
@@ -1072,13 +1106,21 @@ async def handle_inbound_fallback(request: Request):
     provider_class = await _detect_provider(webhook_data, headers)
     if not provider_class:
         raise rejected(where, why="no provider recognises the request")
-    normalized_data, provider = await provider_for_inbound_webhook(
-        provider_class,
-        webhook_data,
-        headers,
-        where=where,
-        find_route=_find_inbound_route,
-    )
+    try:
+        normalized_data, provider = await provider_for_inbound_webhook(
+            provider_class,
+            webhook_data,
+            headers,
+            where=where,
+            find_route=_find_inbound_route,
+            is_outage=_is_lookup_outage,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if not _is_lookup_outage(exc):
+            raise
+        return _fallback_unavailable(provider_class)
     await verify_signature(
         provider,
         where=where,
@@ -1091,11 +1133,7 @@ async def handle_inbound_fallback(request: Request):
     logger.info(
         f"[fallback] Received {provider_class.PROVIDER_NAME} callback for call {normalized_data.call_id}"
     )
-    # The second argument is logged for the operator; the caller hears the Spanish table text.
-    return provider_class.generate_error_response(
-        "SYSTEM_UNAVAILABLE",
-        "Our system is temporarily unavailable. Please try again later.",
-    )
+    return _fallback_unavailable(provider_class)
 
 
 @router.post("/inbound/{workflow_id}", deprecated=True)

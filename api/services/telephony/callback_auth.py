@@ -93,16 +93,29 @@ async def provider_for_run(
 
 
 async def provider_for_inbound_webhook(
-    provider_class, webhook_data: dict, headers: dict, *, where: str, find_route
+    provider_class,
+    webhook_data: dict,
+    headers: dict,
+    *,
+    where: str,
+    find_route,
+    is_outage=lambda exc: False,
 ):
     """``(normalized_data, provider)``: the provider of the telephony configuration an inbound webhook belongs to,
     or a 401.
 
     The configuration is the inbound route ``find_route(provider_class, normalized_data)`` matches, never one the
-    request names. Any failure to normalize the webhook, match a route or build the provider fails closed.
+    request names. Any failure to normalize the webhook, match a route or build the provider fails closed, except
+    an error of the route or configuration lookup that ``is_outage`` accepts (the store could not be reached): it
+    is logged with the call id and propagates unchanged, for the caller to answer.
     """
     try:
         normalized_data = normalize_webhook_data(provider_class, webhook_data, headers)
+    except Exception as exc:  # a webhook that does not normalize names no credentials
+        raise rejected(
+            where, why=f"credentials unavailable ({type(exc).__name__})"
+        ) from exc
+    try:
         match = await find_route(provider_class, normalized_data)
         if not match:
             raise rejected(where, why="no inbound route matches the webhook")
@@ -110,7 +123,15 @@ async def provider_for_inbound_webhook(
         provider = await get_telephony_provider_by_id(config.id, config.organization_id)
     except HTTPException:
         raise
-    except Exception as exc:  # any failure to resolve the credentials fails closed
+    except (
+        Exception
+    ) as exc:  # any other failure to resolve the credentials fails closed
+        if is_outage(exc):
+            logger.warning(
+                f"inbound credential lookup unavailable: where={where!r} "
+                f"call_id={normalized_data.call_id!r} error={type(exc).__name__}"
+            )
+            raise
         raise rejected(
             where, why=f"credentials unavailable ({type(exc).__name__})"
         ) from exc
