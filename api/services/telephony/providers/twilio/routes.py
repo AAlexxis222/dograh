@@ -13,7 +13,11 @@ from starlette.responses import HTMLResponse, Response
 
 from api.db import db_client
 from api.enums import WorkflowRunState
-from api.errors.telephony_errors import CALL_NOT_ATTENDED_MESSAGE_ES, CALLER_LANGUAGE
+from api.errors.telephony_errors import (
+    CALL_NOT_ATTENDED_MESSAGE_ES,
+    CALLER_LANGUAGE,
+    TWILIO_CALLER_VOICE,
+)
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.callback_auth import (
@@ -53,7 +57,7 @@ def _connect_action_twiml(call_ended: bool) -> str:
     if call_ended:
         return "<Response><Hangup/></Response>"
     return (
-        f'<Response><Say language="{CALLER_LANGUAGE}">'
+        f'<Response><Say voice="{TWILIO_CALLER_VOICE}" language="{CALLER_LANGUAGE}">'
         f"{escape(CALL_NOT_ATTENDED_MESSAGE_ES)}"
         "</Say><Hangup/></Response>"
     )

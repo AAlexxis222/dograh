@@ -47,6 +47,8 @@ TELEPHONY_ERROR_MESSAGES = {
 # What the caller hears (VOZ-AC-B4-46b): two Spanish sentences, never the debugging text above. Capacity
 # refusals say "we cannot take your call now"; everything else says the number is not available.
 CALLER_LANGUAGE = "es-ES"
+# The voice of every Spanish Twilio <Say>: the default voice ("man") does not list es-ES and "alice" is retired.
+TWILIO_CALLER_VOICE = "Polly.Lucia"
 _CAPACITY_MESSAGE_ES = "Lo sentimos, en este momento no podemos atender su llamada. Por favor, inténtelo de nuevo más tarde."
 UNAVAILABLE_MESSAGE_ES = "Lo sentimos, este número no está disponible en este momento. Por favor, inténtelo más tarde."
 # Twilio connect action: played when the media socket ended and the call did not finish normally.

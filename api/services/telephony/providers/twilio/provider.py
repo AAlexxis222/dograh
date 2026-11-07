@@ -650,11 +650,15 @@ class TwilioProvider(TelephonyProvider):
         """
         from fastapi import Response
 
-        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_error_text
+        from api.errors.telephony_errors import (
+            CALLER_LANGUAGE,
+            TWILIO_CALLER_VOICE,
+            caller_error_text,
+        )
 
         twiml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say language="{CALLER_LANGUAGE}">{caller_error_text(error_type, message, provider=TwilioProvider.PROVIDER_NAME)}</Say>
+    <Say voice="{TWILIO_CALLER_VOICE}" language="{CALLER_LANGUAGE}">{caller_error_text(error_type, message, provider=TwilioProvider.PROVIDER_NAME)}</Say>
     <Hangup/>
 </Response>"""
 
@@ -667,11 +671,15 @@ class TwilioProvider(TelephonyProvider):
         """
         from fastapi import Response
 
-        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_message_es
+        from api.errors.telephony_errors import (
+            CALLER_LANGUAGE,
+            TWILIO_CALLER_VOICE,
+            caller_message_es,
+        )
 
         twiml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say language="{CALLER_LANGUAGE}">{caller_message_es(error_type)}</Say>
+    <Say voice="{TWILIO_CALLER_VOICE}" language="{CALLER_LANGUAGE}">{caller_message_es(error_type)}</Say>
     <Hangup/>
 </Response>"""
 
