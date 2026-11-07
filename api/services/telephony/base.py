@@ -514,6 +514,26 @@ class TelephonyProvider(ABC):
         """
         pass
 
+    @classmethod
+    def generate_validation_error_response(cls, error_type):
+        """The response to an inbound call refused with ``error_type`` (a TelephonyError or its value).
+
+        A provider without its own speaks the caller sentence of ``error_type`` through its
+        ``generate_error_response``, in its own format; the operator text of the error is logged.
+        """
+        from api.errors.telephony_errors import (
+            TELEPHONY_ERROR_MESSAGES,
+            TelephonyError,
+        )
+
+        return cls.generate_error_response(
+            error_type,
+            TELEPHONY_ERROR_MESSAGES.get(
+                error_type,
+                TELEPHONY_ERROR_MESSAGES[TelephonyError.GENERAL_AUTH_FAILED],
+            ),
+        )
+
     # ======== CALL TRANSFER METHODS ========
 
     @abstractmethod
