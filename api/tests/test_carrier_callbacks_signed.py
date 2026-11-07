@@ -1526,11 +1526,9 @@ PROVIDER_CLASSES = {
     "vobiz": VobizProvider,
     "vonage": VonageProvider,
 }
-# Vonage has generate_error_response only.
-WITH_VALIDATION_RESPONSE = sorted(set(PROVIDER_CLASSES) - {"vonage"})
 
 
-@pytest.mark.parametrize("provider", WITH_VALIDATION_RESPONSE)
+@pytest.mark.parametrize("provider", sorted(PROVIDER_CLASSES))
 @pytest.mark.parametrize(
     "error", [e for e in TelephonyError if e != TelephonyError.VALID]
 )
@@ -1541,6 +1539,51 @@ def test_validation_error_is_spoken_in_spanish_from_the_table(provider, error):
 
     assert _spoken(body) == [CALLER_MESSAGES_ES[error]]
     assert TELEPHONY_ERROR_MESSAGES[error] not in body
+
+
+@pytest.mark.parametrize("provider", sorted(PROVIDER_CLASSES))
+def test_validation_error_given_as_its_string_value_is_spoken_from_the_table(
+    provider,
+):
+    cls = PROVIDER_CLASSES[provider]
+
+    body = cls.generate_validation_error_response("QUOTA_EXCEEDED").body.decode(
+        "utf-8"
+    )
+
+    assert _spoken(body) == [CAPACITY_ES]
+
+
+def test_vonage_inbound_run_refusal_is_an_ncco_that_speaks_the_table_sentence(
+    client, world
+):
+    # Vonage fetches /inbound/run as its answer URL and reads the answer as NCCO JSON: a TwiML <Hangup/> there
+    # is an error on Vonage's side and the caller hears nothing.
+    normalized = SimpleNamespace(
+        provider="vonage",
+        direction="inbound",
+        to_number=CALLED,
+        from_number=CALLER,
+        to_country="ES",
+        from_country="ES",
+        account_id=VONAGE_APP,
+        call_id="vonage-uuid",
+    )
+    with (
+        patch("api.routes.telephony.normalize_webhook_data", return_value=normalized),
+        patch(
+            "api.routes.telephony._detect_provider",
+            new=AsyncMock(return_value=VonageProvider),
+        ),
+    ):
+        response = client.get(
+            "/telephony/inbound/run", params={"uuid": "vonage-uuid", "to": "34911"}
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    talks = [a for a in response.json() if a["action"] == "talk"]
+    assert [(a["text"], a["language"]) for a in talks] == [(UNAVAILABLE_ES, "es-ES")]
 
 
 @pytest.mark.parametrize("provider", sorted(PROVIDER_CLASSES))
