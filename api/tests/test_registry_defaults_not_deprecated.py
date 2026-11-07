@@ -22,19 +22,24 @@ from api.services.configuration import registry
 # scheduled to retire fails here weeks ahead instead of passing until the day it breaks.
 GUARD_DATE = dt.date(2027, 2, 1)
 
-# Defaults known to retire before GUARD_DATE: (provider, model) -> (follow-up that moves it, why it stays for now).
-# test_every_exception_is_still_needed fails once an entry stops being needed, so the list cannot rot.
+# VOZ-AC-B1-81 is met for every registry default except these, until their follow-ups land.
+# Defaults known to retire before GUARD_DATE: (provider, model) -> (follow-up that moves it, its deadline or None,
+# why it stays for now). test_every_exception_is_still_needed fails once an entry stops being needed, so the list
+# cannot rot; test_no_dated_exception_outlives_the_model_it_excuses keeps each deadline before the model's shutdown.
 EXCEPTIONS = {
     ("openai", "gpt-4.1"): (
         "VOZ-FU-N0-01b-llm-default",
+        dt.date(2026, 12, 15),
         "OpenAI retires it on 2027-01-14; the default moves together with the voicemail and UI fallbacks",
     ),
     ("openrouter", "openai/gpt-4.1"): (
         "VOZ-FU-N0-01b-llm-default",
+        dt.date(2026, 12, 15),
         "legacy proxy of the same OpenAI model; it moves with the OpenAI default",
     ),
     ("lmnt", "aurora"): (
         "VOZ-FU-N0-01b-refuse-on-save",
+        None,
         "LMNT shut down; the class stays, outside REGISTRY, only so stored configs still load",
     ),
 }
