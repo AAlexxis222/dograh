@@ -13,7 +13,11 @@ from starlette.responses import HTMLResponse
 
 from api.db import db_client
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
-from api.services.telephony.callback_auth import provider_for_run, verify_signature
+from api.services.telephony.callback_auth import (
+    provider_for_run,
+    require_answer_url_token,
+    verify_signature,
+)
 from api.services.telephony.factory import get_telephony_provider_for_run
 from api.services.telephony.providers.plivo.provider import PlivoProvider
 from api.services.telephony.status_processor import (
@@ -105,6 +109,7 @@ async def handle_plivo_xml_webhook(
     workflow_run_id: int,
     organization_id: int,
     request: Request,
+    t: str | None = None,
 ):
     """
     Handle initial webhook from Plivo when an outbound call is answered.
@@ -112,7 +117,8 @@ async def handle_plivo_xml_webhook(
 
     The request must be signed with the token of the run's own organization, and the
     unsigned ``workflow_id`` and ``organization_id`` of the query must agree with the run,
-    which decides (401 otherwise): the query never chooses whose credentials verify it.
+    which decides (401 otherwise): the query never chooses whose credentials verify it. The signature binds no
+    run, so ``t`` must be the answer-URL token of ``workflow_run_id`` (``require_answer_url_token``).
     """
     set_current_run_id(workflow_run_id)
     where = "POST /telephony/plivo-xml"
@@ -131,6 +137,7 @@ async def handle_plivo_xml_webhook(
         data=callback_data,
         headers=dict(request.headers),
     )
+    require_answer_url_token(workflow_run_id, t, where=where)
 
     call_id = callback_data.get("CallUUID") or callback_data.get("RequestUUID")
     if call_id:

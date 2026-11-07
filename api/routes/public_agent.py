@@ -20,6 +20,7 @@ from api.services.call_concurrency import (
     call_concurrency,
 )
 from api.services.quota_service import authorize_workflow_run_start
+from api.services.telephony import ws_auth
 from api.services.telephony.carrier_policy import CarrierDisabledError
 from api.services.telephony.factory import get_telephony_provider_by_id
 from api.services.telephony.outbound_readiness import (
@@ -333,13 +334,12 @@ async def _execute_resolved_target(
     except Exception:
         await call_concurrency.release_workflow_run_slot(workflow_run.id)
         raise
-    webhook_endpoint = provider.WEBHOOK_ENDPOINT
-
-    webhook_url = (
-        f"{backend_endpoint}/api/v1/telephony/{webhook_endpoint}"
-        f"?workflow_id={target.workflow.id}"
-        f"&workflow_run_id={workflow_run.id}"
-        f"&organization_id={target.organization_id}"
+    webhook_url = ws_auth.build_answer_url(
+        backend_endpoint,
+        provider.WEBHOOK_ENDPOINT,
+        target.workflow.id,
+        workflow_run.id,
+        target.organization_id,
     )
 
     # 10. Initiate call via telephony provider. workflow_id and organization_id

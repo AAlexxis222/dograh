@@ -12,6 +12,7 @@ from loguru import logger
 
 from api.db import db_client
 from api.services.runtime.cell_state import is_cell
+from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.carrier_policy import UNVERIFIED_CARRIERS
 from api.services.telephony.factory import (
@@ -116,6 +117,35 @@ async def verify_signature(
         ) from exc
     if not valid:
         raise rejected(where, why="signature did not verify")
+
+
+def require_answer_url_token(
+    workflow_run_id: int, token: str | None, *, where: str
+) -> None:
+    """Raise the 401 unless the answer URL carries the token minted for ``workflow_run_id``.
+
+    A carrier signature on the answer URL binds no run, so a captured one replays against every run of its
+    organization: only this token tells the runs apart. With no secret configured a cell fails closed
+    (VOZ-AC-B0-30) and any other deployment keeps the carrier signature and the run agreement alone, like every
+    other ws_auth surface.
+    """
+    if ws_auth.token_configured():
+        if not ws_auth.verify_answer_url_token(workflow_run_id, token):
+            raise rejected(
+                where,
+                why=f"answer-URL token {'wrong' if token else 'missing'} for run {workflow_run_id}",
+                code="answer_url_token_invalid",
+                reason="the answer URL does not carry the token minted for its run",
+                hint="the answer URL was not minted by this deployment for this run",
+            )
+    elif is_cell():
+        raise rejected(
+            where,
+            why="no TELEPHONY_WS_TOKEN_SECRET in a cell",
+            code="answer_url_token_unconfigured",
+            reason="this cell cannot check the answer-URL token, so it fails closed",
+            hint="set TELEPHONY_WS_TOKEN_SECRET on every api process of the cell",
+        )
 
 
 async def verify_transfer_callback(

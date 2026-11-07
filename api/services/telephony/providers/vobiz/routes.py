@@ -14,6 +14,7 @@ from starlette.responses import HTMLResponse
 from api.db import db_client
 from api.services.telephony.callback_auth import (
     provider_for_run,
+    require_answer_url_token,
     verify_signature,
 )
 from api.services.telephony.factory import (
@@ -58,7 +59,11 @@ async def _verify_vobiz_callback(
 
 @router.post("/vobiz-xml", include_in_schema=False)
 async def handle_vobiz_xml_webhook(
-    workflow_id: int, workflow_run_id: int, organization_id: int, request: Request
+    workflow_id: int,
+    workflow_run_id: int,
+    organization_id: int,
+    request: Request,
+    t: str | None = None,
 ):
     """
     Handle initial webhook from Vobiz when call is answered.
@@ -69,7 +74,8 @@ async def handle_vobiz_xml_webhook(
     The XML carries the media-stream URL and its token, so the request must be signed
     with the token of the run's own organization (401 otherwise). Vobiz signs the URL
     without its query string, so the signature does not cover ``workflow_id`` and
-    ``organization_id``: they must agree with the run, which decides.
+    ``organization_id``: they must agree with the run, which decides. Nor does it bind the run, so ``t`` must be
+    the answer-URL token of ``workflow_run_id`` (``require_answer_url_token``).
     """
     set_current_run_id(workflow_run_id)
     where = "POST /telephony/vobiz-xml"
@@ -89,6 +95,7 @@ async def handle_vobiz_xml_webhook(
         headers=dict(request.headers),
         body=raw_body,
     )
+    require_answer_url_token(workflow_run_id, t, where=where)
     logger.info(
         f"[run {workflow_run_id}] Vobiz XML webhook called - "
         f"workflow_id={workflow_id}, org_id={organization_id}"

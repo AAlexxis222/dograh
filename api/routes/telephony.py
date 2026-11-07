@@ -269,13 +269,12 @@ async def initiate_call(
         # Construct webhook URL based on provider type
         backend_endpoint, _ = await get_backend_endpoints()
 
-        webhook_endpoint = provider.WEBHOOK_ENDPOINT
-
-        webhook_url = (
-            f"{backend_endpoint}/api/v1/telephony/{webhook_endpoint}"
-            f"?workflow_id={workflow.id}"
-            f"&workflow_run_id={workflow_run_id}"
-            f"&organization_id={user.selected_organization_id}"
+        webhook_url = ws_auth.build_answer_url(
+            backend_endpoint,
+            provider.WEBHOOK_ENDPOINT,
+            workflow.id,
+            workflow_run_id,
+            user.selected_organization_id,
         )
 
         keywords = {

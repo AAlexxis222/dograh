@@ -21,8 +21,9 @@ adopting the builder in a provider is a no-op until an operator opts in.
 
 The same secret also backs the Telnyx call-events webhook token
 (:func:`mint_events_token`), HMAC'd over a distinct message prefix so the two
-are not interchangeable. Rotating ``TELEPHONY_WS_TOKEN_SECRET`` invalidates
-both surfaces at once.
+are not interchangeable. It backs the Twilio ``<Connect action>`` token and the
+outbound answer-URL token (:func:`build_answer_url`) the same way. Rotating
+``TELEPHONY_WS_TOKEN_SECRET`` invalidates every surface at once.
 """
 
 import hashlib
@@ -155,6 +156,54 @@ def verify_connect_action_token(workflow_run_id: Id, token: str | None) -> bool:
     gate on :func:`token_configured` before treating ``False`` as a rejection.
     """
     return _verify_run_token(_CONNECT_ACTION_MSG_PREFIX, workflow_run_id, token)
+
+
+_ANSWER_URL_MSG_PREFIX = "answer-url:"
+
+
+def mint_answer_url_token(workflow_run_id: Id) -> str | None:
+    """Return the HMAC token for an outbound answer URL (``/twiml``, ``/plivo-xml``, ``/vobiz-xml``, ``/ncco``).
+
+    A carrier signature on the answer URL binds no run: Vobiz signs the bare URL plus a nonce and the Vonage GET
+    JWT carries no payload hash, so a captured one replays against any run of its organization. This token binds
+    the URL to one run. Deterministic per run, so a carrier retry carries the same one. ``None`` when no secret
+    is set.
+    """
+    return _mint_run_token(_ANSWER_URL_MSG_PREFIX, workflow_run_id)
+
+
+def verify_answer_url_token(workflow_run_id: Id, token: str | None) -> bool:
+    """Constant-time compare for the answer-URL token.
+
+    ``False`` when no secret is configured or no token was presented, so callers
+    gate on :func:`token_configured` before treating ``False`` as a rejection.
+    """
+    return _verify_run_token(_ANSWER_URL_MSG_PREFIX, workflow_run_id, token)
+
+
+def build_answer_url(
+    backend_endpoint: str,
+    webhook_endpoint: str,
+    workflow_id: Id,
+    workflow_run_id: Id,
+    organization_id: Id,
+) -> str:
+    """The answer URL an outbound call is dialed with, carrying ``&t=<token>`` when a secret is set.
+
+    The token rides in the query next to the run ids, which the answer handlers already read from it, so every
+    carrier that fetches an answer URL delivers it. With no secret configured this returns exactly the legacy URL.
+    """
+    url = (
+        f"{backend_endpoint}/api/v1/telephony/{webhook_endpoint}"
+        f"?workflow_id={workflow_id}"
+        f"&workflow_run_id={workflow_run_id}"
+        f"&organization_id={organization_id}"
+    )
+    token = mint_answer_url_token(workflow_run_id)
+    if token:
+        # An HMAC hexdigest by construction, so it needs no percent-encoding.
+        url = f"{url}&t={token}"
+    return url
 
 
 def build_media_ws_url(

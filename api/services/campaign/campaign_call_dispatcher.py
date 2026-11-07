@@ -207,6 +207,8 @@ class CampaignCallDispatcher:
         concurrency_slot: CallConcurrencySlot,
     ) -> WorkflowRunModel:
         """Own the acquired slot until a provider accepts (or may have accepted) a call."""
+        from api.services.telephony import ws_auth
+
         workflow_run = None
         attempted = False
         accepted = False
@@ -280,11 +282,12 @@ class CampaignCallDispatcher:
                 raise ValueError(quota.error_message or "Quota exceeded")
 
             backend_endpoint, _ = await get_backend_endpoints()
-            webhook_url = (
-                f"{backend_endpoint}/api/v1/telephony/{provider.WEBHOOK_ENDPOINT}"
-                f"?workflow_id={workflow_id}"
-                f"&workflow_run_id={workflow_run.id}"
-                f"&organization_id={campaign.organization_id}"
+            webhook_url = ws_auth.build_answer_url(
+                backend_endpoint,
+                provider.WEBHOOK_ENDPOINT,
+                workflow_id,
+                workflow_run.id,
+                campaign.organization_id,
             )
             await self.apply_rate_limit(
                 campaign.organization_id,

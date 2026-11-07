@@ -16,7 +16,11 @@ from api.enums import WorkflowRunState
 from api.errors.telephony_errors import CALL_NOT_ATTENDED_MESSAGE_ES, CALLER_LANGUAGE
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
-from api.services.telephony.callback_auth import provider_for_run, verify_signature
+from api.services.telephony.callback_auth import (
+    provider_for_run,
+    require_answer_url_token,
+    verify_signature,
+)
 from api.services.telephony.factory import get_telephony_provider_for_run
 from api.services.telephony.providers.twilio.introduction import (
     caller_left,
@@ -61,6 +65,7 @@ async def handle_twiml_webhook(
     workflow_run_id: int,
     organization_id: int,
     request: Request,
+    t: str | None = None,
 ):
     """
     Handle initial webhook from telephony provider.
@@ -68,7 +73,8 @@ async def handle_twiml_webhook(
 
     The request must be signed with the token of the run's own organization, and the
     ``workflow_id`` and ``organization_id`` of the query must agree with the run, which
-    decides (401 otherwise): the query never chooses whose credentials verify it.
+    decides (401 otherwise): the query never chooses whose credentials verify it. The signature binds no run,
+    so ``t`` must be the answer-URL token of ``workflow_run_id`` (``require_answer_url_token``).
     """
     where = "POST /telephony/twiml"
     _, _, provider = await provider_for_run(
@@ -86,6 +92,7 @@ async def handle_twiml_webhook(
         data=callback_data,
         headers=dict(request.headers),
     )
+    require_answer_url_token(workflow_run_id, t, where=where)
 
     response_content = await provider.get_webhook_response(
         workflow_id, organization_id, workflow_run_id

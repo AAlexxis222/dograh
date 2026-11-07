@@ -13,6 +13,7 @@ from pipecat.utils.run_context import set_current_run_id
 from api.db import db_client
 from api.services.telephony.callback_auth import (
     provider_for_run,
+    require_answer_url_token,
     verify_signature,
 )
 from api.services.telephony.factory import get_telephony_provider_for_run
@@ -27,6 +28,7 @@ async def handle_ncco_webhook(
     workflow_run_id: int,
     organization_id: int,
     request: Request,
+    t: str | None = None,
 ):
     """Handle NCCO (Nexmo Call Control Objects) webhook for Vonage.
 
@@ -35,7 +37,8 @@ async def handle_ncco_webhook(
     The NCCO carries the media-stream URL and its token, so the request must carry the signed
     webhook JWT of the run's own organization (401 otherwise), checked exactly as the events
     webhook is. The query is not covered by that check, so ``workflow_id`` and
-    ``organization_id`` must agree with the run, which decides.
+    ``organization_id`` must agree with the run, which decides. The JWT binds no run either (a GET carries no
+    payload hash), so ``t`` must be the answer-URL token of ``workflow_run_id`` (``require_answer_url_token``).
     """
     where = "GET /telephony/ncco"
     _, _, provider = await provider_for_run(
@@ -52,6 +55,7 @@ async def handle_ncco_webhook(
         data=dict(request.query_params),
         headers=dict(request.headers),
     )
+    require_answer_url_token(workflow_run_id, t, where=where)
 
     response_content = await provider.get_webhook_response(
         workflow_id, organization_id, workflow_run_id
