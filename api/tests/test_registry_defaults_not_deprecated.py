@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from api.services.capabilities import deprecations
 from api.services.capabilities.deprecations import (
     MODEL_KINDS,
+    _matches,
     _patterns,
     blocking_patterns,
     load_deprecations,
@@ -516,6 +517,45 @@ def test_no_entry_is_shadowed_by_an_earlier_one(provider, model, entry):
         assert status.date == date
     if entry.get("replacement"):
         assert entry["replacement"] in status.hint
+
+
+def test_dated_mini_transcribe_snapshot_warns_with_its_own_date_today():
+    s = status_for(
+        "openai", "gpt-4o-mini-transcribe-2025-03-20", today=dt.date(2026, 11, 7)
+    )
+    assert s.date == dt.date(2027, 1, 20)
+
+
+def _warn_start(entry):
+    """The first day status_for warns about a dated shutdown entry."""
+    if entry.get("warn_from"):
+        return dt.date.fromisoformat(str(entry["warn_from"]))
+    return dt.date.fromisoformat(str(entry["date"])) - dt.timedelta(
+        days=deprecations.WARN_DAYS
+    )
+
+
+_SHUTDOWNS = [e for e in load_deprecations() if e["effect"] == "shutdown"]
+
+
+@pytest.mark.parametrize(
+    "provider,model,upper,lower",
+    [
+        pytest.param(e["provider"], m, e, g, id=f"{e['provider']}:{m}")
+        for i, e in enumerate(_SHUTDOWNS)
+        for m in _literal_ids(e)
+        for g in _SHUTDOWNS[i + 1 :]
+        if g["provider"] == e["provider"] and _matches(m, _patterns(g))
+    ],
+)
+def test_an_entry_above_a_broader_one_keeps_its_date_once_the_broader_warns(
+    provider, model, upper, lower
+):
+    """status_for skips a matching entry outside its window: the upper entry must not fall through to the lower one."""
+    status = status_for(provider, model, today=_warn_start(lower))
+    assert status.date == dt.date.fromisoformat(str(upper["date"])), (
+        f"{provider}/{model} reports {status.date} on {_warn_start(lower)}, not its own {upper['date']}"
+    )
 
 
 def test_assemblyai_offered_pro_models_are_recognised_by_pinned_pipecat():
