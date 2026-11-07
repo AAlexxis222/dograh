@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from api.services.capabilities.deprecations import (
     MODEL_KINDS,
+    _patterns,
     blocking_patterns,
     load_deprecations,
     status_for,
@@ -72,7 +73,7 @@ def _service_deprecated_as_a_whole(cls) -> bool:
     return any(
         e["kind"] == "service"
         and e["provider"] == provider
-        and e["model_or_feature"] in service_types
+        and any(p in service_types for p in _patterns(e))
         for e in load_deprecations()
     )
 
@@ -424,9 +425,7 @@ def test_dated_mini_transcribe_snapshot_keeps_its_own_date_over_the_broad_glob()
 
 
 def _literal_ids(entry):
-    ids = entry["model_or_feature"]
-    ids = ids if isinstance(ids, list) else [ids]
-    return [m for m in ids if not any(c in m for c in "*?[")]
+    return [m for m in _patterns(entry) if not any(c in m for c in "*?[")]
 
 
 @pytest.mark.parametrize(

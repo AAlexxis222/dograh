@@ -32,7 +32,7 @@ def load_deprecations() -> tuple[dict, ...]:
 
 def status_for(provider: str, model: str, *, today: dt.date) -> Status:
     for e in load_deprecations():
-        if e["provider"] != provider or not _matches(model, e["model_or_feature"]):
+        if e["provider"] != provider or not _matches(model, _patterns(e)):
             continue
         hint = (
             f"replace with {e['replacement']}"
@@ -86,14 +86,15 @@ def blocking_patterns(*, today: dt.date) -> tuple[str, ...]:
             e["effect"] == "shutdown"
             and today >= dt.date.fromisoformat(str(e["date"])) - BLOCK_MARGIN
         ):
-            out += (
-                e["model_or_feature"]
-                if isinstance(e["model_or_feature"], list)
-                else [e["model_or_feature"]]
-            )
+            out += _patterns(e)
     return tuple(out)
 
 
-def _matches(model: str, patterns) -> bool:
-    patterns = patterns if isinstance(patterns, list) else [patterns]
+def _patterns(entry: dict) -> list[str]:
+    """The entry's model_or_feature as a list: the yaml holds one pattern or a list of them."""
+    value = entry["model_or_feature"]
+    return value if isinstance(value, list) else [value]
+
+
+def _matches(model: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatchcase(model, p) for p in patterns)
