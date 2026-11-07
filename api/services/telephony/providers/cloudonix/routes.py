@@ -26,8 +26,10 @@ router = APIRouter()
 
 
 def _refuse_unverified(request: Request) -> None:
-    """Route dependency: Cloudonix callbacks carry no signature this platform verifies, so Cloudonix is disabled
-    in every deployment (VOZ-N0-40) and these callbacks answer 401 before the handler reads anything."""
+    """Route dependency: Cloudonix's signing scheme is not verified against a real account (its
+    verify_inbound_signature only compares the x-cx-apikey header with the configured bearer token), so Cloudonix
+    is disabled in every deployment (VOZ-N0-40) and these callbacks answer 401 before the handler reads anything,
+    whatever key they carry."""
     refuse_unverifiable_signing(
         CloudonixProvider.PROVIDER_NAME, f"POST {request.url.path}"
     )

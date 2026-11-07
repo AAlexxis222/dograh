@@ -365,7 +365,8 @@ def test_transfer_result_without_a_credential_context_is_401_even_if_signed(
     elif scenario == "provider_cannot_be_built":
         world.provider_error = ValueError("config parked")
     elif scenario == "run_belongs_to_another_provider":
-        # Cloudonix's verifier accepts everything, so only the provider-name check can refuse this one.
+        # Cloudonix's verifier compares x-cx-apikey with the bearer token, and this request sends the matching
+        # key: only the provider-name check can refuse it.
         world.provider = _cloudonix()
     before = world.snapshot()
 
@@ -1426,7 +1427,8 @@ def test_twilio_dial_does_not_log_the_answer_url_token(monkeypatch, log_lines):
 
 
 # ---------------------------------------------------------------------------------------------------------
-# Cloudonix: signature UNVERIFIED (verify_inbound_signature accepts everything), so every deployment refuses
+# Cloudonix: its signing is UNVERIFIED (verify_inbound_signature only compares x-cx-apikey with the bearer token),
+# so every deployment refuses its callbacks
 # ---------------------------------------------------------------------------------------------------------
 
 CLOUDONIX_ROUTES = [
