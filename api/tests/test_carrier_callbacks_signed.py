@@ -1647,6 +1647,14 @@ def test_generic_error_is_spoken_in_spanish_and_never_speaks_the_debug_text(
         ("plivo", 'language="es-ES"'),
         ("vobiz", 'language="es-ES"'),
         ("vonage", '"language": "es-ES"'),
+        pytest.param(
+            "exotel",
+            None,
+            marks=pytest.mark.skip(
+                reason="GATED exotel_language_unverified: Exotel's <Say> language and voice attributes are not "
+                "documented offline and there is no account to try them (R9), so none is guessed; VOZ-N0-40 Step 2"
+            ),
+        ),
     ],
 )
 def test_spoken_errors_name_the_language(provider, marker):
