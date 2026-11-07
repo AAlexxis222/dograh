@@ -279,7 +279,7 @@ def _run_main_with_sql_regex(monkeypatch, capsys, docs):
 
     async def fake_load(url, pattern):
         return list(docs), [
-            (k, i) for k, i, doc in docs if re.search(pattern, json.dumps(doc))
+            (k, i) for k, i, doc in docs if sweep._text_hit(pattern, doc)
         ]
 
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://unused")
@@ -429,7 +429,7 @@ def test_legacy_only_row_exits_0_with_the_real_text_regex(monkeypatch, capsys):
             },
         ),
     ]
-    text_rows = [(k, i) for k, i, doc in docs if re.search(rx, json.dumps(doc))]
+    text_rows = [(k, i) for k, i, doc in docs if sweep._text_hit(rx, doc)]
     code, out = _run_main(monkeypatch, capsys, docs, text_rows=text_rows)
     assert code == 0 and "unstructured_hit" not in out
 

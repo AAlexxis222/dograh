@@ -118,10 +118,9 @@ def _unpaired_strings(doc: Any) -> Iterator[str]:
 
 def _explained_by_pairs(doc: Any, pattern: str) -> bool:
     """True when the regex matches the document only at models of {provider, model} pairs, and at one at least."""
-    def found(value: str) -> bool:
-        return re.search(pattern, json.dumps(value)) is not None
-
-    return not any(found(s) for s in _unpaired_strings(doc)) and any(found(m) for _, _, m in _service_refs(doc))
+    return not any(_text_hit(pattern, s) for s in _unpaired_strings(doc)) and any(
+        _text_hit(pattern, m) for _, _, m in _service_refs(doc)
+    )
 
 
 def find_deprecated_usage(
@@ -151,6 +150,12 @@ def build_text_regex(patterns: Iterable[str]) -> str:
     if not alternatives:
         raise ValueError("no patterns to build a text regex from")
     return '\\\\*"(' + "|".join(alternatives) + ')\\\\*"'
+
+
+def _text_hit(pattern: str, value: Any) -> bool:
+    """The Python twin of the SQL ``CAST(column AS text) ~ :pat`` in _load_rows: the text regex searched in the JSON
+    text of ``value``. Every Python text pass calls it, so a change to the match rule lands here and in that SQL only."""
+    return re.search(pattern, json.dumps(value)) is not None
 
 
 def with_unstructured(
@@ -240,7 +245,7 @@ def open_encrypted_rows(
             opened.append((kind, row_id, doc))
             continue
         opened.append((kind, row_id, plain))
-        if re.search(pattern, json.dumps(plain)):
+        if _text_hit(pattern, plain):
             rows.append((kind, row_id))
     return opened, rows, unreadable
 
