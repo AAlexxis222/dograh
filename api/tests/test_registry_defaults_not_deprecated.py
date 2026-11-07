@@ -1,4 +1,4 @@
-"""VOZ-AC-B1-81: no registry default points to a model with a past date or legacy/deprecated status."""
+"""VOZ-AC-B1-81 is met for every registry default except those in EXCEPTIONS, until their follow-ups land."""
 
 import datetime as dt
 import inspect
