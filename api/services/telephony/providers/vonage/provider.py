@@ -789,7 +789,7 @@ class VonageProvider(TelephonyProvider):
                 ),
                 "language": CALLER_LANGUAGE,
             },
-            {"action": "hangup"},
+            # No hangup action: NCCO has none, and the call ends when the actions run out.
         ]
 
         return Response(content=json.dumps(error_ncco), media_type="application/json")
