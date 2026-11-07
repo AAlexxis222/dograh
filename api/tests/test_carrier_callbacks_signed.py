@@ -562,11 +562,27 @@ def test_fallback_for_a_provider_nobody_recognises_does_not_log_headers_or_body(
 
 
 # ---------------------------------------------------------------------------------------------------------
-# /inbound/{workflow_id} (legacy) and Vonage events: they verified already; these pin it
+# /inbound/{workflow_id} (legacy) and Vonage events
 # ---------------------------------------------------------------------------------------------------------
 
 
-def test_legacy_inbound_bad_signature_creates_no_run_and_speaks_spanish(client, world):
+LEGACY_REFUSALS = [
+    "workflow_not_found",
+    "no_configuration_of_the_carrier",
+    "account_not_matched",
+    "phone_number_not_configured",
+    "signature_did_not_verify",
+    "verifier_raised",
+    "provider_cannot_be_built",
+]
+
+
+@pytest.mark.parametrize("refusal", LEGACY_REFUSALS)
+def test_legacy_inbound_refused_before_authentication_is_401_and_creates_no_run(
+    client, world, refusal
+):
+    # An unsigned request must not tell an existing workflow or number from a missing one: every refusal
+    # before the request is authenticated is the same 401, never a TwiML document.
     normalized = SimpleNamespace(
         provider="twilio",
         direction="inbound",
@@ -578,39 +594,77 @@ def test_legacy_inbound_bad_signature_creates_no_run_and_speaks_spanish(client, 
         call_id="CA-legacy",
         raw_data={},
     )
-    _route_for_twilio(world)
+    workflow_id = 404 if refusal == "workflow_not_found" else WORKFLOW_ID
     world.db.get_workflow_by_id = AsyncMock(
-        return_value=SimpleNamespace(id=WORKFLOW_ID, organization_id=ORG_ID, user_id=1)
+        side_effect=lambda wid: (
+            SimpleNamespace(id=WORKFLOW_ID, organization_id=ORG_ID, user_id=1)
+            if wid == WORKFLOW_ID
+            else None
+        )
+    )
+    if refusal in ("no_configuration_of_the_carrier", "account_not_matched"):
+        configs = [] if refusal == "no_configuration_of_the_carrier" else [object()]
+        world.db.list_telephony_configurations_by_provider = AsyncMock(
+            return_value=configs
+        )
+    elif refusal == "phone_number_not_configured":
+        world.db.list_telephony_configurations_by_provider = AsyncMock(
+            return_value=[object()]
+        )
+    else:
+        _route_for_twilio(world)
+    verify = AsyncMock(
+        side_effect=RuntimeError("verifier broke")
+        if refusal == "verifier_raised"
+        else None,
+        return_value=False,
     )
     provider = SimpleNamespace(
-        verify_inbound_signature=AsyncMock(return_value=False),
-        start_inbound_stream=AsyncMock(),
+        verify_inbound_signature=verify, start_inbound_stream=AsyncMock()
+    )
+    build = AsyncMock(
+        side_effect=ValueError("config parked")
+        if refusal == "provider_cannot_be_built"
+        else None,
+        return_value=provider,
     )
     created = AsyncMock()
+    before = world.snapshot()
     with (
         patch("api.routes.telephony.normalize_webhook_data", return_value=normalized),
         patch(
             "api.routes.telephony._detect_provider",
             new=AsyncMock(return_value=TwilioProvider),
         ),
+        patch("api.routes.telephony.get_telephony_provider_by_id", new=build),
         patch(
-            "api.routes.telephony.get_telephony_provider_by_id",
-            new=AsyncMock(return_value=provider),
+            "api.services.telephony.factory.find_telephony_config_for_inbound",
+            new=AsyncMock(
+                return_value=None if refusal == "account_not_matched" else (5, None)
+            ),
+        ),
+        patch(
+            "api.routes.telephony._verify_organization_phone_number",
+            new=AsyncMock(return_value=None),
         ),
         patch("api.routes.telephony._create_inbound_workflow_run", new=created),
         patch("api.routes.telephony.call_concurrency") as concurrency,
     ):
         concurrency.acquire_org_slot = AsyncMock()
         response = client.post(
-            f"/telephony/inbound/{WORKFLOW_ID}",
+            f"/telephony/inbound/{workflow_id}",
             data={"CallSid": "CA-legacy", "From": CALLER},
         )
 
-    provider.verify_inbound_signature.assert_awaited_once()
+    detail = _assert_b028(response, code="carrier_callback_unauthenticated")
+    assert detail["where"] == "POST /telephony/inbound/{workflow_id}"
+    assert "<Response" not in response.text and UNAVAILABLE_ES not in response.text
     provider.start_inbound_stream.assert_not_awaited()
     created.assert_not_awaited()
     concurrency.acquire_org_slot.assert_not_awaited()
-    assert UNAVAILABLE_ES in response.text
+    assert world.snapshot() == before
+    if refusal in ("signature_did_not_verify", "verifier_raised"):
+        verify.assert_awaited_once()
 
 
 def test_vonage_event_bad_signature_is_401_and_processes_nothing(client, world):
@@ -1357,7 +1411,7 @@ def test_refused_legacy_inbound_does_not_log_the_caller_number(
 ):
     response = _post_legacy_inbound(client, world, signature_valid=False)
 
-    assert UNAVAILABLE_ES in response.text
+    _assert_b028(response)
     _assert_logged_nothing_personal(log_lines)
 
 
