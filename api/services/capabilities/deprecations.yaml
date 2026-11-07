@@ -116,6 +116,7 @@ entries:
     date: 2027-01-20
     effect: shutdown
     replacement: gpt-transcribe   # the vendor's 2025-12-15 snapshot is caught by the glob below and retires on 2027-02-26
+    warn_from: 2026-10-02   # the family's date: without it status_for falls through and warns with the family's 2027-02-26
     source_url: https://developers.openai.com/api/docs/deprecations
     read_at: 2026-11-05
   - provider: openai
