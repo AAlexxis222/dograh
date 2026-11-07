@@ -117,6 +117,18 @@ def test_every_exception_is_still_needed(key):
     }, f"{key} is no longer retiring at {GUARD_DATE}: drop it from EXCEPTIONS"
 
 
+@pytest.mark.parametrize("key", list(EXCEPTIONS))
+def test_no_dated_exception_outlives_the_model_it_excuses(key):
+    """A follow-up deadline falls before the shutdown date the yaml gives the excepted model; a model with no
+    shutdown date (a legacy entry) and an exception with no deadline have nothing to compare."""
+    follow_up, deadline, _ = EXCEPTIONS[key]
+    shutdown = status_for(*key, today=GUARD_DATE).date
+    if deadline is not None and shutdown is not None:
+        assert deadline < shutdown, (
+            f"{key}: {follow_up} deadline {deadline} is not before its shutdown on {shutdown}"
+        )
+
+
 @pytest.mark.parametrize("model", registry.LMNT_TTS_MODELS)
 def test_every_lmnt_model_is_shutdown_for_status_and_text_regex(model):
     """LMNT shut down as a whole: a stored config holds one of these ids, so each must fail the sweep both ways."""
