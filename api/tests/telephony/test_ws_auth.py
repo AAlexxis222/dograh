@@ -335,6 +335,60 @@ def test_no_provider_builds_the_media_url_by_hand():
 
 
 # --------------------------------------------------------------------------
+# Answer URL — the outbound URL the carrier fetches when the callee answers.
+# --------------------------------------------------------------------------
+
+ANSWER_BASE = "https://backend.test/api/v1/telephony/twiml"
+
+
+def test_answer_url_is_the_legacy_url_without_a_secret(no_secret):
+    url = ws_auth.build_answer_url("https://backend.test", "twiml", 33, 42, 11)
+
+    assert url == f"{ANSWER_BASE}?workflow_id=33&workflow_run_id=42&organization_id=11"
+    assert ws_auth.mint_answer_url_token(42) is None
+    assert ws_auth.verify_answer_url_token(42, "anything") is False
+
+
+def test_answer_url_carries_a_run_bound_token_with_a_secret(secret):
+    url = ws_auth.build_answer_url("https://backend.test", "twiml", 33, 42, 11)
+
+    token = ws_auth.mint_answer_url_token(42)
+    assert url == (
+        f"{ANSWER_BASE}?workflow_id=33&workflow_run_id=42&organization_id=11&t={token}"
+    )
+    assert ws_auth.verify_answer_url_token(42, token)
+    assert ws_auth.verify_answer_url_token("42", token)
+    assert not ws_auth.verify_answer_url_token(43, token)
+    assert not ws_auth.verify_answer_url_token(42, None)
+    assert not ws_auth.verify_answer_url_token(42, "ñ")
+
+
+def test_answer_url_token_is_not_interchangeable_with_the_other_run_tokens(secret):
+    token = ws_auth.mint_answer_url_token(42)
+
+    assert token not in {
+        ws_auth.mint_events_token(42),
+        ws_auth.mint_connect_action_token(42),
+    }
+    assert not ws_auth.verify_answer_url_token(42, ws_auth.mint_events_token(42))
+    assert not ws_auth.verify_events_token(42, token)
+    assert not ws_auth.verify_connect_action_token(42, token)
+
+
+def test_every_dial_site_builds_the_answer_url_through_ws_auth():
+    """Re-inlining the answer URL silently drops its token, and every answer handler then refuses the call."""
+    dial_sites = [
+        REPO_ROOT / "api/routes/telephony.py",
+        REPO_ROOT / "api/routes/public_agent.py",
+        REPO_ROOT / "api/services/campaign/campaign_call_dispatcher.py",
+    ]
+    for path in dial_sites:
+        text = path.read_text(encoding="utf-8")
+        assert "&workflow_run_id=" not in text, f"{path.name} builds the answer URL"
+        assert "build_answer_url(" in text, f"{path.name} does not dial an answer URL"
+
+
+# --------------------------------------------------------------------------
 # Redaction — covers the ?token= form only. The path form is logged in full,
 # deliberately: uvicorn and nginx log the request path anyway.
 # --------------------------------------------------------------------------
