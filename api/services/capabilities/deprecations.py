@@ -27,7 +27,22 @@ class Status:
 
 @functools.cache
 def load_deprecations() -> tuple[dict, ...]:
-    return tuple(yaml.safe_load(_PATH.read_text(encoding="utf-8"))["entries"])
+    entries = tuple(yaml.safe_load(_PATH.read_text(encoding="utf-8"))["entries"])
+    for e in entries:
+        _check_note(e)
+    return entries
+
+
+def _check_note(entry: dict) -> None:
+    """The note is printed inside the one-line reason. PyYAML turns an unquoted no/yes/on/off into a bool and a block
+    scalar keeps its line breaks, so anything but a non-empty one-line str is refused here instead of being dropped
+    from the reason or splitting the sweep's hit."""
+    note = entry.get("note")
+    if note is not None and (not isinstance(note, str) or note.splitlines() != [note]):
+        raise ValueError(
+            f"deprecations.yaml entry {entry['model_or_feature']}: note must be a one-line string"
+            " (quote it in deprecations.yaml)"
+        )
 
 
 def status_for(provider: str, model: str, *, today: dt.date) -> Status:
