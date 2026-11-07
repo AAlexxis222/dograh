@@ -1,5 +1,16 @@
-"""VOZ-N0-29 (VOZ-AC-B4-46b): every carrier callback verifies its signature and fails closed, and what a caller
-hears on an error is Spanish.
+"""VOZ-N0-29 (VOZ-AC-B4-46b): the carrier callbacks of the closed route list verify their signature and fail closed,
+and what a caller or a transfer destination hears is Spanish.
+
+The closed route list: POST /inbound/fallback, POST /transfer-result/{id}, the legacy POST /inbound/{workflow_id},
+the three Cloudonix callbacks (transfer-result, status-callback, cdr), POST /telnyx/transfer-result/{id}, and the
+answer URLs /twiml, /plivo-xml, /vobiz-xml and GET /ncco (carrier signature, run agreement, run-bound answer-URL
+token). Each refuses a forged request with the 401, the VOZ-AC-B0-28 body and no state change, behind the real
+provider verifier (test_closed_route_refuses_a_forged_request_with_the_401_and_moves_nothing; the legacy route in
+test_legacy_inbound_refused_before_authentication_is_401_and_creates_no_run). The inbound fallback answers a
+database outage during its credential lookup with the Spanish unavailable sentence instead.
+
+Outside the list, routes that already verified keep their own refusal and are not pinned to the B0-28 body here:
+the Vobiz hangup and ring callbacks answer 403 (Vobiz's callback-validation docs), Vonage events their existing 401.
 
 "State" is what a forged request could move: the run rows (state, updated_at) and every write to them, the
 TransferContext, the transfer events published, and the status updates handed to the processor. A rejected
@@ -1459,6 +1470,80 @@ def test_cloudonix_callback_outside_a_cell_is_401_and_moves_nothing(
     _assert_b028(response, code="cloudonix_signing_unverified")
     assert world.snapshot() == before
     assert any("cloudonix_signing_unverified" in line for line in log_lines)
+
+
+# ---------------------------------------------------------------------------------------------------------
+# The closed route list: one forged request per route, the real provider verifier behind it
+# ---------------------------------------------------------------------------------------------------------
+
+
+def _forge_fallback(client, world):
+    _route_for_twilio(world)
+    with patch(
+        "api.services.telephony.callback_auth.get_telephony_provider_by_id",
+        new=AsyncMock(return_value=world.provider),
+    ):
+        return _post_fallback(client, _fallback_form(), signature="forged")
+
+
+def _forge_telnyx_transfer_result(client, world):
+    world.provider = _telnyx()
+    return _post_telnyx(client, _telnyx_body(), {"content-type": "application/json"})
+
+
+def _forge_cloudonix(path, kind):
+    return lambda client, world: _post_cloudonix(client, path, kind)
+
+
+def _forge_answer_url(route):
+    """The answer route, unsigned, for the run's own consistent query."""
+
+    def forge(client, world):
+        if route == "vobiz-xml":
+            return _post_vobiz_xml(client, world, headers={})[0]
+        if route == "ncco":
+            return _get_ncco(client, world, headers={})[0]
+        spec = ANSWER_URLS[route]
+        world.provider = spec["provider"](PLIVO_TOKEN)
+        world.provider.get_webhook_response = AsyncMock(return_value="<Response/>")
+        db, route_lookup, auth_lookup = _answer_url_patches(
+            spec["module"], world, world.provider_for_run
+        )
+        with db, route_lookup, auth_lookup:
+            return client.post(
+                f"/telephony/{route}?{urlencode(NCCO_QUERY)}", data=spec["form"]
+            )
+
+    return forge
+
+
+# The legacy POST /inbound/{workflow_id} is covered refusal by refusal in
+# test_legacy_inbound_refused_before_authentication_is_401_and_creates_no_run.
+CLOSED_ROUTES = {
+    "POST /inbound/fallback": _forge_fallback,
+    "POST /transfer-result/{transfer_id}": lambda client, world: _post_transfer_result(
+        client, signed=False
+    ),
+    "POST /telnyx/transfer-result/{transfer_id}": _forge_telnyx_transfer_result,
+    **{
+        f"POST /cloudonix/{name}": _forge_cloudonix(path, kind)
+        for name, path, kind in CLOUDONIX_ROUTES
+    },
+    **{f"answer URL {route}": _forge_answer_url(route) for route in ANSWER_ROUTES},
+}
+
+
+@pytest.mark.parametrize("route", sorted(CLOSED_ROUTES))
+def test_closed_route_refuses_a_forged_request_with_the_401_and_moves_nothing(
+    client, world, monkeypatch, route
+):
+    monkeypatch.delenv("CELL_ROLE", raising=False)
+    before = world.snapshot()
+
+    response = CLOSED_ROUTES[route](client, world)
+
+    _assert_b028(response)
+    assert world.snapshot() == before
 
 
 # ---------------------------------------------------------------------------------------------------------
