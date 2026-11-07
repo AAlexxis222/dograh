@@ -853,6 +853,40 @@ def test_vobiz_xml_query_that_disagrees_with_the_run_is_401_even_if_signed(
     build.assert_not_awaited()
 
 
+PUBLIC_BACKEND = "https://public.example"
+
+
+def test_vobiz_xml_verifies_the_public_url_vobiz_signed_not_the_one_the_app_sees(
+    client, world
+):
+    # Behind a TLS proxy or tunnel the app sees http://<internal host>; Vobiz signed the URL the platform gave it.
+    with patch(
+        "api.services.telephony.providers.vobiz.routes.get_backend_endpoints",
+        new=AsyncMock(return_value=(PUBLIC_BACKEND, "wss://public.example")),
+    ):
+        response, build = _post_vobiz_xml(
+            client,
+            world,
+            headers=_vobiz_headers(f"{PUBLIC_BACKEND}/api/v1/telephony/vobiz-xml"),
+        )
+
+    assert response.status_code == 200, response.text
+    build.assert_awaited_once_with(WORKFLOW_ID, ORG_ID, RUN_ID)
+
+
+def test_vobiz_xml_signed_over_the_internal_url_is_401(client, world):
+    with patch(
+        "api.services.telephony.providers.vobiz.routes.get_backend_endpoints",
+        new=AsyncMock(return_value=(PUBLIC_BACKEND, "wss://public.example")),
+    ):
+        response, build = _post_vobiz_xml(
+            client, world, headers=_vobiz_headers(BASE + "/telephony/vobiz-xml")
+        )
+
+    _assert_b028(response)
+    build.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------------------------------------
 # /plivo-xml and /twiml: the answer URL; the run decides whose credentials verify it, never the query
 # ---------------------------------------------------------------------------------------------------------
