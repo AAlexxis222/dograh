@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
+from api.services.capabilities import deprecations
 from api.services.capabilities.deprecations import (
     MODEL_KINDS,
     _patterns,
@@ -319,6 +320,57 @@ def test_an_entry_note_reaches_the_reason_and_the_rest_keep_their_text(
 ):
     """The sweep prints status.reason: a tier the effect spares must reach the operator, other entries are unchanged."""
     assert status_for(provider, model, today=today).reason == reason
+
+
+@pytest.fixture
+def registry_file(tmp_path, monkeypatch):
+    """Points load_deprecations at a yaml the test writes; the cache is cleared on both sides so no other test sees it."""
+    path = tmp_path / "deprecations.yaml"
+    monkeypatch.setattr(deprecations, "_PATH", path)
+    load_deprecations.cache_clear()
+    yield path
+    load_deprecations.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "note_yaml",
+    [
+        "note: no",
+        "note: >\n      free tiers,\n      enterprise keeps it",
+        "note: |\n      free tiers\n      enterprise keeps it",
+        'note: ""',
+    ],
+    ids=["bool", "folded", "literal", "empty"],
+)
+def test_a_note_that_is_not_a_one_line_string_is_refused_at_load(
+    registry_file, note_yaml
+):
+    """PyYAML turns `no` into False and keeps a block scalar's line breaks: either would be dropped from the reason or
+    split the sweep's one-line hit, so the registry refuses to load and names the entry."""
+    registry_file.write_text(
+        "entries:\n"
+        "  - provider: groq\n"
+        "    kind: llm\n"
+        "    model_or_feature: llama-x\n"
+        "    date: 2026-08-16\n"
+        "    effect: shutdown\n"
+        "    replacement: null\n"
+        f"    {note_yaml}\n"
+        "    source_url: https://example.com\n"
+        "    read_at: 2026-10-02\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"llama-x.*note must be a one-line string \(quote it in deprecations\.yaml\)",
+    ):
+        load_deprecations()
+
+
+def test_the_shipped_registry_loads_and_its_notes_are_one_line_strings():
+    notes = [e["note"] for e in load_deprecations() if "note" in e]
+    assert GROQ_NOTE in notes
+    assert all(isinstance(n, str) and n.splitlines() == [n] for n in notes)
 
 
 @pytest.mark.parametrize(
