@@ -1586,6 +1586,36 @@ def test_vonage_inbound_run_refusal_is_an_ncco_that_speaks_the_table_sentence(
     assert [(a["text"], a["language"]) for a in talks] == [(UNAVAILABLE_ES, "es-ES")]
 
 
+# The NCCO actions Vonage accepts; the call ends when the actions run out (there is no "hangup" action).
+NCCO_ACTIONS = {
+    "talk",
+    "stream",
+    "input",
+    "record",
+    "conversation",
+    "connect",
+    "notify",
+    "wait",
+}
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: VonageProvider.generate_error_response("SYSTEM_UNAVAILABLE", "x"),
+        lambda: VonageProvider.generate_validation_error_response(
+            TelephonyError.QUOTA_EXCEEDED
+        ),
+    ],
+    ids=["error", "validation"],
+)
+def test_vonage_error_ncco_has_only_actions_vonage_accepts(build):
+    actions = [a["action"] for a in json.loads(build().body)]
+
+    assert actions == ["talk"]
+    assert set(actions) <= NCCO_ACTIONS
+
+
 @pytest.mark.parametrize("provider", sorted(PROVIDER_CLASSES))
 @pytest.mark.parametrize(
     "error_type",
