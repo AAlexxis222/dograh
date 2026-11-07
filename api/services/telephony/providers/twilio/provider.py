@@ -728,10 +728,16 @@ class TwilioProvider(TelephonyProvider):
             f"{backend_endpoint}/api/v1/telephony/transfer-result/{transfer_id}"
         )
 
+        from api.errors.telephony_errors import (
+            CALLER_LANGUAGE,
+            TRANSFER_GREETING_ES,
+            TWILIO_CALLER_VOICE,
+        )
+
         # Inline TwiML: when the destination answers, put them into the conference
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>You have answered a transfer call. Connecting you now.</Say>
+    <Say voice="{TWILIO_CALLER_VOICE}" language="{CALLER_LANGUAGE}">{TRANSFER_GREETING_ES}</Say>
     <Dial>
         <Conference endConferenceOnExit="true">{conference_name}</Conference>
     </Dial>

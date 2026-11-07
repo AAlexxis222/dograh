@@ -56,6 +56,9 @@ CALL_NOT_ATTENDED_MESSAGE_ES = (
     "Ahora mismo no podemos atender tu llamada. "
     "Por favor, inténtalo de nuevo en unos minutos."
 )
+# What the transfer destination hears when it answers, before it joins the conference. Not a caller error, so
+# not in CALLER_MESSAGES_ES.
+TRANSFER_GREETING_ES = "Tiene una llamada transferida. Le conectamos ahora."
 _QUOTA_ERRORS = {
     TelephonyError.CONCURRENT_CALL_LIMIT,
     TelephonyError.QUOTA_EXCEEDED,

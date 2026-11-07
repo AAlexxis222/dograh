@@ -12,6 +12,7 @@ from pipecat.utils.run_context import set_current_run_id
 from starlette.responses import HTMLResponse
 
 from api.db import db_client
+from api.errors.telephony_errors import CALLER_LANGUAGE, TRANSFER_GREETING_ES
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.callback_auth import (
     provider_for_run,
@@ -46,7 +47,7 @@ def _conference_xml_response(conference_name: str) -> HTMLResponse:
     safe_conference_name = escape(conference_name)
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Speak>You have answered a transfer call. Connecting you now.</Speak>
+    <Speak language="{CALLER_LANGUAGE}">{TRANSFER_GREETING_ES}</Speak>
     <Conference endConferenceOnExit="true">{safe_conference_name}</Conference>
 </Response>"""
     return HTMLResponse(content=xml, media_type="application/xml")

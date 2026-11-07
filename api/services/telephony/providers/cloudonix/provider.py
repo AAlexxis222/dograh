@@ -1365,10 +1365,12 @@ class CloudonixProvider(TelephonyProvider):
     @staticmethod
     def _conference_join_cxml(conference_name: str, callback_url: str) -> str:
         """CXML the destination leg runs once it answers: join the conference."""
+        from api.errors.telephony_errors import CALLER_LANGUAGE, TRANSFER_GREETING_ES
+
         return (
             '<?xml version="1.0" encoding="UTF-8"?>'
             "<Response>"
-            "<Say>You have answered a transfer call. Connecting you now.</Say>"
+            f'<Say language="{CALLER_LANGUAGE}">{TRANSFER_GREETING_ES}</Say>'
             "<Dial>"
             f'<Conference endConferenceOnExit="true" statusCallback="{callback_url}" statusCallbackEvent="join" holdMusic="false">{conference_name}</Conference>'
             "</Dial>"
