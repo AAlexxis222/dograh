@@ -653,6 +653,25 @@ def test_fallback_lookup_error_that_is_not_an_outage_stays_the_401(
     assert world.snapshot() == before
 
 
+# JSON bodies that parse but are not an object: no carrier sends one, and no field can be read from them.
+NOT_AN_OBJECT = ["[1]", "3", '"text"', "true"]
+
+
+@pytest.mark.parametrize("body", NOT_AN_OBJECT)
+def test_fallback_with_a_json_body_that_is_not_an_object_is_401_not_500(world, body):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app, raise_server_exceptions=False)
+    before = world.snapshot()
+
+    response = client.post(
+        FALLBACK_PATH, content=body, headers={"content-type": "application/json"}
+    )
+
+    _assert_b028(response)
+    assert world.snapshot() == before
+
+
 def test_fallback_with_a_malformed_unsigned_body_is_401(
     client, world, fallback_provider
 ):
@@ -1079,6 +1098,78 @@ def test_vobiz_xml_signed_over_the_internal_url_is_401(client, world):
 
     _assert_b028(response)
     build.assert_not_awaited()
+
+
+@pytest.mark.parametrize("body", NOT_AN_OBJECT)
+def test_parse_webhook_request_refuses_a_json_body_that_is_not_an_object(body):
+    from api.utils.telephony_helper import parse_webhook_request
+
+    class JsonRequest:
+        query_params = {}
+
+        async def body(self):
+            return body.encode()
+
+        async def json(self):
+            return json.loads(body)
+
+        async def form(self):
+            raise AssertionError("a JSON body is not read as a form")
+
+    with pytest.raises(ValueError):
+        asyncio.run(parse_webhook_request(JsonRequest()))
+
+
+@pytest.mark.parametrize("body", NOT_AN_OBJECT)
+def test_vobiz_xml_with_a_body_that_is_not_an_object_is_401_before_any_lookup(
+    client, world, body
+):
+    world.provider = _vobiz()
+    world.provider.get_webhook_response = AsyncMock(return_value="<Response/>")
+    lookup = AsyncMock(side_effect=world.db.get_workflow_run_by_id)
+    world.db.get_workflow_run_by_id = lookup
+    before = world.snapshot()
+    with patch(
+        "api.services.telephony.providers.vobiz.routes.get_backend_endpoints",
+        new=AsyncMock(return_value=(PUBLIC_BACKEND, "wss://public.example")),
+    ):
+        response = client.post(
+            f"/telephony/vobiz-xml?{urlencode(VOBIZ_QUERY)}",
+            content=body,
+            headers={
+                **_vobiz_headers(VOBIZ_SIGNED_URL),
+                "content-type": "application/json",
+            },
+        )
+
+    _assert_b028(response)
+    lookup.assert_not_awaited()
+    world.provider.get_webhook_response.assert_not_awaited()
+    assert world.snapshot() == before
+
+
+@pytest.mark.parametrize("kind", ["hangup", "ring"])
+@pytest.mark.parametrize("body", NOT_AN_OBJECT)
+def test_vobiz_status_callback_with_a_body_that_is_not_an_object_is_403(
+    world, kind, body
+):
+    # Each Vobiz callback keeps one refusal status: the 403 it answers for a bad signature (Vobiz docs).
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app, raise_server_exceptions=False)
+    lookup = AsyncMock(side_effect=world.db.get_workflow_run_by_id)
+    world.db.get_workflow_run_by_id = lookup
+    before = world.snapshot()
+    with patch("api.services.telephony.providers.vobiz.routes.db_client", world.db):
+        response = client.post(
+            f"/telephony/vobiz/{kind}-callback/{RUN_ID}",
+            content=body,
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 403, response.text
+    lookup.assert_not_awaited()
+    assert world.snapshot() == before
 
 
 # ---------------------------------------------------------------------------------------------------------
