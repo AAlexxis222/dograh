@@ -1136,6 +1136,16 @@ async def handle_inbound_fallback(request: Request):
     return _fallback_unavailable(provider_class)
 
 
+def _legacy_inbound_refusal(provider_class, error_type: TelephonyError):
+    """Answer a refused legacy inbound request: the 401, except an unverified carrier signing."""
+    if error_type != TelephonyError.CARRIER_SIGNING_UNVERIFIED:
+        # Every other refusal comes before the request is authenticated: one 401, so an unsigned request
+        # cannot tell an existing workflow or number from a missing one.
+        raise rejected("POST /telephony/inbound/{workflow_id}", why=error_type.value)
+    logger.error(f"Request validation failed: {error_type}")
+    return provider_class.generate_validation_error_response(error_type)
+
+
 @router.post("/inbound/{workflow_id}", deprecated=True)
 async def handle_inbound_telephony(
     workflow_id: int,
@@ -1195,14 +1205,7 @@ async def handle_inbound_telephony(
         )
 
         if not is_valid:
-            if error_type != TelephonyError.CARRIER_SIGNING_UNVERIFIED:
-                # Every other refusal comes before the request is authenticated: one 401, so an unsigned request
-                # cannot tell an existing workflow or number from a missing one.
-                raise rejected(
-                    "POST /telephony/inbound/{workflow_id}", why=error_type.value
-                )
-            logger.error(f"Request validation failed: {error_type}")
-            return provider_class.generate_validation_error_response(error_type)
+            return _legacy_inbound_refusal(provider_class, error_type)
 
         user_id = workflow_context["user_id"]
         organization_id = workflow_context["organization_id"]
