@@ -31,7 +31,7 @@ from google.genai.types import ProactivityConfig, SafetySetting, ThinkingConfig
 from loguru import logger
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from api.services.pipecat.openai_efforts import KnobRefusal
+from api.errors.knob_refusal import KnobRefusal
 from pipecat.services.assemblyai.stt import (
     U3_PRO_MODEL_PREFIXES,
     AssemblyAISTTService,

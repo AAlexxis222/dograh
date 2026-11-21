@@ -47,7 +47,7 @@ class ServiceTuning(BaseModel):
     @model_validator(mode="after")
     def _known_knobs_only(self) -> "ServiceTuning":
         # Lazy import: the specs module imports pipecat service classes.
-        from api.services.pipecat.openai_efforts import KnobRefusal
+        from api.errors.knob_refusal import KnobRefusal
         from api.services.pipecat.service_tuning_specs import validate_service_tuning
 
         try:

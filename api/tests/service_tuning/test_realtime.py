@@ -18,7 +18,7 @@ import pytest
 from fastapi import HTTPException
 from pipecat.services.settings import NOT_GIVEN
 
-from api.services.pipecat.openai_efforts import KnobRefusal
+from api.errors.knob_refusal import KnobRefusal
 from api.services.pipecat.service_factory import (
     REALTIME_FIELDS,
     create_realtime_llm_service,
