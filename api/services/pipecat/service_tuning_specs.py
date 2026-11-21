@@ -165,6 +165,17 @@ class TuningSpec:
     compatibility (openai/realtime/events.py:182), so a typo would be a
     provider-side 400 mid-call rather than a 422 at the PUT.
     """
+    settings_checks: dict[str, Callable[[Any], Any]] = dataclasses.field(
+        default_factory=dict
+    )
+    """Per-setting refusal and translation, keyed by name.
+
+    Each check takes the stored value and returns what the provider is sent,
+    or raises ``KnobRefusal`` (the named 422 at the PUT, the named refusal at
+    the build). ``validate_service_tuning`` calls it once the value passed its
+    type checks; the factory uses the same callable as the knob's wrapper, so
+    the PUT and the build cannot disagree on a value.
+    """
     settings_models: dict[str, Any] = dataclasses.field(default_factory=dict)
     """The provider object a setting is built into, for settings whose value
     is an object: a pydantic model, a dataclass, or a ``list[...]`` of one.
@@ -732,6 +743,7 @@ def _realtime_row(
     types: dict[str, type | tuple[type, ...]],
     choices: dict[str, frozenset[str]] | None = None,
     models: dict[str, Any] | None = None,
+    checks: dict[str, Callable[[Any], Any]] | None = None,
 ) -> TuningSpec:
     return TuningSpec(
         "realtime",
@@ -741,6 +753,7 @@ def _realtime_row(
         settings_types=types,
         settings_choices=choices or {},
         settings_models=models or {},
+        settings_checks=checks or {},
     )
 
 
@@ -749,12 +762,6 @@ SPECS[("realtime", "openai_realtime")] = _realtime_row(
 )
 SPECS[("realtime", "azure_realtime")] = _realtime_row(
     "azure_realtime", _OPENAI_REALTIME_TYPES, _OPENAI_REALTIME_CHOICES
-)
-# Grok's session carries neither speed, reasoning nor an output token cap
-# (xai/realtime/events.py:218-243); the transcription language hint is the
-# only knob it has that the registry doesn't already own.
-SPECS[("realtime", "grok_realtime")] = _realtime_row(
-    "grok_realtime", {"language_hint": str}
 )
 # Spanish deployments only (VOZ-AC-B1-39): the value is what xAI's transcriber
 # gets as ``language_hint`` (xai/realtime/events.py:119). A bare ``es`` is
@@ -767,8 +774,9 @@ def grok_language_hint(value: str) -> str:
     """The ``language_hint`` xAI receives for the stored ``value``.
 
     One check for the PUT (``validate_service_tuning``) and the build
-    (``REALTIME_FIELDS`` wrapper), so a document stored before the PUT check
-    existed cannot reach a live call either.
+    (``REALTIME_FIELDS`` wrapper), both read off the row's ``settings_checks``,
+    so a document stored before the PUT check existed cannot reach a live call
+    either.
     """
     try:
         return _GROK_LANGUAGE_HINTS[value]
@@ -781,6 +789,15 @@ def grok_language_hint(value: str) -> str:
             f"{'|'.join(_GROK_LANGUAGE_HINTS)} (es is sent as es-ES) or remove it",
         ) from None
 
+
+# Grok's session carries neither speed, reasoning nor an output token cap
+# (xai/realtime/events.py:218-243); the transcription language hint is the
+# only knob it has that the registry doesn't already own.
+SPECS[("realtime", "grok_realtime")] = _realtime_row(
+    "grok_realtime",
+    {"language_hint": str},
+    checks={"language_hint": grok_language_hint},
+)
 
 SPECS[("realtime", "google_realtime")] = _realtime_row(
     "google_realtime", _GEMINI_REALTIME_TYPES, models=_GEMINI_REALTIME_MODELS
@@ -1382,8 +1399,8 @@ def _setting_error(
 ) -> str | None:
     """The error for one ``settings`` entry of a provider, or ``None``.
 
-    A ``KnobRefusal`` from the xAI language hint propagates: it is the named
-    422 of that knob, not a message in the list.
+    A ``KnobRefusal`` from the row's ``settings_checks`` propagates: it is the
+    named 422 of that knob, not a message in the list.
     """
     path = f"{kind}.{provider}.settings.{name}"
     # A name in the allow-list wins even when it is also a REGISTRY_OWNED
@@ -1395,8 +1412,9 @@ def _setting_error(
             error = _provider_turn_error(kind, provider, "settings", name, value)
         if error:
             return error
-        if (kind, provider, name) == ("realtime", "grok_realtime", "language_hint"):
-            grok_language_hint(value)  # KnobRefusal: the named 422
+        check = spec.settings_checks.get(name)
+        if check is not None:
+            check(value)  # KnobRefusal: the named 422
         return None
     if name in REGISTRY_OWNED:
         return f"{path}: owned by the model configuration"
