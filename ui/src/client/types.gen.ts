@@ -13355,22 +13355,31 @@ export type GetWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurat
         'X-API-Key'?: string | null;
     };
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Organization Id
+         *
+         * Target organization. XPAND operators only: required on writes; on reads, omit it to read your own organization.
+         */
+        organization_id?: string | null;
+    };
     url: '/api/v1/organizations/workflow-configuration-defaults';
 };
 
 export type GetWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsGetErrors = {
     /**
-     * Not found
+     * Not an XPAND operator. Body: {detail: {code: privacy_knob_forbidden, where, reason, hint}}
+     */
+    403: unknown;
+    /**
+     * organization_id names no organization. Body: {detail: {code: organization_not_found, where, reason, hint}}
      */
     404: unknown;
     /**
-     * Validation Error
+     * An XPAND operator without a valid organization_id. Body: {detail: {code: privacy_target_organization_required, where, reason, hint}}
      */
-    422: HttpValidationError;
+    422: unknown;
 };
-
-export type GetWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsGetError = GetWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsGetErrors[keyof GetWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsGetErrors];
 
 export type GetWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsGetResponses = {
     /**
@@ -13394,7 +13403,14 @@ export type SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigura
         'X-API-Key'?: string | null;
     };
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Organization Id
+         *
+         * Target organization. XPAND operators only: required on writes; on reads, omit it to read your own organization.
+         */
+        organization_id?: string | null;
+    };
     url: '/api/v1/organizations/workflow-configuration-defaults';
 };
 
@@ -13404,16 +13420,14 @@ export type SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigura
      */
     403: unknown;
     /**
-     * Not found
+     * organization_id names no organization. Body: {detail: {code: organization_not_found, where, reason, hint}}
      */
     404: unknown;
     /**
-     * Validation Error
+     * An XPAND operator without a valid organization_id. Body: {detail: {code: privacy_target_organization_required, where, reason, hint}}
      */
-    422: HttpValidationError;
+    422: unknown;
 };
-
-export type SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsPutError = SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsPutErrors[keyof SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsPutErrors];
 
 export type SaveWorkflowConfigurationDefaultsApiV1OrganizationsWorkflowConfigurationDefaultsPutResponses = {
     /**
@@ -14232,7 +14246,14 @@ export type DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDelete
         'X-API-Key'?: string | null;
     };
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Organization Id
+         *
+         * Target organization. XPAND operators only: required on writes; on reads, omit it to read your own organization.
+         */
+        organization_id?: string | null;
+    };
     url: '/api/v1/organizations/langfuse-credentials';
 };
 
@@ -14242,16 +14263,14 @@ export type DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDelete
      */
     403: unknown;
     /**
-     * Not found
+     * organization_id names no organization. Body: {detail: {code: organization_not_found, where, reason, hint}}
      */
     404: unknown;
     /**
-     * Validation Error
+     * An XPAND operator without a valid organization_id. Body: {detail: {code: privacy_target_organization_required, where, reason, hint}}
      */
-    422: HttpValidationError;
+    422: unknown;
 };
-
-export type DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDeleteError = DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDeleteErrors[keyof DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDeleteErrors];
 
 export type DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDeleteResponses = {
     /**
@@ -14273,22 +14292,31 @@ export type GetLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsGetData =
         'X-API-Key'?: string | null;
     };
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Organization Id
+         *
+         * Target organization. XPAND operators only: required on writes; on reads, omit it to read your own organization.
+         */
+        organization_id?: string | null;
+    };
     url: '/api/v1/organizations/langfuse-credentials';
 };
 
 export type GetLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsGetErrors = {
     /**
-     * Not found
+     * Not an XPAND operator. Body: {detail: {code: privacy_knob_forbidden, where, reason, hint}}
+     */
+    403: unknown;
+    /**
+     * organization_id names no organization. Body: {detail: {code: organization_not_found, where, reason, hint}}
      */
     404: unknown;
     /**
-     * Validation Error
+     * An XPAND operator without a valid organization_id. Body: {detail: {code: privacy_target_organization_required, where, reason, hint}}
      */
-    422: HttpValidationError;
+    422: unknown;
 };
-
-export type GetLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsGetError = GetLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsGetErrors[keyof GetLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsGetErrors];
 
 export type GetLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsGetResponses = {
     /**
@@ -14312,7 +14340,14 @@ export type SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostData
         'X-API-Key'?: string | null;
     };
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Organization Id
+         *
+         * Target organization. XPAND operators only: required on writes; on reads, omit it to read your own organization.
+         */
+        organization_id?: string | null;
+    };
     url: '/api/v1/organizations/langfuse-credentials';
 };
 
@@ -14322,16 +14357,14 @@ export type SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostErro
      */
     403: unknown;
     /**
-     * Not found
+     * organization_id names no organization. Body: {detail: {code: organization_not_found, where, reason, hint}}
      */
     404: unknown;
     /**
-     * Validation Error
+     * An XPAND operator without a valid organization_id. Body: {detail: {code: privacy_target_organization_required, where, reason, hint}}
      */
-    422: HttpValidationError;
+    422: unknown;
 };
-
-export type SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostError = SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostErrors[keyof SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostErrors];
 
 export type SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostResponses = {
     /**

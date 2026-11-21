@@ -26,6 +26,14 @@ Three endpoints manage the organization base:
 | `PUT` | `/api/v1/organizations/workflow-configuration-defaults` | The document as stored |
 | `GET` | `/api/v1/organizations/workflow-configuration-effective-defaults` | Schema defaults merged with the organization base, plus `warnings` |
 
+The `PUT` is XPAND-operator only and takes `organization_id`, the organization it writes
+(`PUT /api/v1/organizations/workflow-configuration-defaults?organization_id=<id>`). Anyone
+else gets `403` with `detail.code` `privacy_knob_forbidden`; an operator without a valid
+`organization_id` gets `422` (`privacy_target_organization_required`), and an id that names
+no organization gets `404` (`organization_not_found`). The `GET` of the stored document
+reads the caller's own organization; an operator can pass `organization_id` to read another
+one.
+
 The `PUT` stores only the keys present in the request body. A key sent as `null` at the root
 of the document means "unset": it is dropped, and workflows fall back to the schema default.
 

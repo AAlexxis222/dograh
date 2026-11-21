@@ -13,13 +13,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { detailFromError } from "@/lib/apiError";
 import { useAuth } from "@/lib/auth";
 import { refusalHint } from "@/lib/knobRefusal";
 
-// The backend refuses non-operators with a B0-28 body; its hint replaces the
-// generic failure message.
-function operatorHint(error: unknown): string | null {
-  return refusalHint(error, "privacy_knob_forbidden");
+// A B0-28 refusal (not an operator, no target organization) says what to do in
+// its hint; any other backend error shows its own detail.
+function errorMessage(error: unknown, fallback: string): string {
+  return refusalHint(error) ?? detailFromError(error, fallback);
 }
 
 function TracesPublicToggle({
@@ -98,8 +99,7 @@ export function TelemetrySection() {
         },
       });
       if (error) {
-        const hint = operatorHint(error);
-        toast.error(hint ?? "Failed to save telemetry credentials");
+        toast.error(errorMessage(error, "Failed to save telemetry credentials"));
         return;
       }
       toast.success("Telemetry credentials saved");
@@ -116,7 +116,7 @@ export function TelemetrySection() {
     try {
       const { error } = await deleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDelete();
       if (error) {
-        toast.error(operatorHint(error) ?? "Failed to remove telemetry credentials");
+        toast.error(errorMessage(error, "Failed to remove telemetry credentials"));
         return;
       }
       setCredentials({

@@ -115,10 +115,14 @@ We provide seamless integration with Langfuse for tracing if you want to use you
 **Setup steps:**
 
 1. Sign up at [Langfuse](https://langfuse.com) and create API credentials
-2. In the Dograh UI, go to **Platform Settings** (`/settings`) and enter your Langfuse host, public key, and secret key
-3. Click **Save**
+2. Send the Langfuse host, public key, secret key and project ID to an XPAND operator
+3. The operator saves them for your organization with `POST /api/v1/organizations/langfuse-credentials?organization_id=<your organization id>`
 
 Once enabled, traces will be available for every completed call in Dograh.
+
+<Note>
+Writing or removing an organization's Langfuse credentials (`POST` and `DELETE /api/v1/organizations/langfuse-credentials`) is XPAND-operator only and always takes `organization_id`, the organization the change applies to. Anyone else gets `403` with `detail.code` `privacy_knob_forbidden`, so **Save** and **Remove** in **Platform Settings** refuse for non-operators and show that error's hint. An operator who leaves out `organization_id` gets `422` (`privacy_target_organization_required`), and an id that names no organization gets `404` (`organization_not_found`). Your organization's own users can still read its credentials, masked, with `GET`.
+</Note>
 
 ### Trace visibility
 

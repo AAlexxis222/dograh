@@ -1303,21 +1303,21 @@ export const setDefaultCallerIdApiV1OrganizationsTelephonyConfigsConfigIdPhoneNu
 /**
  * Delete Langfuse Credentials
  *
- * Delete Langfuse credentials for the user's organization. XPAND operators only.
+ * Delete Langfuse credentials for the target organization. XPAND operators only.
  */
 export const deleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDelete = <ThrowOnError extends boolean = false>(options?: Options<DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDeleteData, ThrowOnError>): RequestResult<DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDeleteResponses, DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDeleteErrors, ThrowOnError> => (options?.client ?? client).delete<DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDeleteResponses, DeleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDeleteErrors, ThrowOnError>({ url: '/api/v1/organizations/langfuse-credentials', ...options });
 
 /**
  * Get Langfuse Credentials
  *
- * Get Langfuse credentials for the user's organization with masked sensitive fields.
+ * Get Langfuse credentials for the organization with masked sensitive fields.
  */
 export const getLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsGet = <ThrowOnError extends boolean = false>(options?: Options<GetLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsGetData, ThrowOnError>): RequestResult<GetLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsGetResponses, GetLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsGetErrors, ThrowOnError> => (options?.client ?? client).get<GetLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsGetResponses, GetLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsGetErrors, ThrowOnError>({ url: '/api/v1/organizations/langfuse-credentials', ...options });
 
 /**
  * Save Langfuse Credentials
  *
- * Save Langfuse credentials for the user's organization. XPAND operators only.
+ * Save Langfuse credentials for the target organization. XPAND operators only.
  */
 export const saveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPost = <ThrowOnError extends boolean = false>(options: Options<SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostData, ThrowOnError>): RequestResult<SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostResponses, SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostErrors, ThrowOnError> => (options.client ?? client).post<SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostResponses, SaveLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsPostErrors, ThrowOnError>({
     url: '/api/v1/organizations/langfuse-credentials',
