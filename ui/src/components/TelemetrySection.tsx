@@ -14,14 +14,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useAuth } from "@/lib/auth";
+import { refusalHint } from "@/lib/knobRefusal";
 
-// The backend refuses non-operators with {detail: {code, hint, ...}} (B0-28).
-// The hint says what to do, so it replaces the generic failure message.
+// The backend refuses non-operators with a B0-28 body; its hint replaces the
+// generic failure message.
 function operatorHint(error: unknown): string | null {
-  const detail = (error as { detail?: { code?: unknown; hint?: unknown } } | undefined)?.detail;
-  return detail?.code === "privacy_knob_forbidden" && typeof detail.hint === "string"
-    ? detail.hint
-    : null;
+  return refusalHint(error, "privacy_knob_forbidden");
 }
 
 function TracesPublicToggle({
