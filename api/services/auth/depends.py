@@ -7,9 +7,9 @@ from api.constants import AUTH_PROVIDER
 from api.db import db_client
 from api.db.models import UserModel
 from api.enums import PostHogEvent
+from api.errors.knob_refusal import KnobRefusal
 from api.services.auth.stack_auth import stackauth
 from api.services.organization_bootstrap import ensure_organization_bootstrapped
-from api.services.pipecat.openai_efforts import KnobRefusal
 from api.services.posthog_client import (
     POSTHOG_ORGANIZATION_GROUP_TYPE,
     capture_event,

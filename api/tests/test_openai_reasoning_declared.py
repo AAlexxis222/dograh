@@ -26,7 +26,8 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import LLMService
 
-from api.services.pipecat.openai_efforts import KnobRefusal, wire_params
+from api.errors.knob_refusal import KnobRefusal
+from api.services.pipecat.openai_efforts import wire_params
 from api.services.pipecat.openai_responses import DograhOpenAIResponsesLLMService
 from api.services.pipecat.service_factory import create_llm_service_from_provider
 from api.tests.service_tuning._transport import chat_payload
