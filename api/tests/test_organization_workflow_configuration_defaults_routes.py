@@ -1,10 +1,13 @@
 import pytest
+from loguru import logger
 
 from api.db.models import OrganizationModel, UserModel
 from api.enums import OrganizationConfigurationKey
 from api.services.configuration.cascade import (
     load_effective_workflow_configurations,
 )
+
+DEFAULTS_URL = "/api/v1/organizations/workflow-configuration-defaults"
 
 GRAPH = {
     "nodes": [{"id": "1", "type": "startCall", "data": {"name": "S", "prompt": "p"}}],
@@ -33,7 +36,8 @@ async def test_put_stores_only_own_keys(test_client_factory, db_session, org_use
     org, user = org_user
     async with test_client_factory(user) as client:
         response = await client.put(
-            "/api/v1/organizations/workflow-configuration-defaults",
+            DEFAULTS_URL,
+            params={"organization_id": org.id},
             json={
                 "max_call_duration": 600,
                 "ambient_noise_configuration": {"enabled": True},
@@ -81,7 +85,8 @@ async def test_org_base_change_propagates_to_existing_workflow(
         assert before.json()["warnings"] == []
         assert (await _workflow_effective())["max_call_duration"] == 300
         await client.put(
-            "/api/v1/organizations/workflow-configuration-defaults",
+            DEFAULTS_URL,
+            params={"organization_id": org.id},
             json={"max_call_duration": 600},
         )
         after = await client.get(
@@ -140,10 +145,10 @@ KEY = "keys not allowed at organization level"
 async def test_org_defaults_reject_secrets_pbx_and_model_keys(
     test_client_factory, org_user, body, expected
 ):
-    _, user = org_user
+    org, user = org_user
     async with test_client_factory(user) as client:
         response = await client.put(
-            "/api/v1/organizations/workflow-configuration-defaults", json=body
+            DEFAULTS_URL, params={"organization_id": org.id}, json=body
         )
     assert response.status_code == 422, response.text
     assert expected in response.text
@@ -214,13 +219,15 @@ async def test_disposition_codes_include_org_base_catalog(
 
 async def test_org_defaults_reject_an_oversized_document(test_client_factory, org_user):
     """The base is one configuration row, not a payload store."""
-    _, user = org_user
+    org, user = org_user
     async with test_client_factory(user) as client:
         response = await client.put(
-            "/api/v1/organizations/workflow-configuration-defaults",
+            DEFAULTS_URL,
+            params={"organization_id": org.id},
             json={"dictionary": "x" * 70000},
         )
     assert response.status_code == 422, response.text
+    assert "byte limit" in response.json()["detail"]
 
 
 async def test_effective_defaults_report_422_when_the_stored_document_is_invalid(
@@ -239,4 +246,57 @@ async def test_effective_defaults_report_422_when_the_stored_document_is_invalid
             "/api/v1/organizations/workflow-configuration-effective-defaults"
         )
     assert response.status_code == 422, response.text
-    assert "no longer validate" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert "no longer validate" in detail
+    # The PUT is operator-only: the reader cannot repair the document.
+    assert "via PUT" not in detail
+    assert "XPAND operator" in detail
+
+
+async def test_put_writes_the_named_organization_not_the_selected_one(
+    test_client_factory, db_session, async_session, org_user
+):
+    """Under local auth an operator's selected organization is their own: the
+    PUT must store, and log, the organization the operator names."""
+    own_org, operator = org_user
+    client_org = OrganizationModel(provider_id="test-org-wf-defaults-client")
+    async_session.add(client_org)
+    await async_session.flush()
+    lines: list[str] = []
+    sink_id = logger.add(lambda message: lines.append(str(message)), format="{message}")
+    try:
+        async with test_client_factory(operator) as client:
+            response = await client.put(
+                DEFAULTS_URL,
+                params={"organization_id": client_org.id},
+                json={"max_call_duration": 600},
+            )
+    finally:
+        logger.remove(sink_id)
+
+    assert response.status_code == 200, response.text
+    key = OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value
+    assert await db_session.get_configuration_value(client_org.id, key, None) == {
+        "max_call_duration": 600
+    }
+    assert await db_session.get_configuration_value(own_org.id, key, None) is None
+    assert (
+        f"organization {client_org.id} workflow configuration defaults updated "
+        f"by user {operator.id}" in "".join(lines)
+    )
+
+
+@pytest.mark.parametrize("organization_id", [str(2**31 - 1), str(2**31)])
+async def test_put_to_an_unknown_organization_is_404_not_500(
+    test_client_factory, org_user, organization_id
+):
+    """Against the real column: an id past int32 must be the 404 too."""
+    _, operator = org_user
+    async with test_client_factory(operator) as client:
+        response = await client.put(
+            DEFAULTS_URL,
+            params={"organization_id": organization_id},
+            json={"max_call_duration": 600},
+        )
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"]["code"] == "organization_not_found"
