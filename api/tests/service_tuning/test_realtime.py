@@ -16,9 +16,9 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
+from loguru import logger
 from pipecat.services.settings import NOT_GIVEN
 
-from api.errors.knob_refusal import KnobRefusal
 from api.services.pipecat.service_factory import (
     REALTIME_FIELDS,
     create_realtime_llm_service,
@@ -95,11 +95,30 @@ def test_grok_realtime_language_hint_es_is_sent_as_es_es(stored, sent):
     assert sp.audio.input.transcription.language_hint == sent
 
 
-def test_grok_realtime_language_hint_outside_the_set_is_refused_at_build():
-    # A document stored before the PUT check existed must not reach the wire.
-    with pytest.raises(KnobRefusal) as e:
-        _grok_session({"language_hint": "en-US"})
-    assert e.value.code == "knob_out_of_range"
+@pytest.fixture
+def warnings():
+    records = []
+    sink = logger.add(lambda m: records.append(m.record["message"]), level="WARNING")
+    yield records
+    logger.remove(sink)
+
+
+@pytest.mark.parametrize("stored", ["en-US", "es-es", "", 5, ["es"], "x" * 500])
+def test_grok_realtime_language_hint_outside_the_set_is_dropped_at_build(
+    stored, warnings
+):
+    # A document stored before the PUT check existed (any value, even one that
+    # is not a string) keeps placing calls: the session gets the hint an
+    # untuned run gets, and the drop is the one logged trace.
+    sent = _grok_session({"language_hint": stored}).audio.input.transcription
+    untuned = _grok_session().audio.input.transcription
+    assert sent.language_hint is None
+    assert sent.model_dump(exclude_none=True) == untuned.model_dump(exclude_none=True)
+    (line,) = [w for w in warnings if w.startswith("service_tuning:")]
+    assert "realtime.grok_realtime.settings.language_hint" in line
+    assert repr(stored)[:10] in line
+    # A tenant string: logged with a cap, never whole.
+    assert len(line) < 300
 
 
 @pytest.mark.parametrize("settings", [None, {"language_hint": "es"}])
