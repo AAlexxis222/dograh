@@ -9,6 +9,12 @@ from api.services.configuration.cascade import (
 
 DEFAULTS_URL = "/api/v1/organizations/workflow-configuration-defaults"
 
+
+def _defaults_url(organization_id) -> str:
+    """The operator's write names its target organization in the path."""
+    return f"/api/v1/organizations/{organization_id}/workflow-configuration-defaults"
+
+
 GRAPH = {
     "nodes": [{"id": "1", "type": "startCall", "data": {"name": "S", "prompt": "p"}}],
     "edges": [],
@@ -20,8 +26,8 @@ async def org_user(async_session):
     org = OrganizationModel(provider_id="test-org-wf-defaults")
     async_session.add(org)
     await async_session.flush()
-    # The PUT is XPAND-operator only (VOZ-N0-31); the 403 for anyone else is
-    # pinned in test_privacy_knob_role.py.
+    # The PUT is XPAND-operator only and names the organization in the path
+    # (VOZ-N0-31); the 403 for anyone else is pinned in test_privacy_knob_role.py.
     user = UserModel(
         provider_id="test-user-wf-defaults",
         selected_organization_id=org.id,
@@ -36,8 +42,7 @@ async def test_put_stores_only_own_keys(test_client_factory, db_session, org_use
     org, user = org_user
     async with test_client_factory(user) as client:
         response = await client.put(
-            DEFAULTS_URL,
-            params={"organization_id": org.id},
+            _defaults_url(org.id),
             json={
                 "max_call_duration": 600,
                 "ambient_noise_configuration": {"enabled": True},
@@ -85,8 +90,7 @@ async def test_org_base_change_propagates_to_existing_workflow(
         assert before.json()["warnings"] == []
         assert (await _workflow_effective())["max_call_duration"] == 300
         await client.put(
-            DEFAULTS_URL,
-            params={"organization_id": org.id},
+            _defaults_url(org.id),
             json={"max_call_duration": 600},
         )
         after = await client.get(
@@ -147,9 +151,7 @@ async def test_org_defaults_reject_secrets_pbx_and_model_keys(
 ):
     org, user = org_user
     async with test_client_factory(user) as client:
-        response = await client.put(
-            DEFAULTS_URL, params={"organization_id": org.id}, json=body
-        )
+        response = await client.put(_defaults_url(org.id), json=body)
     assert response.status_code == 422, response.text
     assert expected in response.text
 
@@ -222,8 +224,7 @@ async def test_org_defaults_reject_an_oversized_document(test_client_factory, or
     org, user = org_user
     async with test_client_factory(user) as client:
         response = await client.put(
-            DEFAULTS_URL,
-            params={"organization_id": org.id},
+            _defaults_url(org.id),
             json={"dictionary": "x" * 70000},
         )
     assert response.status_code == 422, response.text
@@ -267,8 +268,7 @@ async def test_put_writes_the_named_organization_not_the_selected_one(
     try:
         async with test_client_factory(operator) as client:
             response = await client.put(
-                DEFAULTS_URL,
-                params={"organization_id": client_org.id},
+                _defaults_url(client_org.id),
                 json={"max_call_duration": 600},
             )
     finally:
@@ -294,9 +294,32 @@ async def test_put_to_an_unknown_organization_is_404_not_500(
     _, operator = org_user
     async with test_client_factory(operator) as client:
         response = await client.put(
-            DEFAULTS_URL,
-            params={"organization_id": organization_id},
+            _defaults_url(organization_id),
             json={"max_call_duration": 600},
         )
     assert response.status_code == 404, response.text
     assert response.json()["detail"]["code"] == "organization_not_found"
+
+
+async def test_put_without_an_organization_in_the_path_writes_nothing(
+    test_client_factory, db_session, async_session, org_user
+):
+    """The previous version served this path and ignored organization_id: the
+    route without an organization in the path must never write, whatever the
+    query names, so no client is left believing such a write landed."""
+    own_org, operator = org_user
+    client_org = OrganizationModel(provider_id="test-org-wf-defaults-legacy")
+    async_session.add(client_org)
+    await async_session.flush()
+    async with test_client_factory(operator) as client:
+        response = await client.put(
+            DEFAULTS_URL,
+            params={"organization_id": client_org.id},
+            json={"max_call_duration": 600},
+        )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "privacy_target_organization_required"
+    key = OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value
+    assert await db_session.get_configuration_value(client_org.id, key, None) is None
+    assert await db_session.get_configuration_value(own_org.id, key, None) is None

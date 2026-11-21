@@ -1,6 +1,10 @@
 """VOZ-N0-31: only XPAND operators (``is_superuser``) write the organization's
 workflow configuration defaults and Langfuse credentials (VOZ-AC-B0-29), and
-they do it on an explicit target organization (``organization_id``).
+they do it on a target organization named in the path
+(``/organizations/{organization_id}/...``). The routes without an organization
+in the path never write: the previous version served them and ignored
+``organization_id``, so a write there would land on the operator's own
+organization.
 
 No database: the user dependency is overridden and the reads, writes and the
 organization lookup are stubbed, so the gate itself is what runs.
@@ -24,6 +28,9 @@ USER_ID = 7
 INT32_MAX = 2**31 - 1
 DEFAULTS = "/organizations/workflow-configuration-defaults"
 LANGFUSE = "/organizations/langfuse-credentials"
+# The operator routes: the target organization is a path segment.
+TARGETED_DEFAULTS = "/organizations/{}/workflow-configuration-defaults"
+TARGETED_LANGFUSE = "/organizations/{}/langfuse-credentials"
 LANGFUSE_BODY = {
     "host": "https://cloud.langfuse.com",
     "public_key": "pk-lf-1",
@@ -31,19 +38,26 @@ LANGFUSE_BODY = {
     "project_id": "cm1",
 }
 
-# (method, path, json body, name of the write the route must not reach)
+# (method, path template, json body, name of the write the route must not reach)
 PROTECTED = [
-    ("put", DEFAULTS, {"max_call_duration": 600}, "upsert_defaults"),
-    ("post", LANGFUSE, LANGFUSE_BODY, "upsert_configuration"),
-    ("delete", LANGFUSE, None, "delete_configuration"),
+    ("put", TARGETED_DEFAULTS, {"max_call_duration": 600}, "upsert_defaults"),
+    ("post", TARGETED_LANGFUSE, LANGFUSE_BODY, "upsert_configuration"),
+    ("delete", TARGETED_LANGFUSE, None, "delete_configuration"),
 ]
-READS = [DEFAULTS, LANGFUSE]
+# The same writes on the routes without an organization in the path.
+UNTARGETED = [
+    ("put", DEFAULTS, {"max_call_duration": 600}),
+    ("post", LANGFUSE, LANGFUSE_BODY),
+    ("delete", LANGFUSE, None),
+]
+TARGETED_READS = [TARGETED_DEFAULTS, TARGETED_LANGFUSE]
 # The target organization's stored Langfuse document: the body's own values,
 # under another project, so a masked key sent back must be restored from it.
 STORED_LANGFUSE = {**LANGFUSE_BODY, "project_id": "cm-stored"}
 
-# organization_id values that are not a plain ASCII integer.
-MALFORMED = ["", "abc", "4_2", " 42", "+42", "-1", "4.2", "٤٢"]
+# Organization ids that are not a plain ASCII integer. An empty segment
+# (/organizations//...) matches no route at all, so it is not among them.
+MALFORMED = ["abc", "4_2", " 42", "+42", "-1", "4.2", "٤٢"]
 # Integers that name no organization, in range or not.
 UNKNOWN = ["999", "0", str(INT32_MAX + 1), "9" * 30, "9" * 5000]
 
@@ -61,6 +75,11 @@ def _client(*, is_superuser: bool, selected_organization_id=ORG_ID) -> TestClien
 
 def _params(organization_id):
     return None if organization_id is None else {"organization_id": organization_id}
+
+
+def _targeted_route(template: str, method: str) -> str:
+    """The method and path an operator is pointed to, as the hint names it."""
+    return f"{method.upper()} {template.format('{organization_id}')}"
 
 
 async def _organization_by_id(organization_id: int):
@@ -137,10 +156,44 @@ def _capture_logs():
     return lines, sink_id
 
 
-@pytest.mark.parametrize("organization_id", [None, str(TARGET_ID), "abc", ""])
-@pytest.mark.parametrize(("method", "path", "body", "write"), PROTECTED)
+@pytest.mark.parametrize("organization_id", [str(TARGET_ID), str(ORG_ID), "abc"])
+@pytest.mark.parametrize(("method", "template", "body", "write"), PROTECTED)
 def test_non_superuser_gets_403_b028_and_nothing_is_written(
-    stubs, method, path, body, write, organization_id
+    stubs, method, template, body, write, organization_id
+):
+    path = template.format(organization_id)
+    response = _client(is_superuser=False).request(method, path, json=body)
+
+    detail = _assert_b028(
+        response, status=403, code="privacy_knob_forbidden", method=method, path=path
+    )
+    assert "XPAND operator" in detail["hint"]
+    _assert_nothing_written(stubs)
+
+
+@pytest.mark.parametrize("organization_id", MALFORMED)
+@pytest.mark.parametrize(("method", "template", "body", "write"), PROTECTED)
+def test_superuser_with_a_malformed_target_organization_gets_422(
+    stubs, method, template, body, write, organization_id
+):
+    path = template.format(organization_id)
+    response = _client(is_superuser=True).request(method, path, json=body)
+
+    detail = _assert_b028(
+        response,
+        status=422,
+        code="privacy_target_organization_required",
+        method=method,
+        path=path,
+    )
+    assert "{organization_id}" in detail["hint"]
+    _assert_nothing_written(stubs)
+
+
+@pytest.mark.parametrize("organization_id", [None, str(TARGET_ID), "abc"])
+@pytest.mark.parametrize(("method", "path", "body"), UNTARGETED)
+def test_non_superuser_write_without_an_organization_in_the_path_gets_403(
+    stubs, method, path, body, organization_id
 ):
     response = _client(is_superuser=False).request(
         method, path, json=body, params=_params(organization_id)
@@ -153,11 +206,14 @@ def test_non_superuser_gets_403_b028_and_nothing_is_written(
     _assert_nothing_written(stubs)
 
 
-@pytest.mark.parametrize("organization_id", [None, *MALFORMED])
-@pytest.mark.parametrize(("method", "path", "body", "write"), PROTECTED)
-def test_superuser_without_a_target_organization_gets_422(
-    stubs, method, path, body, write, organization_id
+@pytest.mark.parametrize("organization_id", [None, str(TARGET_ID), "abc"])
+@pytest.mark.parametrize(("method", "path", "body"), UNTARGETED)
+def test_operator_write_without_an_organization_in_the_path_never_writes(
+    stubs, method, path, body, organization_id
 ):
+    """The previous version accepted this exact request and wrote the operator's
+    own organization: the query parameter is never read, the write is refused
+    and the hint names the route that takes the organization in the path."""
     response = _client(is_superuser=True).request(
         method, path, json=body, params=_params(organization_id)
     )
@@ -169,18 +225,18 @@ def test_superuser_without_a_target_organization_gets_422(
         method=method,
         path=path,
     )
-    assert "organization_id" in detail["hint"]
+    targeted = TARGETED_DEFAULTS if path == DEFAULTS else TARGETED_LANGFUSE
+    assert _targeted_route(targeted, method) in detail["hint"]
     _assert_nothing_written(stubs)
 
 
 @pytest.mark.parametrize("organization_id", UNKNOWN)
-@pytest.mark.parametrize(("method", "path", "body", "write"), PROTECTED)
+@pytest.mark.parametrize(("method", "template", "body", "write"), PROTECTED)
 def test_unknown_target_organization_gets_404(
-    stubs, method, path, body, write, organization_id
+    stubs, method, template, body, write, organization_id
 ):
-    response = _client(is_superuser=True).request(
-        method, path, json=body, params=_params(organization_id)
-    )
+    path = template.format(organization_id)
+    response = _client(is_superuser=True).request(method, path, json=body)
 
     _assert_b028(
         response, status=404, code="organization_not_found", method=method, path=path
@@ -188,12 +244,12 @@ def test_unknown_target_organization_gets_404(
     _assert_nothing_written(stubs)
 
 
-@pytest.mark.parametrize(("method", "path", "body", "write"), PROTECTED)
+@pytest.mark.parametrize(("method", "template", "body", "write"), PROTECTED)
 def test_operator_without_a_selected_organization_writes_the_target(
-    stubs, method, path, body, write
+    stubs, method, template, body, write
 ):
     response = _client(is_superuser=True, selected_organization_id=None).request(
-        method, path, json=body, params=_params(str(TARGET_ID))
+        method, template.format(TARGET_ID), json=body
     )
 
     assert response.status_code == 200, response.text
@@ -203,7 +259,7 @@ def test_operator_without_a_selected_organization_writes_the_target(
 
 def test_defaults_put_passes_the_target_and_the_operator(stubs):
     response = _client(is_superuser=True).put(
-        DEFAULTS, json={"max_call_duration": 600}, params=_params(str(TARGET_ID))
+        TARGETED_DEFAULTS.format(TARGET_ID), json={"max_call_duration": 600}
     )
 
     assert response.status_code == 200, response.text
@@ -222,7 +278,7 @@ def test_langfuse_save_carries_the_target_everywhere(stubs):
     lines, sink_id = _capture_logs()
     try:
         response = _client(is_superuser=True).post(
-            LANGFUSE, json=body, params=_params(str(TARGET_ID))
+            TARGETED_LANGFUSE.format(TARGET_ID), json=body
         )
     finally:
         logger.remove(sink_id)
@@ -245,7 +301,7 @@ def test_langfuse_delete_carries_the_target_everywhere(stubs):
     lines, sink_id = _capture_logs()
     try:
         response = _client(is_superuser=True).delete(
-            LANGFUSE, params=_params(str(TARGET_ID))
+            TARGETED_LANGFUSE.format(TARGET_ID)
         )
     finally:
         logger.remove(sink_id)
@@ -260,11 +316,16 @@ def test_langfuse_delete_carries_the_target_everywhere(stubs):
     assert all(ORG_ID not in call.args for call in stubs.db.mock_calls)
 
 
-def test_non_superuser_reads_their_own_organization_as_today(stubs):
-    client = _client(is_superuser=False)
+@pytest.mark.parametrize("is_superuser", [False, True])
+@pytest.mark.parametrize("organization_id", [None, str(TARGET_ID), "abc"])
+def test_reads_without_an_organization_in_the_path_are_the_callers_own(
+    stubs, is_superuser, organization_id
+):
+    """As at base: the selected organization, and organization_id is ignored."""
+    client = _client(is_superuser=is_superuser)
 
-    defaults = client.get(DEFAULTS)
-    langfuse = client.get(LANGFUSE)
+    defaults = client.get(DEFAULTS, params=_params(organization_id))
+    langfuse = client.get(LANGFUSE, params=_params(organization_id))
 
     assert defaults.status_code == 200, defaults.text
     assert stubs.read_defaults.await_args.args == (ORG_ID,)
@@ -275,8 +336,8 @@ def test_non_superuser_reads_their_own_organization_as_today(stubs):
 def test_superuser_reads_the_named_organization(stubs):
     client = _client(is_superuser=True)
 
-    defaults = client.get(DEFAULTS, params=_params(str(TARGET_ID)))
-    langfuse = client.get(LANGFUSE, params=_params(str(TARGET_ID)))
+    defaults = client.get(TARGETED_DEFAULTS.format(TARGET_ID))
+    langfuse = client.get(TARGETED_LANGFUSE.format(TARGET_ID))
 
     assert defaults.status_code == 200, defaults.text
     assert stubs.read_defaults.await_args.args == (TARGET_ID,)
@@ -287,12 +348,13 @@ def test_superuser_reads_the_named_organization(stubs):
     assert langfuse.json()["secret_key"] == mask_key(STORED_LANGFUSE["secret_key"])
 
 
-@pytest.mark.parametrize("organization_id", [str(TARGET_ID), "abc", ""])
-@pytest.mark.parametrize("path", READS)
+@pytest.mark.parametrize("organization_id", [str(TARGET_ID), str(ORG_ID), "abc"])
+@pytest.mark.parametrize("template", TARGETED_READS)
 def test_non_superuser_naming_an_organization_on_a_read_gets_403(
-    stubs, path, organization_id
+    stubs, template, organization_id
 ):
-    response = _client(is_superuser=False).get(path, params=_params(organization_id))
+    path = template.format(organization_id)
+    response = _client(is_superuser=False).get(path)
 
     _assert_b028(
         response, status=403, code="privacy_knob_forbidden", method="get", path=path
@@ -304,17 +366,17 @@ def test_non_superuser_naming_an_organization_on_a_read_gets_403(
 @pytest.mark.parametrize(
     ("organization_id", "status", "code"),
     [
-        ("", 422, "privacy_target_organization_required"),
         ("abc", 422, "privacy_target_organization_required"),
         ("999", 404, "organization_not_found"),
         (str(INT32_MAX + 1), 404, "organization_not_found"),
     ],
 )
-@pytest.mark.parametrize("path", READS)
+@pytest.mark.parametrize("template", TARGETED_READS)
 def test_superuser_read_of_a_bad_target_is_refused(
-    stubs, path, organization_id, status, code
+    stubs, template, organization_id, status, code
 ):
-    response = _client(is_superuser=True).get(path, params=_params(organization_id))
+    path = template.format(organization_id)
+    response = _client(is_superuser=True).get(path)
 
     _assert_b028(response, status=status, code=code, method="get", path=path)
     stubs.read_defaults.assert_not_called()
@@ -322,15 +384,10 @@ def test_superuser_read_of_a_bad_target_is_refused(
 
 
 @pytest.mark.parametrize(
-    ("method", "path", "body", "event"),
-    [
-        ("post", LANGFUSE, LANGFUSE_BODY, "saved"),
-        ("delete", LANGFUSE, None, "deleted"),
-    ],
+    ("method", "body", "event"),
+    [("post", LANGFUSE_BODY, "saved"), ("delete", None, "deleted")],
 )
-def test_langfuse_audit_line_survives_a_failed_broadcast(
-    stubs, method, path, body, event
-):
+def test_langfuse_audit_line_survives_a_failed_broadcast(stubs, method, body, event):
     """The database write is committed before the broadcast, so the audit line
     must be too: a Redis failure may not leave a change nobody signed."""
     stubs.broadcast.side_effect = RuntimeError("redis unreachable")
@@ -338,7 +395,7 @@ def test_langfuse_audit_line_survives_a_failed_broadcast(
     try:
         with pytest.raises(RuntimeError):
             _client(is_superuser=True).request(
-                method, path, json=body, params=_params(str(TARGET_ID))
+                method, TARGETED_LANGFUSE.format(TARGET_ID), json=body
             )
     finally:
         logger.remove(sink_id)
@@ -348,3 +405,25 @@ def test_langfuse_audit_line_survives_a_failed_broadcast(
         in "".join(lines)
     )
     assert "sk-lf-1" not in "".join(lines)
+
+
+@pytest.mark.parametrize(
+    ("path", "method"),
+    [
+        (DEFAULTS, "put"),
+        (LANGFUSE, "post"),
+        (TARGETED_DEFAULTS.format("{organization_id}"), "put"),
+        (TARGETED_LANGFUSE.format("{organization_id}"), "post"),
+    ],
+)
+def test_routes_with_a_body_keep_the_framework_validation_422(path, method):
+    """Body validation errors carry FastAPI's list detail: the published 422
+    keeps that schema, and the B0-28 refusal is only described next to it."""
+    app = FastAPI()
+    app.include_router(router)
+
+    response = app.openapi()["paths"][path][method]["responses"]["422"]
+
+    schema = response["content"]["application/json"]["schema"]
+    assert schema == {"$ref": "#/components/schemas/HTTPValidationError"}
+    assert "privacy_target_organization_required" in response["description"]
