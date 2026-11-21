@@ -14,7 +14,10 @@ a shorter horizon reports nothing for that model. Reuses api.services.capabiliti
 
 Two passes per table, erring on the side of reporting: a structured walk over {provider, model} pairs (JSON
 strings are decoded), and a raw-text regex built from the registry that catches what the walk cannot
-interpret (e.g. a provider-less model_overrides). Rows only the regex finds print as ``unstructured_hit``.
+interpret (e.g. a provider-less model_overrides). Both passes match ids case-sensitively, as status_for does
+(fnmatchcase). The regex ignores the provider, so a row prints as
+``unstructured_hit`` only when it matches somewhere other than the model of a {provider, model} pair (or the match
+cannot be located at all); a match the walk already judged with its provider is not reported twice.
 
 Encryption at rest (VOZ-N0-24c) stores secrets as credential_box tokens, some documents whole (the org and user
 model configurations), others at secret leaves. Every document goes through the app's own opener
@@ -75,8 +78,12 @@ def _decode(value: Any) -> Any:
     return value
 
 
+def _is_pair(doc: Any) -> bool:
+    return isinstance(doc, dict) and isinstance(doc.get("provider"), str) and isinstance(doc.get("model"), str)
+
+
 def _service_refs(doc: Any, path: str = "") -> Iterator[tuple[str, str, str]]:
-    """Yield (path, provider, model) for every dict carrying both strings.
+    """Yield (path, provider, model) for every dict carrying both strings, pairs nested inside a pair included.
 
     Shape-agnostic on purpose: the same {provider, model} leaf is stored under
     top-level stt/tts/llm/realtime, under model_overrides, and under the org v2
@@ -84,15 +91,36 @@ def _service_refs(doc: Any, path: str = "") -> Iterator[tuple[str, str, str]]:
     """
     doc = _decode(doc)
     if isinstance(doc, dict):
-        provider, model = doc.get("provider"), doc.get("model")
-        if isinstance(provider, str) and isinstance(model, str):
-            yield path, provider, model
-            return
+        if _is_pair(doc):
+            yield path, doc["provider"], doc["model"]
         for key, child in doc.items():
             yield from _service_refs(child, f"{path}.{key}" if path else str(key))
     elif isinstance(doc, list):
         for i, child in enumerate(doc):
             yield from _service_refs(child, f"{path}[{i}]")
+
+
+def _unpaired_strings(doc: Any) -> Iterator[str]:
+    """Every key and string of the document except the model of a {provider, model} pair, which status_for judges."""
+    doc = _decode(doc)
+    if isinstance(doc, str):
+        yield doc
+    elif isinstance(doc, dict):
+        paired = _is_pair(doc)
+        for key, child in doc.items():
+            yield str(key)
+            if not (paired and key == "model"):
+                yield from _unpaired_strings(child)
+    elif isinstance(doc, list):
+        for child in doc:
+            yield from _unpaired_strings(child)
+
+
+def _explained_by_pairs(doc: Any, pattern: str) -> bool:
+    """True when the regex matches the document only at models of {provider, model} pairs, and at one at least."""
+    return not any(_text_hit(pattern, s) for s in _unpaired_strings(doc)) and any(
+        _text_hit(pattern, m) for _, _, m in _service_refs(doc)
+    )
 
 
 def find_deprecated_usage(
@@ -110,7 +138,7 @@ def find_deprecated_usage(
 
 
 def build_text_regex(patterns: Iterable[str]) -> str:
-    """Regex (Python re and Postgres ARE, use case-insensitively) matching a quoted JSON string equal to a pattern.
+    """Regex (Python re and Postgres ARE, case-sensitive like status_for) matching a quoted JSON string equal to a pattern.
 
     ``\\*"`` tolerates the backslashes of JSON nested inside JSON strings; ``*`` in a pattern spans any non-quote run.
     """
@@ -124,15 +152,27 @@ def build_text_regex(patterns: Iterable[str]) -> str:
     return '\\\\*"(' + "|".join(alternatives) + ')\\\\*"'
 
 
-def with_unstructured(hits: list[Hit], text_rows: Iterable[tuple[str, int]]) -> list[Hit]:
-    """Add an ``unstructured`` hit for each (kind, row_id) the text regex found but the structured walk did not
-    report as shutdown (a legacy-only structured hit must not hide a provider-less retiring model in the same row)."""
+def _text_hit(pattern: str, value: Any) -> bool:
+    """The Python twin of the SQL ``CAST(column AS text) ~ :pat`` in _load_rows: the text regex searched in the JSON
+    text of ``value``. Every Python text pass calls it, so a change to the match rule lands here and in that SQL only."""
+    return re.search(pattern, json.dumps(value)) is not None
+
+
+def with_unstructured(
+    hits: list[Hit], text_rows: Iterable[tuple[str, int]], docs: Iterable[tuple[str, int, Any]], pattern: str
+) -> list[Hit]:
+    """Add an ``unstructured`` hit for each (kind, row_id) the text regex found, unless the structured walk already
+    reported it as shutdown or every regex match in it is the model of a {provider, model} pair (judged there with
+    its provider). A legacy-only structured hit must not hide a provider-less retiring model in the same row, and a
+    row the regex marked whose document is missing, or where no match can be located, stays unstructured."""
     seen = {(h.kind, h.row_id) for h in hits if h.state == "shutdown"}
+    by_row = {(kind, row_id): doc for kind, row_id, doc in docs}
     extra = [
         Hit(kind, row_id, "<raw-json-text>", "?", "?", "unstructured",
-            "a retiring or legacy model id appears in the row but not inside a {provider, model} pair",
+            "a retiring model id appears in the row outside any {provider, model} pair",
             "open the full row; likely a provider-less model_overrides or a non-standard shape")
         for kind, row_id in sorted(set(text_rows) - seen)
+        if (kind, row_id) not in by_row or not _explained_by_pairs(by_row[(kind, row_id)], pattern)
     ]
     return hits + extra
 
@@ -172,7 +212,7 @@ async def _load_rows(database_url: str, pattern: str) -> tuple[list[tuple[str, i
         async with engine.connect() as conn:
             await conn.execute(text("SET TRANSACTION READ ONLY"))
             for s in _SOURCES:  # identifiers come from the constant above, the pattern is bound
-                sql = text(f"SELECT id, {s.column}, CAST({s.column} AS text) ~* :pat FROM {s.table} {s.where}")
+                sql = text(f"SELECT id, {s.column}, CAST({s.column} AS text) ~ :pat FROM {s.table} {s.where}")
                 for row_id, doc, text_hit in await conn.execute(sql, {"pat": pattern}):
                     docs.append((s.kind, row_id, doc))
                     if text_hit:
@@ -205,7 +245,7 @@ def open_encrypted_rows(
             opened.append((kind, row_id, doc))
             continue
         opened.append((kind, row_id, plain))
-        if re.search(pattern, json.dumps(plain), re.IGNORECASE):
+        if _text_hit(pattern, plain):
             rows.append((kind, row_id))
     return opened, rows, unreadable
 
@@ -226,7 +266,8 @@ def main(argv: list[str] | None = None) -> int:
     pattern = build_text_regex(blocking_patterns(today=today + dt.timedelta(days=args.horizon_days)))
     docs, text_rows = asyncio.run(_load_rows(database_url, pattern))
     docs, text_rows, unreadable = open_encrypted_rows(docs, text_rows, pattern)
-    hits = with_unstructured(find_deprecated_usage(docs, today=today, horizon_days=args.horizon_days), text_rows)
+    hits = find_deprecated_usage(docs, today=today, horizon_days=args.horizon_days)
+    hits = with_unstructured(hits, text_rows, docs, pattern)
     for hit in hits:
         print(format_hit(hit))
     for line in unreadable:
