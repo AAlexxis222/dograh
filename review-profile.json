@@ -24,13 +24,16 @@
     "scripts/xpand/call_entrypoint.sh",
     "scripts/xpand/require_db_head.sh",
     "api/services/runtime/cell_startup.py",
+    "api/services/runtime/cell_state.py",
     "api/services/security/credential_documents.py",
+    "api/services/security/secret_walk.py",
     "api/db/credentials_at_rest.py",
     "api/services/security/secret_surfaces.py",
     "api/services/security/egress_guard.py",
     "api/services/security/egress_flag.py",
     "api/services/security/redaction.py",
     "api/services/security/credential_box.py",
-    "api/logging_config.py"
+    "api/logging_config.py",
+    "api/errors/failure.py"
   ]
 }
