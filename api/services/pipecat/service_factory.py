@@ -68,6 +68,7 @@ from api.services.pipecat.service_tuning_specs import (
     FLUX_SETTINGS,
     NOVA_SETTINGS,
     SPECS,
+    grok_language_hint_at_build,
 )
 from api.services.pipecat.tts_cache.runtime import get_speech_cache
 from api.utils.url_security import validate_user_configured_service_url
@@ -1781,9 +1782,11 @@ _OPENAI_REALTIME_WRAPPERS: dict[str, Callable[[Any], Any]] = {
     "noise_reduction": lambda value: InputAudioNoiseReduction(type=value),
     "reasoning_effort": lambda value: Reasoning(effort=value),
 }
-# The row's own checks, so the build refuses exactly what the PUT refuses:
-# ``es`` is sent as ``es-ES``; a value outside the Spanish set is refused.
-_GROK_REALTIME_WRAPPERS = SPECS[("realtime", "grok_realtime")].settings_checks
+# ``es`` is sent as ``es-ES``; a stored value the PUT now refuses is dropped
+# and logged, so a document saved before that check still places calls.
+_GROK_REALTIME_WRAPPERS: dict[str, Callable[[Any], Any]] = {
+    "language_hint": grok_language_hint_at_build,
+}
 _GEMINI_REALTIME_COERCIONS: dict[str, Callable[[Any], Any]] = {
     # These arrive from the tuning document as JSON objects. Gemini Live reads
     # ``thinking`` and ``proactivity`` straight off the settings into its

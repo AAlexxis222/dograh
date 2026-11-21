@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import reprlib
 import types
 import typing
 from collections.abc import Callable
@@ -171,10 +172,11 @@ class TuningSpec:
     """Per-setting refusal and translation, keyed by name.
 
     Each check takes the stored value and returns what the provider is sent,
-    or raises ``KnobRefusal`` (the named 422 at the PUT, the named refusal at
-    the build). ``validate_service_tuning`` calls it once the value passed its
-    type checks; the factory uses the same callable as the knob's wrapper, so
-    the PUT and the build cannot disagree on a value.
+    or raises ``KnobRefusal`` (the named 422 at the PUT).
+    ``validate_service_tuning`` calls it once the value passed its type
+    checks. The build never refuses on it: a document stored before the check
+    existed reaches the factory unvalidated, so the factory's wrapper
+    translates with the same check and drops (and logs) what it refuses.
     """
     settings_models: dict[str, Any] = dataclasses.field(default_factory=dict)
     """The provider object a setting is built into, for settings whose value
@@ -773,10 +775,9 @@ _GROK_LANGUAGE_HINT_PATH = "realtime.grok_realtime.settings.language_hint"
 def grok_language_hint(value: str) -> str:
     """The ``language_hint`` xAI receives for the stored ``value``.
 
-    One check for the PUT (``validate_service_tuning``) and the build
-    (``REALTIME_FIELDS`` wrapper), both read off the row's ``settings_checks``,
-    so a document stored before the PUT check existed cannot reach a live call
-    either.
+    The PUT check (the row's ``settings_checks``, run by
+    ``validate_service_tuning``); the build goes through
+    ``grok_language_hint_at_build``, which translates with this same function.
     """
     try:
         return _GROK_LANGUAGE_HINT_WIRE_VALUES[value]
@@ -789,6 +790,29 @@ def grok_language_hint(value: str) -> str:
             f"{'|'.join(_GROK_LANGUAGE_HINT_WIRE_VALUES)} (es is sent as es-ES) "
             "or remove it",
         ) from None
+
+
+def grok_language_hint_at_build(value: Any) -> str | None:
+    """What the build sends for a stored ``value``: its translation, or ``None``.
+
+    Before this check existed the PUT took any string, and a run is built from
+    its stored or frozen document without re-validation, so a value outside
+    the set (or not a string at all) is dropped rather than refused: the
+    session gets the hint an untuned run gets (``None``, not sent) and the
+    drop is logged, the call goes on.
+    """
+    if isinstance(value, str):
+        try:
+            return grok_language_hint(value)
+        except KnobRefusal:
+            pass
+    logger.warning(
+        f"service_tuning: {_GROK_LANGUAGE_HINT_PATH} dropped: stored value "
+        f"{reprlib.repr(value)} is not one of "
+        f"{'|'.join(_GROK_LANGUAGE_HINT_WIRE_VALUES)}; the session is built "
+        "without a language hint"
+    )
+    return None
 
 
 # Grok's session carries neither speed, reasoning nor an output token cap

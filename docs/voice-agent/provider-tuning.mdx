@@ -309,4 +309,9 @@ worked:
   timeout an untuned workflow ends up with are the same as before.
 - **xAI realtime `language_hint` is a Spanish value.** Only `es`, `es-ES` and `es-MX` are accepted
   when the workflow is saved (any other value is a 422 `knob_out_of_range`), and `es` is sent to
-  xAI as `es-ES`. An untuned workflow sends no hint, as before.
+  xAI as `es-ES`. An untuned workflow sends no hint, as before. A value saved before this change
+  that is outside the set keeps calls working: the call is built without the hint (as an untuned
+  workflow) and the run log names the dropped value. A workflow whose own configuration carries such
+  a value gets the 422 on every save of its configuration until the value is corrected through the
+  API, and an organization whose stored defaults carry it sees the workflow editor fail to load the
+  configuration until the defaults are saved again with a valid value.
