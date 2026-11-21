@@ -1421,11 +1421,11 @@ def _setting_error(
     nullable: frozenset[str],
     name: str,
     value: Any,
-) -> str | None:
+) -> str | KnobRefusal | None:
     """The error for one ``settings`` entry of a provider, or ``None``.
 
-    A ``KnobRefusal`` from the row's ``settings_checks`` propagates: it is the
-    named 422 of that knob, not a message in the list.
+    A ``KnobRefusal`` from the row's ``settings_checks`` is returned, not
+    raised, so validation goes on: the schema turns it into the named 422.
     """
     path = f"{kind}.{provider}.settings.{name}"
     # A name in the allow-list wins even when it is also a REGISTRY_OWNED
@@ -1439,15 +1439,23 @@ def _setting_error(
             return error
         check = spec.settings_checks.get(name)
         if check is not None:
-            check(value)  # KnobRefusal: the named 422
+            try:
+                check(value)
+            except KnobRefusal as refusal:
+                return refusal
         return None
     if name in REGISTRY_OWNED:
         return f"{path}: owned by the model configuration"
     return f"{path}: unknown setting"
 
 
-def validate_service_tuning(document: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
+def validate_service_tuning(document: dict[str, Any]) -> list[str | KnobRefusal]:
+    """Every error of ``document``, in document order; empty when valid.
+
+    An error is a message, or the ``KnobRefusal`` of a ``settings_checks``
+    entry, which the caller reports as that knob's named error.
+    """
+    errors: list[str | KnobRefusal] = []
     for kind in KINDS:
         providers = document.get(kind) or {}
         for provider, tuning in providers.items():
