@@ -710,6 +710,32 @@ def test_grok_language_hint_outside_the_set_is_the_named_422(hint):
     assert "realtime.grok_realtime.settings.language_hint" in error["msg"]
     assert "es|es-ES|es-MX" in error["msg"]
     assert "hint:" in error["msg"]
+    # The only error of the document: nothing is appended to the refusal.
+    assert error["msg"].endswith("or remove it)")
+
+
+def test_grok_language_hint_refusal_also_lists_every_other_error():
+    # The refusal stays the named 422, but the errors found before it (stt and
+    # tts are checked first) and after it are reported in the same response.
+    with pytest.raises(ValidationError) as e:
+        _validate(
+            {
+                "stt": {"deepgram": {"settings": {"bogus": 1}}},
+                "tts": {"nope": {}},
+                "realtime": {
+                    "grok_realtime": {
+                        "settings": {"language_hint": "en-US"},
+                        "ctor": {"x": 1},
+                    }
+                },
+            }
+        )
+    (error,) = e.value.errors()
+    assert error["type"] == "knob_out_of_range"
+    assert error["msg"].startswith("realtime.grok_realtime.settings.language_hint: ")
+    assert "stt.deepgram.settings.bogus: unknown setting" in error["msg"]
+    assert "tts.nope: unknown provider" in error["msg"]
+    assert "realtime.grok_realtime.ctor.x: not allowed" in error["msg"]
 
 
 def test_grok_language_hint_wrong_type_keeps_the_type_error():
