@@ -766,8 +766,8 @@ SPECS[("realtime", "azure_realtime")] = _realtime_row(
 # Spanish deployments only (VOZ-AC-B1-39): the value is what xAI's transcriber
 # gets as ``language_hint`` (xai/realtime/events.py:119). A bare ``es`` is
 # widened to ``es-ES``, anything outside the keys is refused.
-_GROK_LANGUAGE_HINTS = {"es": "es-ES", "es-ES": "es-ES", "es-MX": "es-MX"}
-_GROK_LANGUAGE_HINT = "realtime.grok_realtime.settings.language_hint"
+_GROK_LANGUAGE_HINT_WIRE_VALUES = {"es": "es-ES", "es-ES": "es-ES", "es-MX": "es-MX"}
+_GROK_LANGUAGE_HINT_PATH = "realtime.grok_realtime.settings.language_hint"
 
 
 def grok_language_hint(value: str) -> str:
@@ -779,14 +779,15 @@ def grok_language_hint(value: str) -> str:
     either.
     """
     try:
-        return _GROK_LANGUAGE_HINTS[value]
+        return _GROK_LANGUAGE_HINT_WIRE_VALUES[value]
     except KeyError:
         raise KnobRefusal(
             code="knob_out_of_range",
-            where=_GROK_LANGUAGE_HINT,
+            where=_GROK_LANGUAGE_HINT_PATH,
             reason=f"xAI realtime takes a Spanish language hint, not {value!r}",
-            hint=f"set {_GROK_LANGUAGE_HINT} to one of "
-            f"{'|'.join(_GROK_LANGUAGE_HINTS)} (es is sent as es-ES) or remove it",
+            hint=f"set {_GROK_LANGUAGE_HINT_PATH} to one of "
+            f"{'|'.join(_GROK_LANGUAGE_HINT_WIRE_VALUES)} (es is sent as es-ES) "
+            "or remove it",
         ) from None
 
 
