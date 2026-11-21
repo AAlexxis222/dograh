@@ -1,8 +1,13 @@
 # Single registry of model retirements and price changes (VOZ-AC-B1-80).
 # Fields: provider, kind, model_or_feature (str | list, fnmatch globs allowed), date (UTC, null for legacy),
-# effect (shutdown|price|legacy), replacement, warn_from (optional), source_url, read_at.
-# Dates/effects from spec v4 B1 §10 VOZ-AC-B1-80 (synthesis-voz-v4 §1.12); read_at = date of the recon pass
-# that read the source (research/voz-recon-2026-10/f1b-*.md, all 2026-10-02).
+# effect (shutdown|price|legacy), replacement, warn_from (optional), note (optional, one-line string), source_url, read_at.
+# read_at = the date source_url was last read; each entry cites its own source.
+# Scope: the vendors' public tiers only. There is no tier dimension (status_for takes provider and model), so a
+# retirement that spares a paid or enterprise tier is still recorded with its public-tier effect, and its `note` names
+# the tiers it spares: status_for appends the note to the reason the sweep prints.
+# status_for returns the FIRST matching entry: put a specific id above any broader glob of the same provider.
+# A non-null replacement must be a model of the same provider and slot that is still active on the entry's date
+# (test_every_replacement_is_an_active_model_of_the_same_slot); otherwise null ("pick another model of this kind").
 entries:
   - provider: elevenlabs
     kind: tts
@@ -73,10 +78,10 @@ entries:
     model_or_feature: ["tts-1*", "gpt-4o-mini-tts*"]
     date: 2027-01-06
     effect: shutdown
-    replacement: null   # no documented Spanish voice in OpenAI TTS (VOZ-AC-B1-83)
+    replacement: null   # the vendor names the realtime gpt-realtime-2.1-mini, not a TTS model; no documented Spanish voice in OpenAI TTS (VOZ-AC-B1-83)
     warn_from: 2026-10-02
-    source_url: https://platform.openai.com/docs/deprecations
-    read_at: 2026-10-02
+    source_url: https://developers.openai.com/api/docs/deprecations
+    read_at: 2026-11-05
   - provider: openai
     kind: service   # the whole OpenAITTSService: no 1:1 replacement, kept only for existing workflows (VOZ-AC-B1-83, VOZ-D7 option C)
     model_or_feature: tts
@@ -105,15 +110,24 @@ entries:
     replacement: gpt-realtime-2.1 (or gpt-realtime-2.1-mini)
     source_url: https://platform.openai.com/docs/deprecations
     read_at: 2026-10-02
+  - provider: openai   # must stay above the broader "gpt-4o-mini-transcribe*" entry below (first match wins)
+    kind: stt
+    model_or_feature: gpt-4o-mini-transcribe-2025-03-20
+    date: 2027-01-20
+    effect: shutdown
+    replacement: gpt-transcribe   # the vendor's 2025-12-15 snapshot is caught by the glob below and retires on 2027-02-26
+    warn_from: 2026-10-02   # the family's date: without it status_for falls through and warns with the family's 2027-02-26
+    source_url: https://developers.openai.com/api/docs/deprecations
+    read_at: 2026-11-05
   - provider: openai
     kind: stt
-    model_or_feature: [whisper-1, "gpt-4o-transcribe*"]
+    model_or_feature: [whisper-1, "gpt-4o-transcribe*", "gpt-4o-mini-transcribe*"]   # the first glob does not match gpt-4o-mini-transcribe
     date: 2027-02-26
     effect: shutdown
-    replacement: gpt-transcribe (or gpt-live-transcribe)
+    replacement: gpt-transcribe   # the vendor also names gpt-live-transcribe, which the OpenAI STT slot does not offer
     warn_from: 2026-10-02   # VOZ-AC-B1-81: the OpenAI STT default must be flagged
-    source_url: https://platform.openai.com/docs/deprecations
-    read_at: 2026-10-02
+    source_url: https://developers.openai.com/api/docs/deprecations
+    read_at: 2026-11-05
   - provider: openai
     kind: llm
     model_or_feature: [gpt-5.4-nano, gpt-5.1, gpt-5.3-codex]
@@ -125,11 +139,11 @@ entries:
   - provider: google_realtime
     kind: realtime
     model_or_feature: [gemini-3.1-flash-live-preview, gemini-2.5-flash-native-audio-preview-12-2025]
-    date: null
-    effect: legacy
+    date: 2026-11-17   # earliest possible shutdown per the vendor page
+    effect: shutdown
     replacement: gemini-3.8-live
-    source_url: https://ai.google.dev/gemini-api/docs/live-api
-    read_at: 2026-10-02
+    source_url: https://aistudio.google.com/docs/deprecations
+    read_at: 2026-11-05
   - provider: google_vertex_realtime
     kind: realtime
     model_or_feature: ["google/gemini-live-2.5-flash-native-audio", gemini-2.5-flash-native-audio-preview-12-2025]
@@ -170,3 +184,47 @@ entries:
     replacement: null
     source_url: https://speechmatics.featurebase.app/en/changelog
     read_at: 2026-10-02
+  - provider: openai
+    kind: llm
+    model_or_feature: [gpt-4.1, gpt-4.1-2025-04-14, gpt-4.1-mini, gpt-4.1-mini-2025-04-14]   # alias and snapshot; the vendor page lists the snapshot ids
+    date: 2027-01-14
+    effect: shutdown
+    replacement: gpt-6-luna
+    source_url: https://developers.openai.com/api/docs/deprecations
+    read_at: 2026-11-05
+  - provider: openrouter
+    kind: llm
+    model_or_feature: [openai/gpt-4.1, openai/gpt-4.1-mini]   # the OpenRouter slugs of the openai entry above
+    date: null
+    effect: legacy   # OpenAI retires the models on 2027-01-14; OpenRouter gives no date of its own, so no shutdown is claimed
+    replacement: null
+    source_url: https://developers.openai.com/api/docs/deprecations
+    read_at: 2026-11-05
+  # No azure (LLM) entry: AzureLLMService.model is a deployment name, not the model the deployment runs, so an id entry
+  # cannot tell which rows run a retiring model. Azure's gpt-4.1-mini retirement (2027-04-14, learn.microsoft.com
+  # .../openai/concepts/model-retirements, read 2026-11-05) is tracked by VOZ-FU-N0-01b-azure-deployment-model.
+  - provider: soniox
+    kind: stt
+    model_or_feature: stt-rt-v5
+    date: 2026-12-15
+    effect: shutdown
+    replacement: stt-rt-v6
+    source_url: https://docs.soniox.com/stt/models
+    read_at: 2026-11-05
+  - provider: lmnt
+    kind: tts   # the whole LMNT service is gone: every model id it offered, exact (the sweep's text regex ignores the provider)
+    model_or_feature: [aurora, blizzard]   # stored configs stay readable; aurora stays the class default
+    date: 2026-11-05   # LMNT's page ("LMNT has shut down") gives no date: the day this entry was written
+    effect: shutdown
+    replacement: null
+    source_url: https://docs.lmnt.com/
+    read_at: 2026-11-05
+  - provider: groq
+    kind: llm
+    model_or_feature: llama-3.3-70b-versatile
+    date: 2026-08-16
+    effect: shutdown
+    note: free and developer tiers only, committed-spend enterprise orgs keep it
+    replacement: openai/gpt-oss-120b   # the vendor page also names qwen/qwen3.6-27b
+    source_url: https://console.groq.com/docs/deprecations
+    read_at: 2026-11-05
