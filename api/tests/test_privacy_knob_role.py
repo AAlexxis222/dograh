@@ -93,7 +93,7 @@ def stubs():
     sync.broadcast = AsyncMock()
     with (
         patch("api.routes.organization.db_client", db),
-        patch("api.services.auth.depends.db_client", auth_db),
+        patch("api.services.auth.privacy_operator.db_client", auth_db),
         patch(
             "api.routes.organization.upsert_organization_workflow_configuration_defaults",
             upsert_defaults,

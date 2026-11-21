@@ -56,12 +56,11 @@ from api.schemas.telephony_phone_number import (
     ProviderSyncStatus,
 )
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
-from api.services.auth.depends import (
+from api.services.auth.depends import get_user, get_user_with_selected_organization
+from api.services.auth.privacy_operator import (
     PrivacyTarget,
     get_privacy_operator,
     get_privacy_read_organization,
-    get_user,
-    get_user_with_selected_organization,
 )
 from api.services.configuration.ai_model_configuration import (
     check_for_masked_keys_in_ai_model_configuration_v2,
