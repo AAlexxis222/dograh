@@ -25,6 +25,7 @@
     "scripts/xpand/require_db_head.sh",
     "api/services/runtime/cell_startup.py",
     "api/services/runtime/cell_state.py",
+    "api/services/runtime/durations.py",
     "api/services/security/credential_documents.py",
     "api/services/security/secret_walk.py",
     "api/db/credentials_at_rest.py",
