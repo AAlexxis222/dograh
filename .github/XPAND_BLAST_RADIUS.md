@@ -8,6 +8,8 @@ Importer count is NOT the only axis. In this repo the deciding question is: **is
 
 ## Trunk
 
+`review-profile.json` `risk_paths` is the machine copy of this table, read by the review tool at every PR base: change both in the same commit.
+
 | Path | Why |
 |---|---|
 | `pipecat/` (submodule → dograh-hq/pipecat) | every call runs through it; a bump is a dependency upgrade of the whole media path |
@@ -16,6 +18,7 @@ Importer count is NOT the only axis. In this repo the deciding question is: **is
 | `api/services/pipecat/service_tuning_specs.py` | holds the build gates (`*_AVAILABLE`, l.886-1017) and is a G0 conflict file |
 | `api/db/models` (65) + `api/alembic/versions/` | schema; a migration is a **one-way door** (one head in the fork, `a7c2e9d41b06`; it becomes two heads against upstream at G0: VOZ-UNV-B9-06) |
 | `api/services/workflow/` (64), `telephony/` (56), `configuration/` (35), `auth/` (24), `api/utils` (49) | shared by most routes; telephony = real calls to real people |
+| `api/routes/telephony.py` | exposed telephony route (call webhooks and media websocket on top of `api/services/telephony/`): always high risk |
 | `docker-compose*.yaml`, `deploy/`, `nginx/`, `api/Dockerfile` | deploy and capacity (`max_conns`, grace periods) |
 | `.github/workflows/` | CI, release automation |
 | `scripts/xpand/call_entrypoint.sh`, `scripts/xpand/require_db_head.sh` | PID 1 of the `call` role, and the start gate of every cell role |
