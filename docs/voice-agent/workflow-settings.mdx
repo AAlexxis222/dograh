@@ -18,21 +18,23 @@ to the organization base reaches every workflow that never overrode that key.
 
 ## Organization defaults
 
-Three endpoints manage the organization base:
+These endpoints manage the organization base:
 
 | Method | Path | Returns |
 | --- | --- | --- |
-| `GET` | `/api/v1/organizations/workflow-configuration-defaults` | The stored sparse document (secrets masked) |
-| `PUT` | `/api/v1/organizations/workflow-configuration-defaults` | The document as stored |
+| `GET` | `/api/v1/organizations/workflow-configuration-defaults` | Your own organization's stored sparse document (secrets masked) |
+| `GET` | `/api/v1/organizations/{organization_id}/workflow-configuration-defaults` | The named organization's stored sparse document (secrets masked), XPAND operators only |
+| `PUT` | `/api/v1/organizations/{organization_id}/workflow-configuration-defaults` | The document as stored, XPAND operators only |
 | `GET` | `/api/v1/organizations/workflow-configuration-effective-defaults` | Schema defaults merged with the organization base, plus `warnings` |
 
-The `PUT` is XPAND-operator only and takes `organization_id`, the organization it writes
-(`PUT /api/v1/organizations/workflow-configuration-defaults?organization_id=<id>`). Anyone
-else gets `403` with `detail.code` `privacy_knob_forbidden`; an operator without a valid
-`organization_id` gets `422` (`privacy_target_organization_required`), and an id that names
-no organization gets `404` (`organization_not_found`). The `GET` of the stored document
-reads the caller's own organization; an operator can pass `organization_id` to read another
-one.
+Only an XPAND operator writes the organization base, and names the organization it writes in
+the path. Anyone else gets `403` with `detail.code` `privacy_knob_forbidden`; an operator
+whose organization id is not an integer gets `422` (`privacy_target_organization_required`),
+and an id that names no organization gets `404` (`organization_not_found`). The `PUT`
+without an organization in the path (`PUT /api/v1/organizations/workflow-configuration-defaults`)
+never writes: it answers `403` to anyone but an operator and `422`
+(`privacy_target_organization_required`) to an operator, with a hint naming the route above.
+An `organization_id` query parameter is not read on any of these routes.
 
 The `PUT` stores only the keys present in the request body. A key sent as `null` at the root
 of the document means "unset": it is dropped, and workflows fall back to the schema default.

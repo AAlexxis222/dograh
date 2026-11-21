@@ -1,28 +1,34 @@
 """Gate for organization settings that carry privacy weight: workflow
 configuration defaults and Langfuse credentials (VOZ-AC-B0-29).
 
+The operator names the target organization in the path
+(/organizations/{organization_id}/...). The routes without an organization in
+the path never write: the previous version of the API served them, ignored an
+organization_id query parameter and wrote the caller's own organization, so a
+write sent there during a rolling deploy or after a rollback could land on the
+wrong organization. On the new routes a previous-version pod answers 404.
+
 Fork-only policy, kept out of the shared auth module (depends.py) so upstream
 syncs and the future organization role model (VOZ-FU-N0-31-org-roles) touch it
 in one place.
 """
 
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, NoReturn
 
-from fastapi import Depends, HTTPException, Query, Request
+from fastapi import Depends, HTTPException, Path, Request
 
 from api.db import db_client
 from api.db.models import UserModel
 from api.errors.knob_refusal import KnobRefusal
-from api.services.auth.depends import get_user, get_user_with_selected_organization
+from api.services.auth.depends import get_user
 
 # organizations.id is a 32-bit Integer column: a larger id names nothing, and
 # Postgres would refuse it as a parameter instead of returning no row.
 _MAX_ORGANIZATION_ID = 2**31 - 1
 
-_TARGET_ORGANIZATION_QUERY = Query(
-    description="Target organization. XPAND operators only: required on writes; "
-    "on reads, omit it to read your own organization."
+_TARGET_ORGANIZATION_PATH = Path(
+    description="Id of the organization the XPAND operator acts on."
 )
 
 
@@ -48,15 +54,10 @@ def _privacy_refusal(
     )
 
 
-async def _resolve_target_organization(
-    request: Request, user: UserModel, organization_id: str | None, hint: str
-) -> int:
+def _require_operator(request: Request, user: UserModel, hint: str) -> None:
     """There is no organization role model yet, so the operator is an XPAND
     superuser; real organization roles arrive with the control plane
-    (VOZ-FU-N0-31-org-roles). The operator names the organization explicitly:
-    their own selected organization is never used, because under local auth
-    nothing switches it to a client's.
-    """
+    (VOZ-FU-N0-31-org-roles)."""
     if not user.is_superuser:
         raise _privacy_refusal(
             403,
@@ -67,17 +68,25 @@ async def _resolve_target_organization(
             "for a named organization",
             hint=hint,
         )
+
+
+async def _resolve_target_organization(
+    request: Request, user: UserModel, organization_id: str, hint: str
+) -> int:
+    """The operator names the organization explicitly: their own selected
+    organization is never used, because under local auth nothing switches it
+    to a client's."""
+    _require_operator(request, user, hint)
     # Parsed here, not by FastAPI, so a client's malformed value stays a 403.
-    if not (
-        organization_id and organization_id.isascii() and organization_id.isdigit()
-    ):
+    if not (organization_id.isascii() and organization_id.isdigit()):
         raise _privacy_refusal(
             422,
             "privacy_target_organization_required",
             request,
             reason="an XPAND operator acts on an explicit organization, and "
-            "organization_id is missing or not an integer",
-            hint="pass the target organization's id as organization_id",
+            "the organization id in the path is not an integer",
+            hint="put the target organization's numeric id in the path, "
+            "/organizations/{organization_id}/...",
         )
     digits = organization_id.lstrip("0") or "0"
     # Length first: int() refuses strings past its digit limit with an error.
@@ -89,7 +98,7 @@ async def _resolve_target_organization(
             404,
             "organization_not_found",
             request,
-            reason="organization_id names no organization",
+            reason="the organization id in the path names no organization",
             hint="check the id of the organization you mean to act on",
         )
     return target
@@ -97,8 +106,8 @@ async def _resolve_target_organization(
 
 async def get_privacy_operator(
     request: Request,
+    organization_id: Annotated[str, _TARGET_ORGANIZATION_PATH],
     user: Annotated[UserModel, Depends(get_user)],
-    organization_id: Annotated[str | None, _TARGET_ORGANIZATION_QUERY] = None,
 ) -> PrivacyTarget:
     """Writes of the privacy settings: an XPAND operator on a named organization."""
     target = await _resolve_target_organization(
@@ -109,19 +118,35 @@ async def get_privacy_operator(
 
 async def get_privacy_read_organization(
     request: Request,
+    organization_id: Annotated[str, _TARGET_ORGANIZATION_PATH],
     user: Annotated[UserModel, Depends(get_user)],
-    organization_id: Annotated[str | None, _TARGET_ORGANIZATION_QUERY] = None,
 ) -> int:
-    """Reads of the privacy settings: the caller's own organization, as before,
-    or, for an XPAND operator only, the organization named by organization_id."""
-    if organization_id is None:
-        return (
-            await get_user_with_selected_organization(user)
-        ).selected_organization_id
+    """Reads of the privacy settings of a named organization: XPAND operators
+    only. Everyone reads their own organization on the routes without an
+    organization in the path."""
     return await _resolve_target_organization(
         request,
         user,
         organization_id,
-        hint="omit organization_id to read your own organization's settings, "
-        "or ask an XPAND operator",
+        hint="read your own organization's settings on the route without an "
+        "organization in the path, or ask an XPAND operator",
+    )
+
+
+async def refuse_untargeted_privacy_write(
+    request: Request,
+    user: Annotated[UserModel, Depends(get_user)],
+) -> NoReturn:
+    """The writes without an organization in the path never write: a
+    previous-version pod takes the same request as a write on the operator's
+    own organization, so here it must not mean anything either."""
+    _require_operator(request, user, hint="ask an XPAND operator to make this change")
+    collection, setting = request.url.path.rsplit("/", 1)
+    raise _privacy_refusal(
+        422,
+        "privacy_target_organization_required",
+        request,
+        reason="an XPAND operator names the target organization in the path, "
+        "and this route takes none, so it never writes",
+        hint=f"use {request.method} {collection}/{{organization_id}}/{setting}",
     )

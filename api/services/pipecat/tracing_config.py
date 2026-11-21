@@ -221,8 +221,8 @@ def ensure_tracing() -> bool:
             "langfuse_env_credentials_ignored: LANGFUSE_PUBLIC_KEY/"
             "LANGFUSE_SECRET_KEY are set but export no traces; reason: Langfuse "
             "is per-org opt-in; hint: an XPAND operator registers the org's own "
-            "credentials with POST /organizations/langfuse-credentials?"
-            "organization_id=<org id> (operator-only)"
+            "credentials with POST /organizations/<org id>/langfuse-credentials "
+            "(operator-only)"
         )
 
     _org_routing_exporter = _OrgRoutingExporter(default_exporter=None)
