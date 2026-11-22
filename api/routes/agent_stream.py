@@ -26,8 +26,8 @@ from api.services.call_concurrency import (
 from api.services.quota_service import authorize_workflow_run_start
 from api.services.telephony import registry as telephony_registry
 from api.services.telephony.carrier_policy import (
-    UNVERIFIED_CARRIERS,
     CarrierDisabledError,
+    refuse_disabled_carrier,
 )
 from api.services.workflow.run_creation import prepare_workflow_run_inputs
 from api.services.workflow_run_failure import mark_workflow_run_failed
@@ -39,8 +39,10 @@ def _refusal(provider_name: str, spec) -> str | None:
     """The 1008 close reason for a provider the agent stream does not serve, or None."""
     if spec is None:
         return f"Unknown provider: {provider_name}"
-    if provider_name in UNVERIFIED_CARRIERS:
-        return str(CarrierDisabledError(provider_name))
+    try:
+        refuse_disabled_carrier(provider_name)
+    except CarrierDisabledError as e:
+        return e.code
     return None
 
 
