@@ -38,6 +38,9 @@ if TYPE_CHECKING:
 # router. The route decorator and the URL builder below both use it.
 CONNECT_ACTION_ROUTE = "/twilio/connect-action"
 
+# The voice of every Spanish Twilio Say verb: the default voice ("man") does not list es-ES and "alice" is retired.
+TWILIO_CALLER_VOICE = "Polly.Lucia"
+
 
 def _xml_attr(value: str) -> str:
     return escape(value, {'"': "&quot;"})
@@ -652,7 +655,6 @@ class TwilioProvider(TelephonyProvider):
 
         from api.errors.telephony_errors import (
             CALLER_LANGUAGE,
-            TWILIO_CALLER_VOICE,
             log_and_get_caller_text,
         )
 
@@ -710,7 +712,6 @@ class TwilioProvider(TelephonyProvider):
         from api.errors.telephony_errors import (
             CALLER_LANGUAGE,
             TRANSFER_GREETING_ES,
-            TWILIO_CALLER_VOICE,
         )
 
         # Inline TwiML: when the destination answers, put them into the conference

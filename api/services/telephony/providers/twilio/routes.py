@@ -16,7 +16,6 @@ from api.enums import WorkflowRunState
 from api.errors.telephony_errors import (
     CALL_NOT_ATTENDED_MESSAGE_ES,
     CALLER_LANGUAGE,
-    TWILIO_CALLER_VOICE,
 )
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
@@ -31,6 +30,7 @@ from api.services.telephony.providers.twilio.introduction import (
 )
 from api.services.telephony.providers.twilio.provider import (
     CONNECT_ACTION_ROUTE,
+    TWILIO_CALLER_VOICE,
     TwilioProvider,
 )
 from api.services.telephony.status_processor import (
