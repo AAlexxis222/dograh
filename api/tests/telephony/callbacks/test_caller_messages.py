@@ -235,7 +235,7 @@ AUDIBLE_TEXTS = set(CALLER_MESSAGES_ES.values()) | {
 
 AUDIBLE_PRODUCERS = (
     "caller_message_es(",
-    "caller_error_text(",
+    "log_and_get_caller_text(",
     "UNAVAILABLE_MESSAGE_ES",
     "TRANSFER_GREETING_ES",
     "CALL_NOT_ATTENDED_MESSAGE_ES",

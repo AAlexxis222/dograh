@@ -556,11 +556,11 @@ class PlivoProvider(TelephonyProvider):
     def generate_error_response(error_type: str, message: str) -> tuple:
         from fastapi import Response
 
-        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_error_text
+        from api.errors.telephony_errors import CALLER_LANGUAGE, log_and_get_caller_text
 
         plivo_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Speak language="{CALLER_LANGUAGE}">{caller_error_text(error_type, message, provider=PlivoProvider.PROVIDER_NAME)}</Speak>
+    <Speak language="{CALLER_LANGUAGE}">{log_and_get_caller_text(error_type, message, provider=PlivoProvider.PROVIDER_NAME)}</Speak>
     <Hangup/>
 </Response>"""
         return Response(content=plivo_xml, media_type="application/xml")

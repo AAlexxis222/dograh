@@ -779,12 +779,12 @@ class VonageProvider(TelephonyProvider):
         """
         from fastapi import Response
 
-        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_error_text
+        from api.errors.telephony_errors import CALLER_LANGUAGE, log_and_get_caller_text
 
         error_ncco = [
             {
                 "action": "talk",
-                "text": caller_error_text(
+                "text": log_and_get_caller_text(
                     error_type, message, provider=VonageProvider.PROVIDER_NAME
                 ),
                 "language": CALLER_LANGUAGE,

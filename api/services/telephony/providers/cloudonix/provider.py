@@ -1351,11 +1351,11 @@ class CloudonixProvider(TelephonyProvider):
         """
         from fastapi import Response
 
-        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_error_text
+        from api.errors.telephony_errors import CALLER_LANGUAGE, log_and_get_caller_text
 
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say language="{CALLER_LANGUAGE}">{caller_error_text(error_type, message, provider=CloudonixProvider.PROVIDER_NAME)}</Say>
+    <Say language="{CALLER_LANGUAGE}">{log_and_get_caller_text(error_type, message, provider=CloudonixProvider.PROVIDER_NAME)}</Say>
     <Hangup/>
 </Response>"""
 

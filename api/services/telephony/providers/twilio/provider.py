@@ -653,12 +653,12 @@ class TwilioProvider(TelephonyProvider):
         from api.errors.telephony_errors import (
             CALLER_LANGUAGE,
             TWILIO_CALLER_VOICE,
-            caller_error_text,
+            log_and_get_caller_text,
         )
 
         twiml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="{TWILIO_CALLER_VOICE}" language="{CALLER_LANGUAGE}">{caller_error_text(error_type, message, provider=TwilioProvider.PROVIDER_NAME)}</Say>
+    <Say voice="{TWILIO_CALLER_VOICE}" language="{CALLER_LANGUAGE}">{log_and_get_caller_text(error_type, message, provider=TwilioProvider.PROVIDER_NAME)}</Say>
     <Hangup/>
 </Response>"""
 

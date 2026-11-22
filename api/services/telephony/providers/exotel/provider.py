@@ -666,11 +666,11 @@ class ExotelProvider(TelephonyProvider):
 
     @staticmethod
     def generate_error_response(error_type: str, message: str):
-        from api.errors.telephony_errors import caller_error_text
+        from api.errors.telephony_errors import log_and_get_caller_text
 
         xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>{caller_error_text(error_type, message, provider=ExotelProvider.PROVIDER_NAME)}</Say>
+    <Say>{log_and_get_caller_text(error_type, message, provider=ExotelProvider.PROVIDER_NAME)}</Say>
     <Hangup/>
 </Response>"""
         return Response(content=xml, media_type="application/xml")

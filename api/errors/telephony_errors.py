@@ -80,8 +80,9 @@ def caller_message_es(error) -> str:
         return UNAVAILABLE_MESSAGE_ES
 
 
-def caller_error_text(error_type, message: str, *, provider: str) -> str:
-    """What the caller hears from ``provider``'s ``generate_error_response``: ``caller_message_es(error_type)``.
+def log_and_get_caller_text(error_type, message: str, *, provider: str) -> str:
+    """Log ``message`` as a warning, then return what the caller hears from ``provider``'s
+    ``generate_error_response``: ``caller_message_es(error_type)``.
 
     ``message`` is the operator-facing text of the same error: logged with ``error_type`` and ``provider``, never
     spoken. Callers pass fixed operator text, never caller data.
