@@ -13,6 +13,9 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_core import PydanticCustomError
+
+from api.errors.knob_refusal import KnobRefusal
 
 
 class ProviderTuning(BaseModel):
@@ -49,6 +52,32 @@ class ServiceTuning(BaseModel):
         from api.services.pipecat.service_tuning_specs import validate_service_tuning
 
         errors = validate_service_tuning(self.model_dump(exclude_unset=True))
-        if errors:
-            raise ValueError("; ".join(errors))
-        return self
+        refusal = next((e for e in errors if isinstance(e, KnobRefusal)), None)
+        if refusal is None:
+            if errors:
+                raise ValueError("; ".join(errors))
+            return self
+        # The named 422 (B0-28): the first refusal's ``code`` is the error
+        # type and its text leads the message, followed by every other error.
+        template = _REFUSAL_TEMPLATE
+        context = {
+            "where": refusal.where,
+            "reason": refusal.reason,
+            "hint": refusal.hint,
+        }
+        others = [_message(e) for e in errors if e is not refusal]
+        if others:
+            template += "; {others}"
+            context["others"] = "; ".join(others)
+        raise PydanticCustomError(refusal.code, template, context)
+
+
+_REFUSAL_TEMPLATE = "{where}: {reason} (hint: {hint})"
+
+
+def _message(error: str | KnobRefusal) -> str:
+    if isinstance(error, KnobRefusal):
+        return _REFUSAL_TEMPLATE.format(
+            where=error.where, reason=error.reason, hint=error.hint
+        )
+    return error

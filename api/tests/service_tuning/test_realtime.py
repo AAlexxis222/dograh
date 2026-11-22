@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
+from loguru import logger
 from pipecat.services.settings import NOT_GIVEN
 
 from api.services.pipecat.service_factory import (
@@ -71,19 +72,61 @@ def test_openai_realtime_noise_reduction_speed_reasoning_and_max_output_tokens()
     assert sp.audio.input.turn_detection is None
 
 
-def test_grok_realtime_language_hint():
+def _grok_session(settings=None):
+    tuning = (
+        {"realtime": {"grok_realtime": {"settings": settings}}} if settings else None
+    )
     with patch(
         "api.services.pipecat.service_factory.DograhGrokRealtimeLLMService"
     ) as cls:
         create_realtime_llm_service(
             _rt("grok_realtime", model="grok-realtime"),
             audio_config(),
-            tuning={
-                "realtime": {"grok_realtime": {"settings": {"language_hint": "es"}}}
-            },
+            tuning=tuning,
         )
-    sp = cls.call_args.kwargs["settings"].session_properties
-    assert sp.audio.input.transcription.language_hint == "es"
+    return cls.call_args.kwargs["settings"].session_properties
+
+
+@pytest.mark.parametrize(
+    "stored, sent", [("es", "es-ES"), ("es-ES", "es-ES"), ("es-MX", "es-MX")]
+)
+def test_grok_realtime_language_hint_es_is_sent_as_es_es(stored, sent):
+    sp = _grok_session({"language_hint": stored})
+    assert sp.audio.input.transcription.language_hint == sent
+
+
+@pytest.fixture
+def warnings():
+    records = []
+    sink = logger.add(lambda m: records.append(m.record["message"]), level="WARNING")
+    yield records
+    logger.remove(sink)
+
+
+@pytest.mark.parametrize("stored", ["en-US", "es-es", "", 5, ["es"], "x" * 500])
+def test_grok_realtime_language_hint_outside_the_set_is_dropped_at_build(
+    stored, warnings
+):
+    # A document stored before the PUT check existed (any value, even one that
+    # is not a string) keeps placing calls: the session gets the hint an
+    # untuned run gets, and the drop is the one logged trace.
+    sent = _grok_session({"language_hint": stored}).audio.input.transcription
+    untuned = _grok_session().audio.input.transcription
+    assert sent.language_hint is None
+    assert sent.model_dump(exclude_none=True) == untuned.model_dump(exclude_none=True)
+    (line,) = [w for w in warnings if w.startswith("service_tuning:")]
+    assert "realtime.grok_realtime.settings.language_hint" in line
+    assert repr(stored)[:10] in line
+    # A tenant string: logged with a cap, never whole.
+    assert len(line) < 300
+
+
+@pytest.mark.parametrize("settings", [None, {"language_hint": "es"}])
+def test_grok_realtime_transcription_model_is_grok_transcribe(settings):
+    # Regression: grok-transcribe is pipecat's default (xai/realtime/events.py:118),
+    # so it cannot go red until pipecat changes it; xAI emits no user transcript
+    # events without it.
+    assert _grok_session(settings).audio.input.transcription.model == "grok-transcribe"
 
 
 def test_gemini_live_thinking_and_affective_dialog():
