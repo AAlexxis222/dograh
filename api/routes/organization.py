@@ -2,6 +2,7 @@ from copy import deepcopy
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.openapi.constants import REF_PREFIX
 from loguru import logger
 from pydantic import BaseModel, Field, ValidationError
 
@@ -56,9 +57,12 @@ from api.schemas.telephony_phone_number import (
     ProviderSyncStatus,
 )
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
-from api.services.auth.depends import (
-    get_user,
-    get_user_with_selected_organization,
+from api.services.auth.depends import get_user, get_user_with_selected_organization
+from api.services.auth.privacy_operator import (
+    PrivacyTarget,
+    get_privacy_operator,
+    get_privacy_read_organization,
+    refuse_untargeted_privacy_write,
 )
 from api.services.configuration.ai_model_configuration import (
     check_for_masked_keys_in_ai_model_configuration_v2,
@@ -133,6 +137,46 @@ from api.utils.common import get_backend_endpoints
 from api.utils.telephony_address import normalize_telephony_address
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
+
+# Settings that carry privacy weight: read and written by an XPAND operator on
+# the organization named in the path, /organizations/{organization_id}/...
+# (get_privacy_operator, get_privacy_read_organization). The writes without an
+# organization in the path never write (refuse_untargeted_privacy_write).
+#
+# These entries add the B0-28 refusals to the published responses without
+# replacing the framework's: the 422 keeps FastAPI's validation schema, which
+# is what a body that fails validation gets.
+_FORBIDDEN = {
+    "description": "Not an XPAND operator: {detail: {code: "
+    "privacy_knob_forbidden, where, reason, hint}}"
+}
+_VALIDATION_SCHEMA = {
+    "application/json": {"schema": {"$ref": f"{REF_PREFIX}HTTPValidationError"}}
+}
+_OPERATOR_ONLY = {
+    403: _FORBIDDEN,
+    404: {
+        "description": "Among other 404s, which carry a string detail: the "
+        "organization id in the path names no organization, {detail: {code: "
+        "organization_not_found, where, reason, hint}}"
+    },
+    422: {
+        "description": "Validation Error, or, for an XPAND operator whose "
+        "organization id in the path is not an integer, {detail: {code: "
+        "privacy_target_organization_required, where, reason, hint}}",
+        "content": _VALIDATION_SCHEMA,
+    },
+}
+_UNTARGETED_WRITE = {
+    403: _FORBIDDEN,
+    422: {
+        "description": "Validation Error, or, for every XPAND operator (this "
+        "route never writes), {detail: {code: "
+        "privacy_target_organization_required, where, reason, hint}} whose "
+        "hint names the route with the organization in the path",
+        "content": _VALIDATION_SCHEMA,
+    },
+}
 
 
 def _sensitive_fields(provider_name: str) -> List[str]:
@@ -715,14 +759,44 @@ async def get_workflow_configuration_defaults(
 @router.put(
     "/workflow-configuration-defaults",
     response_model=OrganizationWorkflowConfigurationDefaultsResponse,
+    responses=_UNTARGETED_WRITE,
+    dependencies=[Depends(refuse_untargeted_privacy_write)],
 )
 async def save_workflow_configuration_defaults(
     request: WorkflowConfigurationDefaults,
-    user: UserModel = Depends(get_user_with_selected_organization),
+):
+    """Never writes: XPAND operators use
+    PUT /organizations/{organization_id}/workflow-configuration-defaults.
+    The body stays declared so the published contract of this route does not
+    change; the dependency refuses before it is read."""
+
+
+@router.get(
+    "/{organization_id}/workflow-configuration-defaults",
+    response_model=OrganizationWorkflowConfigurationDefaultsResponse,
+    responses=_OPERATOR_ONLY,
+)
+async def get_workflow_configuration_defaults_for_organization(
+    organization_id: int = Depends(get_privacy_read_organization),
+):
+    stored = await get_organization_workflow_configuration_defaults(organization_id)
+    return {"workflow_configurations": stored}
+
+
+@router.put(
+    "/{organization_id}/workflow-configuration-defaults",
+    response_model=OrganizationWorkflowConfigurationDefaultsResponse,
+    responses=_OPERATOR_ONLY,
+)
+async def save_workflow_configuration_defaults_for_organization(
+    request: WorkflowConfigurationDefaults,
+    target: PrivacyTarget = Depends(get_privacy_operator),
 ):
     try:
         stored = await upsert_organization_workflow_configuration_defaults(
-            user.selected_organization_id, user_id=user.id, configurations=request
+            target.organization_id,
+            user_id=target.operator_id,
+            configurations=request,
         )
     except OrganizationWorkflowConfigurationRejected as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -743,12 +817,12 @@ async def get_workflow_configuration_effective_defaults(
         validated = WorkflowConfigurationDefaults.model_validate(resolved.effective)
     except ValidationError as exc:
         # A document stored before a schema change, or written around the PUT.
-        # The organization can still repair it, so this is the caller's error.
+        # Only an XPAND operator can write it again (the PUT is operator-only).
         raise HTTPException(
             status_code=422,
             detail=(
                 "stored organization defaults no longer validate against the "
-                "current schema; fix them via PUT"
+                "current schema; an XPAND operator must save the defaults again"
             ),
         ) from exc
     payload = build_default_configurations_response(validated)
@@ -1745,8 +1819,48 @@ async def get_langfuse_credentials(user: UserModel = Depends(get_user)):
     if not user.selected_organization_id:
         raise HTTPException(status_code=400, detail="No organization selected")
 
+    return await _masked_langfuse_credentials(user.selected_organization_id)
+
+
+@router.post(
+    "/langfuse-credentials",
+    responses=_UNTARGETED_WRITE,
+    dependencies=[Depends(refuse_untargeted_privacy_write)],
+)
+async def save_langfuse_credentials(request: LangfuseCredentialsRequest):
+    """Never writes: XPAND operators use
+    POST /organizations/{organization_id}/langfuse-credentials.
+    The body stays declared so the published contract of this route does not
+    change; the dependency refuses before it is read."""
+
+
+@router.delete(
+    "/langfuse-credentials",
+    responses=_UNTARGETED_WRITE,
+    dependencies=[Depends(refuse_untargeted_privacy_write)],
+)
+async def delete_langfuse_credentials():
+    """Never deletes: XPAND operators use
+    DELETE /organizations/{organization_id}/langfuse-credentials."""
+
+
+@router.get(
+    "/{organization_id}/langfuse-credentials",
+    response_model=LangfuseCredentialsResponse,
+    responses=_OPERATOR_ONLY,
+)
+async def get_langfuse_credentials_for_organization(
+    organization_id: int = Depends(get_privacy_read_organization),
+):
+    """Get Langfuse credentials for the named organization with masked sensitive fields."""
+    return await _masked_langfuse_credentials(organization_id)
+
+
+async def _masked_langfuse_credentials(
+    organization_id: int,
+) -> LangfuseCredentialsResponse:
     config = await db_client.get_configuration(
-        user.selected_organization_id,
+        organization_id,
         OrganizationConfigurationKey.LANGFUSE_CREDENTIALS.value,
     )
 
@@ -1763,17 +1877,14 @@ async def get_langfuse_credentials(user: UserModel = Depends(get_user)):
     )
 
 
-@router.post("/langfuse-credentials")
-async def save_langfuse_credentials(
+@router.post("/{organization_id}/langfuse-credentials", responses=_OPERATOR_ONLY)
+async def save_langfuse_credentials_for_organization(
     request: LangfuseCredentialsRequest,
-    user: UserModel = Depends(get_user),
+    target: PrivacyTarget = Depends(get_privacy_operator),
 ):
-    """Save Langfuse credentials for the user's organization."""
-    if not user.selected_organization_id:
-        raise HTTPException(status_code=400, detail="No organization selected")
-
+    """Save Langfuse credentials for the target organization. XPAND operators only."""
     existing_config = await db_client.get_configuration(
-        user.selected_organization_id,
+        target.organization_id,
         OrganizationConfigurationKey.LANGFUSE_CREDENTIALS.value,
     )
 
@@ -1793,42 +1904,54 @@ async def save_langfuse_credentials(
             config_value["secret_key"] = existing_config.value["secret_key"]
 
     await db_client.upsert_configuration(
-        user.selected_organization_id,
+        target.organization_id,
         OrganizationConfigurationKey.LANGFUSE_CREDENTIALS.value,
         config_value,
+    )
+
+    # Audit trail: who changed where call traces go. Never the key values.
+    # Logged before the broadcast, which can fail after the write committed.
+    logger.info(
+        "organization {} langfuse credentials saved by user {}",
+        target.organization_id,
+        target.operator_id,
     )
 
     # Broadcast to all workers so every process updates its in-memory exporter
     await get_worker_sync_manager().broadcast(
         WorkerSyncEventType.LANGFUSE_CREDENTIALS,
         action="update",
-        org_id=user.selected_organization_id,
+        org_id=target.organization_id,
     )
-
     return {"message": "Langfuse credentials saved successfully"}
 
 
-@router.delete("/langfuse-credentials")
-async def delete_langfuse_credentials(user: UserModel = Depends(get_user)):
-    """Delete Langfuse credentials for the user's organization."""
-    if not user.selected_organization_id:
-        raise HTTPException(status_code=400, detail="No organization selected")
-
+@router.delete("/{organization_id}/langfuse-credentials", responses=_OPERATOR_ONLY)
+async def delete_langfuse_credentials_for_organization(
+    target: PrivacyTarget = Depends(get_privacy_operator),
+):
+    """Delete Langfuse credentials for the target organization. XPAND operators only."""
     deleted = await db_client.delete_configuration(
-        user.selected_organization_id,
+        target.organization_id,
         OrganizationConfigurationKey.LANGFUSE_CREDENTIALS.value,
     )
 
     if not deleted:
         raise HTTPException(status_code=404, detail="No Langfuse credentials found")
 
+    # Logged before the broadcast, which can fail after the delete committed.
+    logger.info(
+        "organization {} langfuse credentials deleted by user {}",
+        target.organization_id,
+        target.operator_id,
+    )
+
     # Broadcast to all workers so every process removes its in-memory exporter
     await get_worker_sync_manager().broadcast(
         WorkerSyncEventType.LANGFUSE_CREDENTIALS,
         action="delete",
-        org_id=user.selected_organization_id,
+        org_id=target.organization_id,
     )
-
     return {"message": "Langfuse credentials deleted successfully"}
 
 

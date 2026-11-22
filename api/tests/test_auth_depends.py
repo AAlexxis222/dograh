@@ -310,6 +310,52 @@ async def test_oss_auth_rejects_unknown_user(monkeypatch):
     bootstrap.assert_not_awaited()
 
 
+# What the client sends in X-API-Key; validate_api_key is stubbed, so any text.
+_X_API_KEY_HEADER = "placeholder"
+
+
+def _patch_api_key_auth(monkeypatch, *, creator, key_organization_id):
+    key_model = SimpleNamespace(
+        created_by=creator.id, organization_id=key_organization_id, key_prefix="p"
+    )
+    monkeypatch.setattr(
+        auth_depends.db_client, "validate_api_key", AsyncMock(return_value=key_model)
+    )
+    monkeypatch.setattr(
+        auth_depends.db_client, "get_user_by_id", AsyncMock(return_value=creator)
+    )
+
+
+@pytest.mark.asyncio
+async def test_api_key_never_carries_superuser_rights(monkeypatch):
+    """A key an XPAND operator minted in a client org ends up with the client:
+    whoever holds it must not inherit the operator's superuser rights."""
+    creator = SimpleNamespace(id=7, selected_organization_id=1, is_superuser=True)
+    _patch_api_key_auth(monkeypatch, creator=creator, key_organization_id=42)
+
+    user = await auth_depends.get_user(x_api_key=_X_API_KEY_HEADER)
+
+    assert user.is_superuser is False
+    assert user.selected_organization_id == 42
+    with pytest.raises(HTTPException) as exc_info:
+        await auth_depends.get_superuser(x_api_key=_X_API_KEY_HEADER)
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_session_superuser_keeps_superuser_rights(monkeypatch):
+    user = SimpleNamespace(
+        id=7, provider_id="oss-user-1", selected_organization_id=None, is_superuser=True
+    )
+    _patch_oss_auth_dependencies(
+        monkeypatch, user=user, bootstrap=AsyncMock(return_value=True)
+    )
+
+    result = await auth_depends.get_superuser(authorization="Bearer token")
+
+    assert result.is_superuser is True
+
+
 def test_associate_user_with_posthog_org_supports_backfill_arguments(monkeypatch):
     user = SimpleNamespace(
         id=7,
