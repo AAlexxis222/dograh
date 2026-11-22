@@ -665,18 +665,6 @@ class ExotelProvider(TelephonyProvider):
         return JSONResponse({"url": websocket_url})
 
     @staticmethod
-    def generate_validation_error_response(error_type) -> Response:
-        """TwiML/ExoML hangup used when inbound route/auth validation fails."""
-        from api.errors.telephony_errors import caller_message_es
-
-        xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say>{caller_message_es(error_type)}</Say>
-    <Hangup/>
-</Response>"""
-        return Response(content=xml, media_type="application/xml")
-
-    @staticmethod
     def generate_error_response(error_type: str, message: str):
         from api.errors.telephony_errors import caller_error_text
 

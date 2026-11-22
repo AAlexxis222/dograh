@@ -762,23 +762,6 @@ class VobizProvider(TelephonyProvider):
 
         return Response(content=vobiz_xml, media_type="application/xml")
 
-    @staticmethod
-    def generate_validation_error_response(error_type) -> tuple:
-        """
-        Generate Vobiz-specific error response for validation failures with organizational debugging info.
-        """
-        from fastapi import Response
-
-        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_message_es
-
-        vobiz_xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Speak voice="WOMAN" language="{CALLER_LANGUAGE}">{caller_message_es(error_type)}</Speak>
-    <Hangup/>
-</Response>"""
-
-        return Response(content=vobiz_xml_content, media_type="application/xml")
-
     # ======== CALL TRANSFER METHODS ========
 
     async def transfer_call(

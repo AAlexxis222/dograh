@@ -664,27 +664,6 @@ class TwilioProvider(TelephonyProvider):
 
         return Response(content=twiml_content, media_type="application/xml")
 
-    @staticmethod
-    def generate_validation_error_response(error_type) -> tuple:
-        """
-        Generate Twilio-specific error response for validation failures with organizational debugging info.
-        """
-        from fastapi import Response
-
-        from api.errors.telephony_errors import (
-            CALLER_LANGUAGE,
-            TWILIO_CALLER_VOICE,
-            caller_message_es,
-        )
-
-        twiml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say voice="{TWILIO_CALLER_VOICE}" language="{CALLER_LANGUAGE}">{caller_message_es(error_type)}</Say>
-    <Hangup/>
-</Response>"""
-
-        return Response(content=twiml_content, media_type="application/xml")
-
     # ======== CALL TRANSFER METHODS ========
 
     async def transfer_call(

@@ -565,19 +565,6 @@ class PlivoProvider(TelephonyProvider):
 </Response>"""
         return Response(content=plivo_xml, media_type="application/xml")
 
-    @staticmethod
-    def generate_validation_error_response(error_type) -> tuple:
-        from fastapi import Response
-
-        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_message_es
-
-        plivo_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Speak language="{CALLER_LANGUAGE}">{caller_message_es(error_type)}</Speak>
-    <Hangup/>
-</Response>"""
-        return Response(content=plivo_xml, media_type="application/xml")
-
     async def transfer_call(
         self,
         destination: str,
