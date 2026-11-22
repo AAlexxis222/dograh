@@ -6,8 +6,6 @@ Consolidated from split modules for easier maintenance.
 import uuid
 from typing import Optional
 
-import asyncpg.exceptions
-import sqlalchemy.exc
 from fastapi import (
     APIRouter,
     Depends,
@@ -41,6 +39,7 @@ from api.services.quota_service import authorize_workflow_run_start
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.callback_auth import (
+    CredentialStoreUnavailable,
     provider_for_inbound_webhook,
     rejected,
     verify_signature,
@@ -1057,28 +1056,6 @@ async def handle_inbound_run(request: Request):
         return generic_hangup_response()
 
 
-# What this stack (SQLAlchemy async + asyncpg) raises when Postgres is down, restarting, saturated or drops the
-# connection. OSError covers ConnectionError, ConnectionRefusedError and the builtin TimeoutError;
-# sqlalchemy.exc.TimeoutError is an exhausted pool.
-_LOOKUP_OUTAGE_ERRORS = (
-    OSError,
-    sqlalchemy.exc.TimeoutError,
-    sqlalchemy.exc.InterfaceError,
-    asyncpg.exceptions.PostgresConnectionError,
-    asyncpg.exceptions.CannotConnectNowError,
-    asyncpg.exceptions.TooManyConnectionsError,
-    asyncpg.exceptions.AdminShutdownError,
-)
-
-
-def _is_lookup_outage(exc: BaseException) -> bool:
-    """Whether a credential lookup failed because its store could not be reached, not because of the request: one
-    of _LOOKUP_OUTAGE_ERRORS, or a DBAPIError whose connection really closed."""
-    return isinstance(exc, _LOOKUP_OUTAGE_ERRORS) or (
-        isinstance(exc, sqlalchemy.exc.DBAPIError) and exc.connection_invalidated
-    )
-
-
 def _fallback_unavailable(provider_class):
     # The second argument is logged for the operator; the caller hears the Spanish table text.
     return provider_class.generate_error_response(
@@ -1113,13 +1090,8 @@ async def handle_inbound_fallback(request: Request):
             headers,
             where=where,
             find_route=_find_inbound_route,
-            is_outage=_is_lookup_outage,
         )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        if not _is_lookup_outage(exc):
-            raise
+    except CredentialStoreUnavailable:
         return _fallback_unavailable(provider_class)
     await verify_signature(
         provider,

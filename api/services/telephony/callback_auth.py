@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from loguru import logger
 
 from api.db import db_client
+from api.db.errors import is_store_unreachable
 from api.services.runtime.cell_state import is_cell
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
@@ -25,6 +26,15 @@ from api.utils.telephony_helper import normalize_webhook_data
 UNAUTHENTICATED = "carrier_callback_unauthenticated"
 DEFAULT_REASON = "the callback could not be authenticated against the telephony credentials of its organization"
 DEFAULT_HINT = "check that the carrier calls the URL this platform configured, and that the auth token or public key in the telephony configuration is the current one"
+
+
+class CredentialStoreUnavailable(Exception):
+    """The credential lookup of an inbound webhook could not reach its store (``is_store_unreachable``): the
+    request may be genuine, so the caller answers it instead of refusing it."""
+
+    def __init__(self, call_id):
+        self.call_id = call_id
+        super().__init__(f"credential store unavailable for call {call_id!r}")
 
 
 def rejected(
@@ -99,15 +109,15 @@ async def provider_for_inbound_webhook(
     *,
     where: str,
     find_route,
-    is_outage=lambda exc: False,
 ):
     """``(normalized_data, provider)``: the provider of the telephony configuration an inbound webhook belongs to,
     or a 401.
 
     The configuration is the inbound route ``find_route(provider_class, normalized_data)`` matches, never one the
     request names. Any failure to normalize the webhook, match a route or build the provider fails closed, except
-    an error of the route or configuration lookup that ``is_outage`` accepts (the store could not be reached): it
-    is logged with the call id and propagates unchanged, for the caller to answer.
+    an error of the route or configuration lookup that means the store could not be reached
+    (``is_store_unreachable``): it is logged with the call id and raised as ``CredentialStoreUnavailable``, for
+    the caller to answer.
     """
     try:
         normalized_data = normalize_webhook_data(provider_class, webhook_data, headers)
@@ -126,12 +136,12 @@ async def provider_for_inbound_webhook(
     except (
         Exception
     ) as exc:  # any other failure to resolve the credentials fails closed
-        if is_outage(exc):
+        if is_store_unreachable(exc):
             logger.warning(
                 f"inbound credential lookup unavailable: where={where!r} "
                 f"call_id={normalized_data.call_id!r} error={type(exc).__name__}"
             )
-            raise
+            raise CredentialStoreUnavailable(normalized_data.call_id) from exc
         raise rejected(
             where, why=f"credentials unavailable ({type(exc).__name__})"
         ) from exc
