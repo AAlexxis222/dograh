@@ -459,22 +459,14 @@ async def _validate_inbound_request(
     # Verify webhook signature using the matched config's credentials. The
     # provider extracts its own signature/timestamp/nonce headers from the
     # dict, so this dispatcher stays generic.
-    try:
-        provider_instance, refusal = await _verified_inbound_provider(
-            telephony_configuration_id,
-            organization_id,
-            webhook_url,
-            webhook_data,
-            headers,
-            raw_body,
-        )
-    except (
-        Exception
-    ) as e:  # a provider build or verifier that raises authenticates nothing
-        logger.warning(
-            f"Inbound webhook could not be verified (config {telephony_configuration_id}): {type(e).__name__}"
-        )
-        return False, TelephonyError.SIGNATURE_VALIDATION_FAILED, {}, None
+    provider_instance, refusal = await _verified_inbound_provider(
+        telephony_configuration_id,
+        organization_id,
+        webhook_url,
+        webhook_data,
+        headers,
+        raw_body,
+    )
     if refusal:
         return False, refusal, {}, None
 
@@ -499,18 +491,25 @@ async def _verified_inbound_provider(
     raw_body: str,
 ):
     """``(provider, None)`` when the matched config's provider verifies the inbound webhook, else
-    ``(None, refusal)``. A carrier disabled in ``carrier_policy`` is refused before it verifies anything.
+    ``(None, refusal)``. A carrier disabled in ``carrier_policy`` is refused before it verifies anything, and a
+    provider build or verifier that raises authenticates nothing.
     """
     try:
         provider = await get_telephony_provider_by_id(
             telephony_configuration_id, organization_id
         )
+        verified = await provider.verify_inbound_signature(
+            webhook_url, webhook_data, headers, raw_body
+        )
     except CarrierDisabledError as e:
         logger.warning(f"Inbound call refused: {e}")
         return None, TelephonyError.CARRIER_SIGNING_UNVERIFIED
-    if not await provider.verify_inbound_signature(
-        webhook_url, webhook_data, headers, raw_body
-    ):
+    except Exception as e:
+        logger.warning(
+            f"Inbound webhook could not be verified (config {telephony_configuration_id}): {type(e).__name__}"
+        )
+        return None, TelephonyError.SIGNATURE_VALIDATION_FAILED
+    if not verified:
         logger.warning(
             f"Inbound webhook signature did not verify (config {telephony_configuration_id})"
         )

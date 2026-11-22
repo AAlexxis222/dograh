@@ -826,6 +826,77 @@ async def test_inbound_run_rejects_when_concurrency_limit_reached(reason, expect
     mock_db.create_workflow_run.assert_not_awaited()
 
 
+@pytest.mark.parametrize("stage", ["build", "verify"])
+@pytest.mark.asyncio
+async def test_inbound_run_answers_a_raising_provider_with_the_signature_refusal(stage):
+    """A provider build or verifier that raises authenticates nothing: /inbound/run answers the
+    SIGNATURE_VALIDATION_FAILED document, as the legacy inbound route does, not the generic hangup."""
+    request = SimpleNamespace(headers={}, url="https://api.example.com/inbound/run")
+    provider_class = SimpleNamespace(
+        PROVIDER_NAME="twilio",
+        generate_validation_error_response=Mock(return_value="refusal-response"),
+    )
+    normalized_data = SimpleNamespace(
+        provider="twilio",
+        direction="inbound",
+        to_number="+15551230000",
+        from_number="+15557650000",
+        to_country="US",
+        from_country="US",
+        account_id="acct-1",
+        call_id="call-1",
+        raw_data={},
+    )
+    config = SimpleNamespace(
+        id=55,
+        organization_id=11,
+        name="Twilio",
+        credentials={"account_sid": "AC123"},
+    )
+    phone_row = SimpleNamespace(id=77, address="+15551230000", inbound_workflow_id=33)
+    workflow = SimpleNamespace(id=33, user_id=99)
+    provider_instance = SimpleNamespace(
+        verify_inbound_signature=AsyncMock(side_effect=RuntimeError("verifier broke"))
+    )
+    build = (
+        AsyncMock(side_effect=RuntimeError("config broke"))
+        if stage == "build"
+        else AsyncMock(return_value=provider_instance)
+    )
+
+    with (
+        patch(
+            "api.routes.telephony.parse_webhook_request",
+            new=AsyncMock(return_value=({}, "raw-body")),
+        ),
+        patch(
+            "api.routes.telephony._detect_provider",
+            new=AsyncMock(return_value=provider_class),
+        ),
+        patch(
+            "api.routes.telephony.normalize_webhook_data",
+            return_value=normalized_data,
+        ),
+        patch("api.routes.telephony.db_client") as mock_db,
+        patch("api.routes.telephony.get_telephony_provider_by_id", new=build),
+        patch("api.routes.telephony.call_concurrency") as mock_concurrency,
+    ):
+        mock_configuration_cascade(mock_db)
+        mock_db.find_inbound_route_by_account = AsyncMock(
+            return_value=(config, phone_row)
+        )
+        mock_db.get_workflow = AsyncMock(return_value=workflow)
+        mock_concurrency.acquire_org_slot = AsyncMock()
+
+        response = await handle_inbound_run(request)
+
+    assert response == "refusal-response"
+    provider_class.generate_validation_error_response.assert_called_once_with(
+        TelephonyError.SIGNATURE_VALIDATION_FAILED
+    )
+    mock_concurrency.acquire_org_slot.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_smallwebrtc_run_reaching_telephony_websocket_closes_without_running():
     websocket = AsyncMock()
