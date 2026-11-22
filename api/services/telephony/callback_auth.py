@@ -21,7 +21,7 @@ from api.services.telephony.factory import (
     get_telephony_provider_for_run,
 )
 from api.services.telephony.transfer_event_protocol import TransferContext
-from api.utils.telephony_helper import normalize_webhook_data
+from api.utils.telephony_helper import normalize_webhook_data, parse_webhook_request
 
 UNAUTHENTICATED = "carrier_callback_unauthenticated"
 DEFAULT_REASON = "the callback could not be authenticated against the telephony credentials of its organization"
@@ -64,6 +64,14 @@ def _unauthenticated(
         status_code=401,
         detail={"code": code, "where": where, "reason": reason, "hint": hint},
     )
+
+
+async def parse_webhook_or_reject(request, *, where: str) -> tuple[dict, str]:
+    """``(data, raw_body)`` of a webhook (``parse_webhook_request``), or the 401 for a body with no fields to read."""
+    try:
+        return await parse_webhook_request(request)
+    except ValueError:
+        raise rejected(where, why="no parseable body") from None
 
 
 async def provider_for_run(

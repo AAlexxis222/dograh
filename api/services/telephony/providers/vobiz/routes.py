@@ -14,7 +14,7 @@ from starlette.responses import HTMLResponse
 from api.db import db_client
 from api.services.telephony.callback_auth import (
     authenticate_answer_url,
-    rejected,
+    parse_webhook_or_reject,
 )
 from api.services.telephony.factory import (
     get_telephony_provider_for_run,
@@ -90,10 +90,7 @@ async def handle_vobiz_xml_webhook(
     """
     set_current_run_id(workflow_run_id)
     where = "POST /telephony/vobiz-xml"
-    try:
-        callback_data, raw_body = await parse_webhook_request(request)
-    except ValueError:
-        raise rejected(where, why="no parseable body") from None
+    callback_data, raw_body = await parse_webhook_or_reject(request, where=where)
     # The URL the platform gave Vobiz, as the sibling callbacks verify: behind a proxy or tunnel the scheme or
     # host this app sees in request.url differs from the public one Vobiz signed.
     backend_endpoint, _ = await get_backend_endpoints()

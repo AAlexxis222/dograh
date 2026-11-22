@@ -40,6 +40,7 @@ from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.callback_auth import (
     CredentialStoreUnavailable,
+    parse_webhook_or_reject,
     provider_for_inbound_webhook,
     rejected,
     verify_signature,
@@ -1074,10 +1075,7 @@ async def handle_inbound_fallback(request: Request):
     # and nothing is written. Neither the headers nor the body are logged, only the call id.
     # (Comments, not docstring: the docstring is published in openapi.json and the generated clients.)
     where = "POST /telephony/inbound/fallback"
-    try:
-        webhook_data, raw_body = await parse_webhook_request(request)
-    except ValueError:
-        raise rejected(where, why="no parseable body") from None
+    webhook_data, raw_body = await parse_webhook_or_reject(request, where=where)
     headers = dict(request.headers)
 
     provider_class = await _detect_provider(webhook_data, headers)
