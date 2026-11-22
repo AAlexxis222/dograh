@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -17,6 +18,7 @@ from api.app import assert_cell_startup_config
 from api.routes import main as main_routes
 from api.services.observability import loop_lag
 from api.services.runtime import cell_state
+from api.services.runtime.cell_state import is_cell
 from api.services.security import credential_box
 
 SECRET = "test-dograh-devops-secret"
@@ -322,3 +324,36 @@ def test_the_start_gate_module_does_not_load_loguru():
         check=False,
     )
     assert r.returncode == 0, r.stderr
+
+
+# ---------------------------------------------------------------------------------------------------------
+# R8: the cell marker
+# ---------------------------------------------------------------------------------------------------------
+
+
+def test_is_cell_is_true_only_when_cell_role_is_non_empty(monkeypatch):
+    monkeypatch.delenv("CELL_ROLE", raising=False)
+    assert is_cell() is False
+    monkeypatch.setenv("CELL_ROLE", "")
+    assert is_cell() is False
+    monkeypatch.setenv("CELL_ROLE", "call")
+    assert is_cell() is True
+
+
+def test_is_cell_ignores_the_carrier_region_policy(monkeypatch):
+    monkeypatch.delenv("CELL_ROLE", raising=False)
+    monkeypatch.setenv("CARRIER_REGION_POLICY", "eu")
+    assert is_cell() is False
+
+
+def test_cell_startup_uses_is_cell(monkeypatch):
+    """assert_cell_startup_config decides 'in a cell' through is_cell(), not a second inline check."""
+    from api.services.runtime import cell_startup
+
+    monkeypatch.setenv("CELL_ROLE", "call")
+    monkeypatch.delenv("DOGRAH_DEVOPS_SECRET", raising=False)
+    # Not a cell as far as the module is concerned: only the master-key check runs, so no CellStartupError
+    # about DOGRAH_DEVOPS_SECRET even though the real env says CELL_ROLE=call.
+    with patch.object(cell_startup, "is_cell", return_value=False) as marker:
+        cell_startup.assert_cell_startup_config("test")
+    marker.assert_called()
