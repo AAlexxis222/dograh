@@ -21,9 +21,7 @@ from api.errors.telephony_errors import (
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.callback_auth import (
-    provider_for_run,
-    require_answer_url_token,
-    verify_signature,
+    authenticate_answer_url,
 )
 from api.services.telephony.factory import get_telephony_provider_for_run
 from api.services.telephony.providers.twilio.introduction import (
@@ -81,22 +79,17 @@ async def handle_twiml_webhook(
     so ``t`` must be the answer-URL token of ``workflow_run_id`` (``require_answer_url_token``).
     """
     where = "POST /telephony/twiml"
-    _, _, provider = await provider_for_run(
-        workflow_run_id,
+    _, provider = await authenticate_answer_url(
         provider_name=TwilioProvider.PROVIDER_NAME,
         where=where,
-        expect_workflow_id=workflow_id,
-        expect_organization_id=organization_id,
-    )
-    callback_data = dict(await request.form())
-    await verify_signature(
-        provider,
-        where=where,
+        workflow_id=workflow_id,
+        workflow_run_id=workflow_run_id,
+        organization_id=organization_id,
+        t=t,
         url=str(request.url),
-        data=callback_data,
+        data=dict(await request.form()),
         headers=dict(request.headers),
     )
-    require_answer_url_token(workflow_run_id, t, where=where)
 
     response_content = await provider.get_webhook_response(
         workflow_id, organization_id, workflow_run_id

@@ -12,9 +12,7 @@ from pipecat.utils.run_context import set_current_run_id
 
 from api.db import db_client
 from api.services.telephony.callback_auth import (
-    provider_for_run,
-    require_answer_url_token,
-    verify_signature,
+    authenticate_answer_url,
 )
 from api.services.telephony.factory import get_telephony_provider_for_run
 from api.services.telephony.providers.vonage.provider import VonageProvider
@@ -41,21 +39,17 @@ async def handle_ncco_webhook(
     payload hash), so ``t`` must be the answer-URL token of ``workflow_run_id`` (``require_answer_url_token``).
     """
     where = "GET /telephony/ncco"
-    _, _, provider = await provider_for_run(
-        workflow_run_id,
+    _, provider = await authenticate_answer_url(
         provider_name=VonageProvider.PROVIDER_NAME,
         where=where,
-        expect_workflow_id=workflow_id,
-        expect_organization_id=organization_id,
-    )
-    await verify_signature(
-        provider,
-        where=where,
+        workflow_id=workflow_id,
+        workflow_run_id=workflow_run_id,
+        organization_id=organization_id,
+        t=t,
         url=str(request.url),
         data=dict(request.query_params),
         headers=dict(request.headers),
     )
-    require_answer_url_token(workflow_run_id, t, where=where)
 
     response_content = await provider.get_webhook_response(
         workflow_id, organization_id, workflow_run_id

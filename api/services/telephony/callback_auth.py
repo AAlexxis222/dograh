@@ -191,6 +191,40 @@ def require_answer_url_token(
         )
 
 
+async def authenticate_answer_url(
+    *,
+    provider_name: str,
+    where: str,
+    workflow_id: int,
+    workflow_run_id: int,
+    organization_id: int,
+    t: str | None,
+    url: str,
+    data: dict,
+    headers: dict,
+    body: str = "",
+):
+    """``(run, provider)`` of an answer URL that passed its three checks, in this order, or the 401.
+
+    The run's own provider, with the unsigned ``workflow_id`` and ``organization_id`` of the query agreeing with
+    the run (``provider_for_run``); the carrier signature over ``url``, ``data`` and ``body``
+    (``verify_signature``); and, since that signature binds no run, the run-bound token ``t``
+    (``require_answer_url_token``).
+    """
+    run, _, provider = await provider_for_run(
+        workflow_run_id,
+        provider_name=provider_name,
+        where=where,
+        expect_workflow_id=workflow_id,
+        expect_organization_id=organization_id,
+    )
+    await verify_signature(
+        provider, where=where, url=url, data=data, headers=headers, body=body
+    )
+    require_answer_url_token(workflow_run_id, t, where=where)
+    return run, provider
+
+
 async def verify_transfer_callback(
     transfer_id: str,
     *,

@@ -13,10 +13,8 @@ from starlette.responses import HTMLResponse
 
 from api.db import db_client
 from api.services.telephony.callback_auth import (
-    provider_for_run,
+    authenticate_answer_url,
     rejected,
-    require_answer_url_token,
-    verify_signature,
 )
 from api.services.telephony.factory import (
     get_telephony_provider_for_run,
@@ -96,25 +94,21 @@ async def handle_vobiz_xml_webhook(
         callback_data, raw_body = await parse_webhook_request(request)
     except ValueError:
         raise rejected(where, why="no parseable body") from None
-    _, _, provider = await provider_for_run(
-        workflow_run_id,
-        provider_name=VobizProvider.PROVIDER_NAME,
-        where=where,
-        expect_workflow_id=workflow_id,
-        expect_organization_id=organization_id,
-    )
     # The URL the platform gave Vobiz, as the sibling callbacks verify: behind a proxy or tunnel the scheme or
     # host this app sees in request.url differs from the public one Vobiz signed.
     backend_endpoint, _ = await get_backend_endpoints()
-    await verify_signature(
-        provider,
+    _, provider = await authenticate_answer_url(
+        provider_name=VobizProvider.PROVIDER_NAME,
         where=where,
+        workflow_id=workflow_id,
+        workflow_run_id=workflow_run_id,
+        organization_id=organization_id,
+        t=t,
         url=f"{backend_endpoint}/api/v1/telephony/vobiz-xml",
         data=callback_data,
         headers=dict(request.headers),
         body=raw_body,
     )
-    require_answer_url_token(workflow_run_id, t, where=where)
     logger.info(
         f"[run {workflow_run_id}] Vobiz XML webhook called - "
         f"workflow_id={workflow_id}, org_id={organization_id}"
