@@ -144,8 +144,8 @@ class TwilioProvider(TelephonyProvider):
 
         from_number = self.select_from_number(from_number)
         logger.info(f"Selected phone number {from_number} for outbound call")
-        # Without the query: it carries the answer-URL token.
-        logger.info(f"Webhook url received - {webhook_url.split('?', 1)[0]}")
+        # Redacted: the query carries the answer-URL token.
+        logger.info(f"Webhook url received - {ws_auth.redact_token(webhook_url)}")
 
         # Prepare call data
         data = {
