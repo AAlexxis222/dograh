@@ -372,3 +372,42 @@ async def test_cloudonix_inbound_sync_reports_the_code(cloudonix_config):
     assert status.ok is False
     assert CODE in status.message
     ok.assert_not_awaited()
+
+# ---------------------------------------------------------------------------------------------------------
+# Deleting a phone number of a disabled carrier (RUL-r1-31 a): the row goes, the carrier is never touched
+# ---------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_cloudonix_phone_number_deletes_the_row_and_reports_the_code(
+    cloudonix_config,
+):
+    from api.routes.organization import delete_phone_number
+
+    configure_inbound = AsyncMock(return_value=ProviderSyncResult(ok=True))
+    delete_row = AsyncMock(return_value=True)
+    with (
+        patch(
+            "api.routes.organization._ensure_config_belongs_to_org",
+            new=AsyncMock(
+                return_value=SimpleNamespace(id=CONFIG_ID, provider="cloudonix")
+            ),
+        ),
+        patch(
+            "api.routes.organization.db_client.get_phone_number_for_config",
+            new=AsyncMock(return_value=SimpleNamespace(address="+34911000111")),
+        ),
+        patch("api.routes.organization.db_client.delete_phone_number", delete_row),
+        patch.object(CloudonixProvider, "configure_inbound", configure_inbound),
+    ):
+        result = await delete_phone_number(
+            config_id=CONFIG_ID,
+            phone_number_id=9,
+            user=SimpleNamespace(selected_organization_id=ORG_ID),
+        )
+
+    assert result["message"] == "Phone number deleted"
+    assert result["provider_sync"]["ok"] is False
+    assert CODE in result["provider_sync"]["message"]
+    delete_row.assert_awaited_once_with(9, CONFIG_ID)
+    configure_inbound.assert_not_awaited()
