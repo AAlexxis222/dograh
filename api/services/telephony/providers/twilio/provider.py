@@ -13,6 +13,7 @@ from twilio.request_validator import RequestValidator
 
 from api.enums import TelephonyCallStatus, WorkflowRunMode
 from api.services.runtime.durations import ring_timeout_for
+from api.services.security.redaction import mask_phone
 from api.services.telephony import ws_auth
 from api.services.telephony.base import (
     CallInitiationResult,
@@ -143,7 +144,7 @@ class TwilioProvider(TelephonyProvider):
         endpoint = f"{self.base_url}/Calls.json"
 
         from_number = self.select_from_number(from_number)
-        logger.info(f"Selected phone number {from_number} for outbound call")
+        logger.info(f"Selected phone number {mask_phone(from_number)} for outbound call")
         # Redacted: the query carries the answer-URL token.
         logger.info(f"Webhook url received - {ws_auth.redact_token(webhook_url)}")
 
@@ -701,7 +702,7 @@ class TwilioProvider(TelephonyProvider):
             raise ValueError("Twilio provider not properly configured")
 
         from_number = self.select_from_number()
-        logger.info(f"Selected phone number {from_number} for transfer call")
+        logger.info(f"Selected phone number {mask_phone(from_number)} for transfer call")
 
         backend_endpoint, _ = await get_backend_endpoints()
 

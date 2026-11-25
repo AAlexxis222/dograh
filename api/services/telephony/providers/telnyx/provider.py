@@ -26,6 +26,7 @@ TELNYX_SIGNATURE_BYTES = 64
 
 from api.enums import TelephonyCallStatus, WorkflowRunMode
 from api.services.runtime.durations import ring_timeout_for
+from api.services.security.redaction import mask_phone
 from api.services.telephony import ws_auth
 from api.services.telephony.base import (
     CallInitiationResult,
@@ -97,7 +98,7 @@ class TelnyxProvider(TelephonyProvider):
             raise ValueError("Telnyx provider not properly configured")
 
         from_number = self.select_from_number(from_number)
-        logger.info(f"Selected phone number {from_number} for outbound call")
+        logger.info(f"Selected phone number {mask_phone(from_number)} for outbound call")
 
         backend_endpoint, wss_backend_endpoint = await get_backend_endpoints()
 
@@ -141,7 +142,10 @@ class TelnyxProvider(TelephonyProvider):
         logger.info(
             "Telnyx dial payload: "
             + ws_auth.redact_token(
-                json.dumps({k: v for k, v in payload.items() if k != "connection_id"})
+                json.dumps(
+                    {k: v for k, v in payload.items() if k != "connection_id"}
+                    | {"to": mask_phone(to_number), "from": mask_phone(from_number)}
+                )
             )
         )
 
@@ -795,7 +799,9 @@ class TelnyxProvider(TelephonyProvider):
             )
 
         from_number = self.select_from_number()
-        logger.info(f"Selected phone number {from_number} for Telnyx transfer call")
+        logger.info(
+            f"Selected phone number {mask_phone(from_number)} for Telnyx transfer call"
+        )
 
         backend_endpoint, _ = await get_backend_endpoints()
         webhook_url = (
@@ -815,8 +821,11 @@ class TelnyxProvider(TelephonyProvider):
         endpoint = f"{self.TELNYX_API_BASE}/calls"
 
         logger.debug(
-            f"Telnyx transfer dial payload: "
-            f"{json.dumps({k: v for k, v in payload.items() if k != 'connection_id'})}"
+            "Telnyx transfer dial payload: "
+            + json.dumps(
+                {k: v for k, v in payload.items() if k != "connection_id"}
+                | {"to": mask_phone(payload["to"]), "from": mask_phone(payload["from"])}
+            )
         )
 
         try:
@@ -842,7 +851,7 @@ class TelnyxProvider(TelephonyProvider):
                     logger.info(
                         f"Telnyx transfer dial initiated: "
                         f"call_control_id={call_control_id}, "
-                        f"to={destination}, conference_name={conference_name}"
+                        f"to={mask_phone(destination)}, conference_name={conference_name}"
                     )
 
                     return {

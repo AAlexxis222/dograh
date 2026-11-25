@@ -135,6 +135,15 @@ def known_secret_values() -> tuple[str, ...]:
     return tuple(sorted(active_secret_values(), key=len, reverse=True))
 
 
+def mask_phone(number: str | None) -> str:
+    """A caller, callee or transfer-destination number as a log line writes it: its
+    last four digits behind "***" ("***" alone when it has four characters or
+    fewer). The line masks it itself: the sink patterns above only know prefixed
+    and Spanish shapes, and a bare-digit pattern would also eat ids and times."""
+    text = str(number or "")
+    return f"***{text[-4:]}" if len(text) > 4 else "***"
+
+
 def redact(text: str, secrets: Iterable[str] | None = None) -> str:
     """Redact ``text``. ``secrets`` must be ordered longest first (the output of
     ``known_secret_values``); ``None`` reads them now. Hot paths compute them

@@ -14,6 +14,7 @@ from loguru import logger
 
 from api.db import db_client
 from api.enums import TelephonyCallStatus, WorkflowRunMode
+from api.services.security.redaction import mask_phone
 from api.services.telephony import ws_auth
 from api.services.telephony.base import (
     CallInitiationResult,
@@ -197,7 +198,8 @@ class CloudonixProvider(TelephonyProvider):
                 "Please configure phone numbers in the telephony settings."
             )
         logger.info(
-            f"Selected phone number {from_number} for outbound call to {to_number}"
+            f"Selected phone number {mask_phone(from_number)} for outbound call to "
+            f"{mask_phone(to_number)}"
         )
         workflow_id, organization_id = (
             kwargs["workflow_id"],
@@ -243,15 +245,20 @@ class CloudonixProvider(TelephonyProvider):
         logger.info(
             f"[Cloudonix] Initiating outbound call:\n"
             f"  Endpoint: {endpoint}\n"
-            f"  To: {to_number}\n"
-            f"  From: {from_number}\n"
+            f"  To: {mask_phone(to_number)}\n"
+            f"  From: {mask_phone(from_number)}\n"
             f"  Workflow Run ID: {workflow_run_id}"
         )
         # Redacted: the embedded CXML's stream URL carries a bearer capability token.
+        logged_data = {
+            **data,
+            "destination": mask_phone(to_number),
+            "caller-id": mask_phone(from_number),
+        }
         logger.debug(
             f"[Cloudonix] Request details:\n"
             f"  Headers: {masked_headers}\n"
-            f"  Payload: {ws_auth.redact_token(json.dumps(data, indent=2))}"
+            f"  Payload: {ws_auth.redact_token(json.dumps(logged_data, indent=2))}"
         )
 
         async with aiohttp.ClientSession() as session:
@@ -280,8 +287,8 @@ class CloudonixProvider(TelephonyProvider):
                     f"  Session Token: {session_token}\n"
                     f"  Domain ID: {domain_id}\n"
                     f"  Subscriber ID: {subscriber_id}\n"
-                    f"  To: {to_number}\n"
-                    f"  From: {from_number}\n"
+                    f"  To: {mask_phone(to_number)}\n"
+                    f"  From: {mask_phone(from_number)}\n"
                     f"  Workflow Run ID: {workflow_run_id}"
                 )
 
@@ -887,7 +894,8 @@ class CloudonixProvider(TelephonyProvider):
         logger.info(
             f"Cloudonix inbound webhook domain fields — Domain={raw_domain!r} "
             f"AccountSid={raw_account_sid!r} normalized={account_id!r} "
-            f"To={webhook_data.get('To')!r} From={webhook_data.get('From')!r}"
+            f"To={mask_phone(webhook_data.get('To'))} "
+            f"From={mask_phone(webhook_data.get('From'))}"
         )
 
         # Extract underlying provider information from SessionData if available
@@ -1422,9 +1430,8 @@ class CloudonixProvider(TelephonyProvider):
         data.update(kwargs)
         self._pin_trunk(data, from_number)
         headers = self._get_auth_headers()
-        masked_destination = f"***{destination[-4:]}" if len(destination) > 4 else "***"
         logger.info(
-            f"[Cloudonix Transfer] Dialing {masked_destination} into conference "
+            f"[Cloudonix Transfer] Dialing {mask_phone(destination)} into conference "
             f"{conference_name} (transfer_id={transfer_id})"
         )
 

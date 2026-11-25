@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from api.enums import TelephonyCallStatus, WorkflowRunMode
+from api.services.security.redaction import mask_phone
 from api.services.telephony import ws_auth
 from api.services.telephony.base import (
     CallInitiationResult,
@@ -204,7 +205,8 @@ class ExotelProvider(TelephonyProvider):
             form["StatusCallbackEvents[]"] = "terminal"
 
         logger.info(
-            f"[Exotel] Initiating call to={to_number} from={from_number} "
+            f"[Exotel] Initiating call to={mask_phone(to_number)} "
+            f"from={mask_phone(from_number)} "
             f"run={workflow_run_id}"
         )
 

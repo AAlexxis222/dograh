@@ -15,6 +15,7 @@ from loguru import logger
 
 from api.db import db_client
 from api.enums import TelephonyCallStatus, WorkflowRunMode
+from api.services.security.redaction import mask_phone
 from api.services.telephony import ws_auth
 from api.services.telephony.base import (
     CallInitiationResult,
@@ -583,7 +584,7 @@ class PlivoProvider(TelephonyProvider):
             raise ValueError("Plivo provider not properly configured")
 
         from_number = self.select_from_number()
-        logger.info(f"Selected phone number {from_number} for transfer call")
+        logger.info(f"Selected phone number {mask_phone(from_number)} for transfer call")
 
         backend_endpoint, _ = await get_backend_endpoints()
 
@@ -606,7 +607,7 @@ class PlivoProvider(TelephonyProvider):
         try:
             logger.debug(
                 f"Dialing Plivo transfer destination for transfer_id={transfer_id} "
-                f"to destination={destination}"
+                f"to destination={mask_phone(destination)}"
             )
 
             async with aiohttp.ClientSession() as session:
