@@ -318,6 +318,26 @@ async def test_a_live_link_redirects_to_the_signed_url(world, clock, http, stora
     assert resp.headers["location"] == "https://storage.example/signed"
 
 
+@pytest.mark.parametrize(
+    "left, expiration",
+    [
+        (timedelta(hours=72), 3600),
+        (timedelta(seconds=600, milliseconds=500), 600),
+        (timedelta(milliseconds=500), 1),
+    ],
+)
+async def test_the_signed_url_lives_no_longer_than_the_link(
+    world, clock, http, storage, left, expiration
+):
+    """Whole seconds, at most an hour, never past the link's deadline but for a one-second floor."""
+    run = await world.make_run(recording_url=RECORDING_PATH)
+    link_id = await db_client.ensure_public_access_token(run.id)
+    clock["now"] = T + timedelta(hours=72) - left
+    resp = await open_link(http, link_id)
+    assert resp.status_code == 302
+    assert storage.aget_signed_url.await_args.kwargs["expiration"] == expiration
+
+
 async def test_an_unknown_link_is_a_404(world, clock, http, storage):
     resp = await open_link(http, str(uuid.uuid4()))
     assert resp.status_code == 404
