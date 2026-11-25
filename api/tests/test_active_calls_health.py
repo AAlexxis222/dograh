@@ -22,6 +22,7 @@ from api.services.runtime.cell_state import is_cell
 from api.services.security import credential_box
 
 SECRET = "test-dograh-devops-secret"
+WS_TOKEN_SECRET = os.urandom(16).hex()
 MASTER_KEY = "k1=" + base64.b64encode(os.urandom(32)).decode()
 
 
@@ -77,6 +78,7 @@ def cell_env(monkeypatch):
     monkeypatch.setenv("LOG_LEVEL", "INFO")
     monkeypatch.setenv("CREDENTIALS_MASTER_KEY", MASTER_KEY)
     monkeypatch.setenv("URL_GUARD_ENFORCE", "true")
+    monkeypatch.setenv("TELEPHONY_WS_TOKEN_SECRET", WS_TOKEN_SECRET)
     monkeypatch.delenv("CALL_K_P", raising=False)
 
 
@@ -186,6 +188,37 @@ def test_startup_validates_the_master_key_without_touching_the_loader_cache(
         credential_box.load_keys.cache_clear()
 
 
+@pytest.mark.parametrize("value", [None, ""])
+def test_startup_refuses_a_cell_without_the_telephony_token_secret(
+    cell_env, monkeypatch, value
+):
+    # Without it every answer URL is refused at call time (callback_auth), so the cell must not start healthy.
+    if value is None:
+        monkeypatch.delenv("TELEPHONY_WS_TOKEN_SECRET")
+    else:
+        monkeypatch.setenv("TELEPHONY_WS_TOKEN_SECRET", value)
+    with pytest.raises(
+        RuntimeError, match="code=telephony_ws_token_secret_missing"
+    ) as e:
+        assert_cell_startup_config()
+    for key in ("where=", "reason=", "hint="):
+        assert key in str(e.value)
+
+
+@pytest.mark.parametrize("role", ["api", "call", "arq", "coordinators"])
+def test_module_refuses_every_cell_role_without_the_telephony_token_secret(role):
+    r = _run_module(
+        role,
+        CELL_ROLE=role,
+        DOGRAH_DEVOPS_SECRET=SECRET,
+        LOG_LEVEL="INFO",
+        CREDENTIALS_MASTER_KEY=MASTER_KEY,
+        URL_GUARD_ENFORCE="true",
+    )
+    assert r.returncode == 1
+    assert f"code=telephony_ws_token_secret_missing where={role} " in r.stderr, r.stderr
+
+
 def test_startup_is_a_noop_outside_a_cell(monkeypatch):
     monkeypatch.delenv("CELL_ROLE", raising=False)
     monkeypatch.delenv("DOGRAH_DEVOPS_SECRET", raising=False)
@@ -211,6 +244,7 @@ def _run_module(role, **env):
         "CALL_K_P",
         "CREDENTIALS_MASTER_KEY",
         "URL_GUARD_ENFORCE",
+        "TELEPHONY_WS_TOKEN_SECRET",
     }
     base = {k: v for k, v in os.environ.items() if k not in cell_vars}
     return subprocess.run(
@@ -242,6 +276,7 @@ def test_module_passes_in_a_valid_cell_and_outside_a_cell():
         LOG_LEVEL="INFO",
         CREDENTIALS_MASTER_KEY=MASTER_KEY,
         URL_GUARD_ENFORCE="true",
+        TELEPHONY_WS_TOKEN_SECRET=WS_TOKEN_SECRET,
     )
     assert (ok.returncode, ok.stderr) == (0, "")
     assert _run_module("arq").returncode == 0
