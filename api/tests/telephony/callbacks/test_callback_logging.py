@@ -207,3 +207,62 @@ def test_refusal_log_cannot_be_split_by_a_request_value(client, world, log_lines
     assert refusals
     for line in refusals:
         assert "\n2026-11-06" not in line
+
+
+# ---------------------------------------------------------------------------------------------------------
+# RUL-r1-26: a value of an unauthenticated request is logged as its repr, so a newline in it cannot forge a line
+# ---------------------------------------------------------------------------------------------------------
+
+
+FORGED = "x\n2026-11-22 10:00:00.000 | INFO | FORGED-LINE"
+FORGED_SEGMENT = "x%0AFORGED-LINE"
+
+# (route module, path, body kind, body): each handler logs the request's values before any signature check.
+UNSIGNED_VALUE_LOGS = [
+    ("twilio", "/telephony/twilio/status-callback/999", "form", {"CallSid": FORGED, "CallStatus": FORGED}),
+    ("plivo", "/telephony/plivo/hangup-callback/999", "form", {"CallUUID": FORGED}),
+    (
+        "plivo",
+        f"/telephony/plivo/transfer-xml/{FORGED_SEGMENT}/{FORGED_SEGMENT}",
+        "form",
+        {"CallUUID": FORGED},
+    ),
+    (
+        "plivo",
+        f"/telephony/plivo/transfer-result/{FORGED_SEGMENT}",
+        "form",
+        {"Event": FORGED, "CallUUID": FORGED, "HangupCause": FORGED},
+    ),
+    ("vobiz", "/telephony/vobiz/hangup-callback/999", "form", {"CallUUID": FORGED}),
+    ("vobiz", "/telephony/vobiz/ring-callback/999", "form", {"CallUUID": FORGED}),
+    ("vobiz", "/telephony/vobiz/hangup-callback/workflow/999", "form", {"CallUUID": FORGED}),
+    ("exotel", "/telephony/exotel/status-callback/999", "form", {"CallSid": FORGED}),
+    ("vonage", "/telephony/vonage/events/999", "json", {"uuid": FORGED, "status": FORGED}),
+    ("vonage", "/telephony/vonage/events", "json", {"uuid": FORGED, "status": FORGED}),
+    ("telnyx", "/telephony/telnyx/events/999", "json", {"data": {"event_type": FORGED}}),
+]
+
+
+@pytest.mark.parametrize(("carrier", "path", "kind", "body"), UNSIGNED_VALUE_LOGS)
+def test_unsigned_request_values_cannot_forge_a_log_line(
+    client, world, monkeypatch, log_lines, carrier, path, kind, body
+):
+    monkeypatch.delenv("CELL_ROLE", raising=False)
+    module = f"api.services.telephony.providers.{carrier}.routes"
+    world.db.get_workflow_run_by_call_id = AsyncMock(return_value=None)
+    with (
+        patch(f"{module}.db_client", world.db),
+        patch(
+            f"{module}.get_call_transfer_manager",
+            new=AsyncMock(return_value=world.manager),
+            create=True,
+        ),
+    ):
+        if kind == "json":
+            client.post(path, json=body)
+        else:
+            client.post(path, data=body)
+
+    assert any("FORGED-LINE" in line for line in log_lines), "the value was not logged"
+    for line in log_lines:
+        assert "\nFORGED-LINE" not in line and "\n2026-11-22" not in line, line
