@@ -114,7 +114,7 @@ async def handle_twilio_status_callback(
 
     logger.info(
         f"[run {workflow_run_id}] Received Twilio status callback for call "
-        f"{callback_data.get('CallSid')} status={callback_data.get('CallStatus')}"
+        f"{callback_data.get('CallSid')!r} status={callback_data.get('CallStatus')!r}"
     )
 
     # Get workflow run to find organization

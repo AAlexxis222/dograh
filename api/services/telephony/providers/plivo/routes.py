@@ -63,7 +63,7 @@ async def _handle_plivo_status_callback(
     callback_data = dict(form_data)
     logger.info(
         f"[run {workflow_run_id}] Received Plivo callback for call "
-        f"{callback_data.get('CallUUID')}"
+        f"{callback_data.get('CallUUID')!r}"
     )
 
     workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
@@ -193,8 +193,8 @@ async def handle_plivo_transfer_xml(
     leg_name = "original" if is_original_leg else "destination"
 
     logger.info(
-        f"Plivo transfer XML requested (transfer_id={transfer_id}, leg={leg_name}): "
-        f"CallUUID={callback_call_uuid} conference={conference_name}"
+        f"Plivo transfer XML requested (transfer_id={transfer_id!r}, leg={leg_name}): "
+        f"CallUUID={callback_call_uuid!r} conference={conference_name!r}"
     )
 
     call_transfer_manager = await get_call_transfer_manager()
@@ -205,7 +205,7 @@ async def handle_plivo_transfer_xml(
     if conference_name != transfer_context.conference_name:
         logger.warning(
             f"Conference mismatch for Plivo transfer {transfer_id}: "
-            f"requested={conference_name} expected={transfer_context.conference_name}"
+            f"requested={conference_name!r} expected={transfer_context.conference_name}"
         )
         return _hangup_xml_response()
 
@@ -276,8 +276,8 @@ async def handle_plivo_transfer_result(transfer_id: str, request: Request):
     hangup_cause = data.get("HangupCause", "")
 
     logger.info(
-        f"Plivo transfer-result webhook (transfer_id={transfer_id}): "
-        f"Event={event} CallUUID={destination_call_uuid} HangupCause={hangup_cause}"
+        f"Plivo transfer-result webhook (transfer_id={transfer_id!r}): "
+        f"Event={event!r} CallUUID={destination_call_uuid!r} HangupCause={hangup_cause!r}"
     )
 
     call_transfer_manager = await get_call_transfer_manager()

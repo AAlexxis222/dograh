@@ -44,7 +44,7 @@ async def handle_exotel_status_callback(workflow_run_id: int, request: Request):
 
     logger.info(
         f"[run {workflow_run_id}] Exotel status callback for call "
-        f"{callback_data.get('CallSid')}"
+        f"{callback_data.get('CallSid')!r}"
     )
 
     workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)

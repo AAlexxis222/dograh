@@ -129,7 +129,7 @@ async def handle_telnyx_events(
     event_type = normalize_event_type(data.get("event_type", ""))
 
     logger.info(
-        f"[run {workflow_run_id}] Received Telnyx event: event_type={event_type}"
+        f"[run {workflow_run_id}] Received Telnyx event: event_type={event_type!r}"
     )
 
     # Get workflow run and provider
@@ -162,8 +162,8 @@ async def handle_telnyx_events(
     if not signature_valid:
         logger.warning(
             f"[run {workflow_run_id}] Invalid Telnyx webhook signature "
-            f"(event_type={event_type}, "
-            f"timestamp={request.headers.get('telnyx-timestamp')}, "
+            f"(event_type={event_type!r}, "
+            f"timestamp={request.headers.get('telnyx-timestamp')!r}, "
             f"body_len={len(raw_body)})"
         )
         # Deliberately identical to the unknown-run 404 above so unsigned

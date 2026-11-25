@@ -79,7 +79,7 @@ async def _handle_vonage_event_request(request: Request, workflow_run_id: int):
     event_data, raw_body = await _read_json_body(request)
     logger.info(
         f"[run {workflow_run_id}] Received Vonage event "
-        f"uuid={event_data.get('uuid')} status={event_data.get('status')}"
+        f"uuid={event_data.get('uuid')!r} status={event_data.get('status')!r}"
     )
 
     workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
@@ -153,6 +153,6 @@ async def handle_vonage_events_without_run(request: Request):
 
     logger.info(
         "Received unmatched Vonage application event "
-        f"uuid={event_data.get('uuid')} status={event_data.get('status')}"
+        f"uuid={event_data.get('uuid')!r} status={event_data.get('status')!r}"
     )
     return {"status": "ok"}

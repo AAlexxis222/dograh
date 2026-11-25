@@ -159,7 +159,7 @@ async def handle_vobiz_hangup_callback(
 
     logger.info(
         f"[run {workflow_run_id}] Received Vobiz hangup callback for call "
-        f"{callback_data.get('CallUUID')}"
+        f"{callback_data.get('CallUUID')!r}"
     )
 
     workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
@@ -243,7 +243,7 @@ async def handle_vobiz_ring_callback(
 
     logger.info(
         f"[run {workflow_run_id}] Received Vobiz ring callback for call "
-        f"{callback_data.get('CallUUID')}"
+        f"{callback_data.get('CallUUID')!r}"
     )
 
     workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
@@ -317,7 +317,7 @@ async def handle_vobiz_hangup_callback_by_workflow(
 
     call_uuid = callback_data.get("CallUUID") or callback_data.get("call_uuid")
     logger.info(
-        f"[workflow {workflow_id}] Received Vobiz hangup callback for call {call_uuid}"
+        f"[workflow {workflow_id}] Received Vobiz hangup callback for call {call_uuid!r}"
     )
 
     if not call_uuid:
@@ -335,20 +335,20 @@ async def handle_vobiz_hangup_callback_by_workflow(
         workflow_run = await db_client.get_workflow_run_by_call_id(call_uuid)
     except Exception as e:
         logger.error(
-            f"[workflow {workflow_id}] Error finding workflow run for call {call_uuid}: {e}"
+            f"[workflow {workflow_id}] Error finding workflow run for call {call_uuid!r}: {e}"
         )
         return {"status": "error", "message": str(e)}
 
     if not workflow_run or workflow_run.workflow_id != workflow_id:
         logger.warning(
-            f"[workflow {workflow_id}] No workflow run found for call {call_uuid}"
+            f"[workflow {workflow_id}] No workflow run found for call {call_uuid!r}"
         )
         return {"status": "ignored", "reason": "workflow_run_not_found"}
 
     workflow_run_id = workflow_run.id
     set_current_run_id(workflow_run_id)
     logger.info(
-        f"[workflow {workflow_id}] Found workflow run {workflow_run_id} for call {call_uuid}"
+        f"[workflow {workflow_id}] Found workflow run {workflow_run_id} for call {call_uuid!r}"
     )
 
     provider = await _vobiz_provider(
