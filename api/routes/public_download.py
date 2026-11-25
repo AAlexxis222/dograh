@@ -23,6 +23,8 @@ from api.utils.recording_artifacts import (
 router = APIRouter(prefix="/public/download")
 
 _WHERE = "GET /public/download/workflow/{token}/{artifact_type}"
+# Longest life of the storage URL a link redirects to; a link closer to its deadline gets less.
+_SIGNED_URL_MAX_S = 3600
 
 
 def _link_refused(code: str, reason: str, hint: str) -> HTTPException:
@@ -79,9 +81,8 @@ async def download_workflow_artifact(
             "workflow-configuration-defaults",
         )
 
-    if public_links.is_expired(
-        workflow_run.public_access_expires_at, public_links.now()
-    ):
+    now = public_links.now()
+    if public_links.is_expired(workflow_run.public_access_expires_at, now):
         logger.warning(f"Expired public link: workflow_run_id={workflow_run.id}")
         raise _link_refused(
             "link_expired",
@@ -130,11 +131,13 @@ async def download_workflow_artifact(
         logger.error(f"Invalid storage backend: {workflow_run.storage_backend}")
         raise HTTPException(status_code=500, detail="Storage configuration error")
 
-    # 4. Generate signed URL (1 hour expiration)
+    # 4. Generate a signed URL that does not outlive the link: whole seconds (S3's ExpiresIn), at most an hour, at
+    # least one. MinIO (development only) ignores the expiration and hands out a permanent URL.
+    seconds_left = int((workflow_run.public_access_expires_at - now).total_seconds())
     try:
         signed_url = await storage.aget_signed_url(
             file_path=file_path,
-            expiration=3600,  # 1 hour
+            expiration=max(1, min(_SIGNED_URL_MAX_S, seconds_left)),
             force_inline=inline,
         )
     except Exception as e:
