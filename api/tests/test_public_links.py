@@ -17,14 +17,19 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from api.db import db_client
 from api.db.models import (
+    CampaignModel,
     OrganizationModel,
     UserModel,
     WorkflowModel,
     WorkflowRunModel,
 )
 from api.routes import public_download
-from api.routes.organization_usage import get_usage_history
-from api.routes.workflow import get_workflow_run
+from api.routes.campaign import download_campaign_report
+from api.routes.organization_usage import (
+    download_usage_runs_report,
+    get_usage_history,
+)
+from api.routes.workflow import download_workflow_report, get_workflow_run
 from api.services import public_links
 from api.services.integrations.noveum.completion import (
     _build_recording_url as noveum_recording_url,
@@ -686,3 +691,96 @@ def test_the_csv_report_has_empty_link_cells_without_a_link():
     report = build_run_report_csv([run]).getvalue()
     assert_clean(report)
     assert report.splitlines()[1].endswith(",,")
+
+
+# ---------------------------------------------------------------------------
+# CSV reports (campaign, workflow, usage): the same rule, through their routes and real queries
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def campaign(world, sessions):
+    async with sessions() as session:
+        row = CampaignModel(
+            name="links",
+            organization_id=world.org.id,
+            workflow_id=world.workflow.id,
+            created_by=world.user.id,
+            source_id="links.csv",
+        )
+        session.add(row)
+        await session.commit()
+    yield row
+    async with sessions() as session:
+        await session.execute(
+            delete(WorkflowRunModel).where(WorkflowRunModel.campaign_id == row.id)
+        )
+        await session.execute(delete(CampaignModel).where(CampaignModel.id == row.id))
+        await session.commit()
+
+
+async def reported_run(world, campaign, **link):
+    """A completed campaign run with a recording and a transcript, so all three reports list it."""
+    return await world.make_run(
+        campaign_id=campaign.id,
+        is_completed=True,
+        recording_url=RECORDING_PATH,
+        transcript_url=TRANSCRIPT_PATH,
+        **link,
+    )
+
+
+async def csv_text(response) -> str:
+    return "".join(
+        [c if isinstance(c, str) else c.decode() async for c in response.body_iterator]
+    )
+
+
+async def reports(world, campaign) -> dict[str, str]:
+    return {
+        "campaign": await csv_text(
+            await download_campaign_report(
+                campaign.id, user=world.user, start_date=None, end_date=None
+            )
+        ),
+        "workflow": await csv_text(
+            await download_workflow_report(
+                world.workflow.id, user=world.user, start_date=None, end_date=None
+            )
+        ),
+        "usage": await csv_text(
+            await download_usage_runs_report(
+                start_date=None, end_date=None, filters=None, user=world.user
+            )
+        ),
+    }
+
+
+async def test_the_csv_reports_carry_no_link_when_links_are_off(
+    world, clock, in_cell, campaign
+):
+    """A link id stored while links were on, still alive: links are off now, so no report carries it."""
+    run = await reported_run(
+        world,
+        campaign,
+        public_access_token=OLD_LINK_ID,
+        public_access_expires_at=T + timedelta(days=1),
+    )
+    for name, report in (await reports(world, campaign)).items():
+        assert str(run.id) in report, name
+        assert_clean(report)
+
+
+@pytest.mark.parametrize("deadline", [T + timedelta(hours=1), None])
+async def test_the_csv_reports_carry_no_expired_link(world, clock, campaign, deadline):
+    """Outside a cell: a link past its deadline, or with none, is in no report."""
+    run = await reported_run(
+        world,
+        campaign,
+        public_access_token=OLD_LINK_ID,
+        public_access_expires_at=deadline,
+    )
+    clock["now"] = T + timedelta(hours=2)
+    for name, report in (await reports(world, campaign)).items():
+        assert str(run.id) in report, name
+        assert_clean(report)
