@@ -38,6 +38,7 @@ from api.services.runtime.durations import (
     PUBLIC_LINK_TTL_ENV,
     Durations,
     DurationsError,
+    cell_durations,
 )
 from api.services.workflow.dto import WebhookNodeData
 from api.tasks.run_integrations import _build_render_context, _build_webhook_payload
@@ -124,6 +125,17 @@ async def world(sessions):
             delete(OrganizationModel).where(OrganizationModel.id == org.id)
         )
         await session.commit()
+
+
+@pytest.fixture(autouse=True)
+def pinned_environment(monkeypatch):
+    """The runner's environment does not pick the branch or the TTL under test: outside a cell, 72 h (a test asks
+    for a cell with ``in_cell``). ``cell_durations`` is cached per process, so it is re-read on both sides."""
+    monkeypatch.delenv("CELL_ROLE", raising=False)
+    monkeypatch.delenv(PUBLIC_LINK_TTL_ENV, raising=False)
+    cell_durations.cache_clear()
+    yield
+    cell_durations.cache_clear()
 
 
 @pytest.fixture
