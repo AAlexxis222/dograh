@@ -12,8 +12,8 @@ from fastapi.responses import RedirectResponse
 from loguru import logger
 
 from api.db import db_client
+from api.errors.knob_refusal import KnobRefusal
 from api.services import public_links
-from api.services.pipecat.openai_efforts import KnobRefusal
 from api.services.storage import get_storage_for_backend
 from api.utils.recording_artifacts import (
     get_recording_storage_backend,
