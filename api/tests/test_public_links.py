@@ -435,6 +435,78 @@ async def test_outside_a_cell_links_stay_on(world, clock, monkeypatch, http, sto
 
 
 # ---------------------------------------------------------------------------
+# Expired links: never shown by the run page, the usage page or the CSV reports, and never renewed
+# ---------------------------------------------------------------------------
+
+
+async def usage_row(world, run):
+    page = await get_usage_history(
+        start_date=None,
+        end_date=None,
+        page=1,
+        limit=50,
+        filters=None,
+        sort_by=None,
+        sort_order="desc",
+        user=world.user,
+    )
+    (row,) = [r for r in page["runs"] if r["id"] == run.id]
+    return row
+
+
+async def test_the_run_route_hides_an_expired_link_and_does_not_renew_it(
+    world, clock, http, storage
+):
+    """Outside a cell: minted at T, viewed at T+80h. No link id and no public URL; the stored link id stays, so it
+    keeps answering link_expired."""
+    run = await world.make_run(recording_url=RECORDING_PATH)
+    link_id = await db_client.ensure_public_access_token(run.id)
+    clock["now"] = T + timedelta(hours=80)
+
+    body = await get_workflow_run(world.workflow.id, run.id, user=world.user)
+
+    assert body["public_access_token"] is None
+    for field in PUBLIC_URL_FIELDS:
+        assert body[field] is None, field
+    assert (await world.reload(run.id)).public_access_token == link_id
+    resp = await open_link(http, link_id)
+    assert resp.status_code == 404 and resp.json()["detail"]["code"] == "link_expired"
+
+
+async def test_the_run_route_hides_a_link_that_has_no_deadline(world, clock):
+    """A run that held a link before the deadline column existed (NULL is expired)."""
+    run = await world.make_run(
+        recording_url=RECORDING_PATH, public_access_token=OLD_LINK_ID
+    )
+    body = await get_workflow_run(world.workflow.id, run.id, user=world.user)
+    assert body["public_access_token"] is None
+    assert body["recording_public_url"] is None
+    assert (await world.reload(run.id)).public_access_token == OLD_LINK_ID
+
+
+async def test_the_run_route_hides_an_expired_link_of_a_run_without_artifacts(
+    world, clock
+):
+    """Completion mints a link for a run without recording or transcript too; the route skips the mint for such a
+    run but must not show its expired link."""
+    run = await world.make_run(
+        public_access_token=OLD_LINK_ID, public_access_expires_at=T + timedelta(hours=1)
+    )
+    clock["now"] = T + timedelta(hours=2)
+    body = await get_workflow_run(world.workflow.id, run.id, user=world.user)
+    assert body["public_access_token"] is None
+
+
+async def test_the_usage_route_hides_an_expired_link(world, clock):
+    run = await stale_run(world)
+    clock["now"] = T + timedelta(days=2)
+    row = await usage_row(world, run)
+    assert row["public_access_token"] is None
+    for field in PUBLIC_URL_FIELDS:
+        assert row[field] is None, field
+
+
+# ---------------------------------------------------------------------------
 # Links off: no link id, storage URL or storage path in any response or payload
 # ---------------------------------------------------------------------------
 
