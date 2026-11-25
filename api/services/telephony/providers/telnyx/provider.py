@@ -788,6 +788,11 @@ class TelnyxProvider(TelephonyProvider):
         """
         if not self.validate_config():
             raise ValueError("Telnyx provider not properly configured")
+        if not self.webhook_public_key:
+            # The destination's call.answered is refused without it, so the transfer could never bridge.
+            raise ValueError(
+                "Telnyx webhook_public_key is not configured: the transfer result could not be verified"
+            )
 
         from_number = self.select_from_number()
         logger.info(f"Selected phone number {from_number} for Telnyx transfer call")
