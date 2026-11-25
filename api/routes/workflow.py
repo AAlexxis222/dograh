@@ -1718,7 +1718,10 @@ async def download_workflow_report(
         )
 
     output, filename = await generate_workflow_report_csv(
-        workflow_id, start_date=start_date, end_date=end_date
+        workflow_id,
+        start_date=start_date,
+        end_date=end_date,
+        links_on=await db_client.public_links_enabled(user.selected_organization_id),
     )
 
     return StreamingResponse(

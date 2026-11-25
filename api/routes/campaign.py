@@ -1184,7 +1184,10 @@ async def download_campaign_report(
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     output, filename = await generate_campaign_report_csv(
-        campaign_id, start_date=start_date, end_date=end_date
+        campaign_id,
+        start_date=start_date,
+        end_date=end_date,
+        links_on=await db_client.public_links_enabled(user.selected_organization_id),
     )
 
     return StreamingResponse(

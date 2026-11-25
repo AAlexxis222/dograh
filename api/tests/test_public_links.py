@@ -868,3 +868,22 @@ async def test_the_csv_reports_carry_no_expired_link(world, clock, campaign, dea
     for name, report in (await reports(world, campaign)).items():
         assert str(run.id) in report, name
         assert_clean(report)
+
+
+@pytest.mark.parametrize("cell", [False, True])
+async def test_the_csv_reports_still_carry_a_live_link(
+    world, clock, campaign, monkeypatch, cell
+):
+    """Links on (outside a cell, or a cell organization that turned them on) and a live link: unchanged."""
+    if cell:
+        monkeypatch.setenv("CELL_ROLE", "api")
+        await set_org_links(world, True)
+    await reported_run(
+        world,
+        campaign,
+        public_access_token=OLD_LINK_ID,
+        public_access_expires_at=T + timedelta(days=1),
+    )
+    for name, report in (await reports(world, campaign)).items():
+        assert f"/public/download/workflow/{OLD_LINK_ID}/recording" in report, name
+        assert f"/public/download/workflow/{OLD_LINK_ID}/transcript" in report, name

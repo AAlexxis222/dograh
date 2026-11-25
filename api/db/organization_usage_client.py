@@ -294,6 +294,7 @@ class OrganizationUsageClient(BaseDBClient):
                     WorkflowRunModel.cost_info,
                     WorkflowRunModel.usage_info,
                     WorkflowRunModel.public_access_token,
+                    WorkflowRunModel.public_access_expires_at,
                 )
                 .join(WorkflowModel, WorkflowRunModel.workflow_id == WorkflowModel.id)
                 .where(
