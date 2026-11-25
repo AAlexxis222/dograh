@@ -309,6 +309,52 @@ async def test_campaign_batch_on_cloudonix_fails_with_the_code_before_claiming(
     db.claim_queued_runs_for_processing.assert_not_awaited()
 
 
+
+@pytest.mark.asyncio
+async def test_campaign_creation_on_an_explicit_cloudonix_configuration_is_400_with_the_code():
+    from api.routes.campaign import CreateCampaignRequest, create_campaign
+
+    db = Mock()
+    db.get_workflow = AsyncMock(return_value=SimpleNamespace(id=WORKFLOW_ID, name="w"))
+    db.get_telephony_configuration_for_org = AsyncMock(
+        return_value=SimpleNamespace(
+            id=CONFIG_ID,
+            name="Cloudonix",
+            provider="cloudonix",
+            credentials={"bearer_token": API_KEY, "domain_id": "acme.cloudonix.net"},
+        )
+    )
+    db.list_phone_numbers_for_config = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                is_active=True, inbound_workflow_id=None, telephony_trunk_id=None
+            )
+        ]
+    )
+    db.list_trunks_for_config = AsyncMock(return_value=[])
+    with (
+        patch("api.routes.campaign.db_client", db),
+        # Reached only when the resolver accepts the configuration.
+        patch(
+            "api.routes.campaign.requires_e164_destinations",
+            new=AsyncMock(side_effect=AssertionError("test: campaign creation went on")),
+        ),
+        pytest.raises(HTTPException) as refused,
+    ):
+        await create_campaign(
+            CreateCampaignRequest(
+                name="c",
+                workflow_id=WORKFLOW_ID,
+                source_type="csv",
+                source_id="contacts.csv",
+                telephony_configuration_id=CONFIG_ID,
+            ),
+            user=SimpleNamespace(id=1, selected_organization_id=ORG_ID),
+        )
+
+    assert refused.value.status_code == 400
+    assert refused.value.detail == CODE
+
 # ---------------------------------------------------------------------------------------------------------
 # Agent stream: refused on the provider name, before the workflow lookup and the slot
 # ---------------------------------------------------------------------------------------------------------
