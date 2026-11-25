@@ -239,6 +239,40 @@ def test_fallback_lookup_error_that_is_not_an_outage_stays_the_401(
     assert world.snapshot() == before
 
 
+def test_cloudonix_fallback_during_a_database_outage_answers_xml_not_a_tuple(
+    client, world
+):
+    # RUL-r1-31 (e): CloudonixProvider.generate_error_response returned a (Response, media type) tuple, which the
+    # route served as JSON. The outage answer is the provider's spoken XML, as for every other provider.
+    from types import SimpleNamespace
+
+    from api.services.telephony.providers.cloudonix.provider import CloudonixProvider
+
+    normalized = SimpleNamespace(
+        provider="cloudonix",
+        account_id="acme.cloudonix.net",
+        to_number="+34911000111",
+        to_country="ES",
+        call_id="CA-fallback",
+    )
+    with (
+        patch(
+            "api.routes.telephony._detect_provider",
+            new=AsyncMock(return_value=CloudonixProvider),
+        ),
+        patch(
+            "api.services.telephony.callback_auth.normalize_webhook_data",
+            return_value=normalized,
+        ),
+        _lookup_raises(world, "route", ConnectionRefusedError("connection refused")),
+    ):
+        response = _post_fallback(client, _fallback_form())
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/xml")
+    assert _spoken(response.text) == [UNAVAILABLE_ES]
+
+
 @pytest.mark.parametrize("body", NOT_AN_OBJECT)
 def test_fallback_with_a_json_body_that_is_not_an_object_is_401_not_500(world, body):
     app = FastAPI()
