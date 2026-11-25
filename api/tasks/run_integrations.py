@@ -35,7 +35,7 @@ from api.services.workflow.dto import (
 from api.services.workflow.qa import run_per_node_qa_analysis
 from api.tasks.function_names import FunctionNames
 from api.utils.artifacts import artifact_url
-from api.utils.recording_artifacts import get_recording_storage_key
+from api.utils.recording_artifacts import get_recording_storage_key, without_recordings
 from api.utils.template_renderer import render_template
 
 
@@ -423,7 +423,7 @@ def _build_render_context(
         context["transcript_url"] = None
         context["user_recording_url"] = None
         context["bot_recording_url"] = None
-        context["extra"] = {k: v for k, v in extra.items() if k != "recordings"}
+        context["extra"] = without_recordings(extra)
 
     return context
 
