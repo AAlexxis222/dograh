@@ -4,6 +4,7 @@ Real Postgres for the mint, revoke and gate rules (the run row is the source of 
 for the 404 codes, and the real route functions and payload builders for "links off leaks nothing".
 """
 
+import gc
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -393,6 +394,29 @@ async def test_revoking_a_missing_run_is_false(world):
     assert await db_client.revoke_public_access(2_000_000_000) is False
 
 
+def checked_out_connections() -> int:
+    return db_client.engine.sync_engine.pool.checkedout()
+
+
+@pytest.fixture
+def no_gc():
+    """A session left open keeps its connection until the collector breaks its reference cycle; with the collector
+    off, only closing the session gives the connection back, so the count shows a missing close."""
+    gc.disable()
+    yield
+    gc.enable()
+
+
+async def test_revoking_gives_its_connection_back_on_both_paths(world, clock, no_gc):
+    """The missing-run path returns before any commit: only closing the session releases its connection."""
+    run = await world.make_run()
+    before = checked_out_connections()
+    await db_client.revoke_public_access(2_000_000_000)
+    assert checked_out_connections() == before
+    await db_client.revoke_public_access(run.id)
+    assert checked_out_connections() == before
+
+
 # ---------------------------------------------------------------------------
 # Links off in a cell
 # ---------------------------------------------------------------------------
@@ -459,6 +483,16 @@ async def test_the_organization_switch_turns_the_same_link_on(
         public_access_expires_at=T + timedelta(days=1),
     )
     assert (await open_link(http, OLD_LINK_ID)).status_code == 302
+
+
+async def test_the_links_on_read_gives_its_connection_back(world, in_cell, no_gc):
+    """Every public download and every mint in a cell asks this read; it must not hold a connection."""
+    run = await world.make_run()
+    before = checked_out_connections()
+    await db_client.public_links_enabled(world.org.id)
+    assert checked_out_connections() == before
+    await db_client.public_links_enabled_for_run(run.id)
+    assert checked_out_connections() == before
 
 
 async def test_outside_a_cell_links_stay_on(world, clock, monkeypatch, http, storage):
