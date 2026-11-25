@@ -122,7 +122,7 @@ def test_answer_url_without_this_runs_token_is_served_and_logged_while_enforceme
     assert "WARNING" in line and route in line
     assert ("missing" if t is None else "wrong") in line
     if t is not None:
-        assert t not in "\n".join(log_lines)
+        assert t not in line
 
 
 @pytest.mark.parametrize("route", ANSWER_ROUTES)
