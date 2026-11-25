@@ -21,6 +21,9 @@ PUBLIC_LINK_TTL_ENV = "PUBLIC_LINK_TTL_H"
 DEFAULT_CEILING_S = 1200
 # A public download link of a call's recording/transcript lives this long from the moment it is minted (VOZ-N0-30).
 DEFAULT_PUBLIC_LINK_TTL_H = 72
+# Largest PUBLIC_LINK_TTL_H: ten years. Fixed, not derived from the clock (a bound taken from "now" at startup would
+# shrink while the process runs); with it, mint time + TTL fits a date for any clock before year 9989.
+MAX_PUBLIC_LINK_TTL_H = 87600
 # Default max_call_duration of a workflow; the cell ceiling cannot be lower (max_call_duration <= ceiling).
 DEFAULT_MAX_CALL_DURATION_S = 300
 _CEILING_HINT = (
@@ -143,6 +146,14 @@ class Durations:
                 "would be born expired",
                 f"set {PUBLIC_LINK_TTL_ENV} to a whole number of hours >= 1 (default {DEFAULT_PUBLIC_LINK_TTL_H}), "
                 "or unset it",
+            )
+        if self.public_link_ttl_h > MAX_PUBLIC_LINK_TTL_H:
+            raise DurationsError(
+                "knob_out_of_range",
+                f"{PUBLIC_LINK_TTL_ENV}={self.public_link_ttl_h} is above {MAX_PUBLIC_LINK_TTL_H} hours (ten years): "
+                "a link's deadline might not fit a date and every mint would fail",
+                f"set {PUBLIC_LINK_TTL_ENV} to a whole number of hours from 1 to {MAX_PUBLIC_LINK_TTL_H} "
+                f"(default {DEFAULT_PUBLIC_LINK_TTL_H}), or unset it",
             )
         if self.pending_ttl_s < MIN_PENDING_TTL_S:
             raise DurationsError(

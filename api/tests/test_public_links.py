@@ -41,6 +41,7 @@ from api.services.integrations.tuner.completion import (
 from api.services.reports.run_report import build_run_report_csv
 from api.services.runtime.durations import (
     DEFAULT_PUBLIC_LINK_TTL_H,
+    MAX_PUBLIC_LINK_TTL_H,
     PUBLIC_LINK_TTL_ENV,
     Durations,
     DurationsError,
@@ -212,6 +213,13 @@ def test_a_ttl_above_ten_years_fails_startup_with_a_named_error(raw):
         Durations.from_env({PUBLIC_LINK_TTL_ENV: raw})
     assert e.value.code == "knob_out_of_range"
     assert PUBLIC_LINK_TTL_ENV in e.value.reason and e.value.hint
+
+
+def test_the_largest_ttl_still_gives_a_deadline_that_fits_a_date(monkeypatch):
+    monkeypatch.setenv(PUBLIC_LINK_TTL_ENV, str(MAX_PUBLIC_LINK_TTL_H))
+    cell_durations.cache_clear()
+    minted_at = datetime(9988, 12, 31, 23, 59, tzinfo=UTC)
+    assert public_links.expiry_from(minted_at) == minted_at + timedelta(days=3650)
 
 
 def test_a_ttl_that_is_not_a_number_fails_startup_with_a_named_error():
