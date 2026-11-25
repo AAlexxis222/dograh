@@ -31,10 +31,15 @@ def links_enabled(organization_defaults: Any) -> bool:
     )
 
 
-def exposable_token(token: str | None, *, links_on: bool) -> str | None:
-    """The stored link token an authenticated response may carry: none while links are off for its organization,
-    even one stored while they were on. The routes that show a link (or a URL built from it) ask here."""
-    return token if links_on else None
+def exposable_token(
+    token: str | None, *, links_on: bool, expires_at: datetime | None
+) -> str | None:
+    """The stored link token an authenticated output (run page, usage page, CSV report) may carry: only while links
+    are on for its organization and the link is alive by ``now()``. So never one stored while links were on, and
+    never an expired one: that link is not renewed either, its token keeps answering ``link_expired``."""
+    if not token or not links_on or is_expired(expires_at, now()):
+        return None
+    return token
 
 
 def expiry_from(minted_at: datetime) -> datetime:

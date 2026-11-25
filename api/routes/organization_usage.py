@@ -529,9 +529,12 @@ async def get_usage_history(
 
         links_on = await db_client.public_links_enabled(user.selected_organization_id)
         for run in runs:
-            # Links off (VOZ-N0-30): the raw token leaves the response too, not only the URLs built from it.
+            # Links off or link expired (VOZ-N0-30): the raw token leaves the response too, not only the URLs
+            # built from it.
             public_access_token = public_links.exposable_token(
-                run.get("public_access_token"), links_on=links_on
+                run.get("public_access_token"),
+                links_on=links_on,
+                expires_at=run.get("public_access_expires_at"),
             )
             run["public_access_token"] = public_access_token
             run["transcript_public_url"] = artifact_url(

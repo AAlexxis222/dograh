@@ -565,6 +565,27 @@ async def test_the_run_route_hides_an_expired_link_of_a_run_without_artifacts(
     assert body["public_access_token"] is None
 
 
+async def test_the_run_route_shows_the_link_it_mints_on_first_view(world, clock):
+    """The row the route loaded has no deadline yet; the link it has just minted is alive and is shown."""
+    run = await world.make_run(recording_url=RECORDING_PATH)
+    body = await get_workflow_run(world.workflow.id, run.id, user=world.user)
+    stored = await world.reload(run.id)
+    assert stored.public_access_token
+    assert body["public_access_token"] == stored.public_access_token
+    assert stored.public_access_token in body["recording_public_url"]
+
+
+async def test_the_routes_still_show_a_live_link(world, clock):
+    """Outside a cell, an hour before its deadline: unchanged on the run page and the usage page."""
+    run = await stale_run(world)
+    clock["now"] = T + timedelta(days=1) - timedelta(hours=1)
+    body = await get_workflow_run(world.workflow.id, run.id, user=world.user)
+    row = await usage_row(world, run)
+    for shown in (body, row):
+        assert shown["public_access_token"] == OLD_LINK_ID
+        assert OLD_LINK_ID in shown["recording_public_url"]
+
+
 async def test_the_usage_route_hides_an_expired_link(world, clock):
     run = await stale_run(world)
     clock["now"] = T + timedelta(days=2)

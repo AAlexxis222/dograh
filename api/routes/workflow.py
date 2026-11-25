@@ -1556,11 +1556,9 @@ async def get_workflow_run(
     if not run:
         raise HTTPException(status_code=404, detail="Workflow run not found")
 
-    # Links off (VOZ-N0-30): no token in any field, even one stored while they were on.
     links_on = await db_client.public_links_enabled(user.selected_organization_id)
-    public_access_token = public_links.exposable_token(
-        run.public_access_token, links_on=links_on
-    )
+    stored_token = run.public_access_token
+    expires_at = run.public_access_expires_at
     user_recording_url = get_recording_storage_key(run.extra, "user")
     bot_recording_url = get_recording_storage_key(run.extra, "bot")
     has_user_recording = has_recording_track(run.extra, "user")
@@ -1573,9 +1571,17 @@ async def get_workflow_run(
             or has_user_recording
             or has_bot_recording
         )
-        and not public_access_token
+        and not stored_token
     ):
-        public_access_token = await db_client.ensure_public_access_token(run.id)
+        stored_token = await db_client.ensure_public_access_token(run.id)
+        if stored_token:
+            # Just minted: the row loaded above has no deadline yet, so read the one the mint stored.
+            minted = await db_client.get_workflow_run_by_public_token(stored_token)
+            expires_at = minted.public_access_expires_at if minted else None
+    # Links off or link expired (VOZ-N0-30): no token in any field, even one stored while links were on.
+    public_access_token = public_links.exposable_token(
+        stored_token, links_on=links_on, expires_at=expires_at
+    )
 
     return {
         "id": run.id,
