@@ -9,23 +9,16 @@ from api.db.base_client import BaseDBClient
 from api.db.credentials_at_rest import unseal
 from api.db.filters import apply_workflow_run_filters, get_workflow_run_order_clause
 from api.db.models import (
-    OrganizationConfigurationModel,
     OrganizationModel,
     UserModel,
     WorkflowDefinitionModel,
     WorkflowModel,
     WorkflowRunModel,
 )
-from api.enums import (
-    CallType,
-    OrganizationConfigurationKey,
-    StorageBackend,
-    WorkflowRunMode,
-)
+from api.enums import CallType, StorageBackend, WorkflowRunMode
 from api.schemas.workflow import WorkflowRunResponseSchema
 from api.services.configuration.credential_refs import check_no_credential_values
 from api.services import public_links
-from api.services.runtime.cell_startup import is_cell
 from api.services.workflow.run_usage_response import format_public_cost_info
 from api.utils.recording_artifacts import get_recording_storage_key
 
@@ -509,44 +502,11 @@ class WorkflowRunClient(BaseDBClient):
             organization_id = workflow_run.workflow.organization_id
             return workflow_run, organization_id
 
-    async def public_links_enabled_for_run(self, workflow_run_id: int) -> bool:
-        """Whether the run's organization may have public download links (see
-        ``OrganizationConfigurationClient.public_links_enabled``). One query, and none outside a cell. The document
-        is read whole and unsealed in Python: the column may hold a credential_box token, so SQL never looks inside."""
-        if not is_cell():
-            return True
-        async with self.async_session() as session:
-            result = await session.execute(
-                select(
-                    OrganizationConfigurationModel.id,
-                    OrganizationConfigurationModel.value,
-                )
-                .join(
-                    WorkflowModel,
-                    WorkflowModel.organization_id
-                    == OrganizationConfigurationModel.organization_id,
-                )
-                .join(
-                    WorkflowRunModel, WorkflowRunModel.workflow_id == WorkflowModel.id
-                )
-                .where(
-                    WorkflowRunModel.id == workflow_run_id,
-                    OrganizationConfigurationModel.key
-                    == OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value,
-                )
-            )
-            row = result.one_or_none()
-            document = (
-                unseal(OrganizationConfigurationModel.value, row.id, row.value)
-                if row is not None
-                else None
-            )
-            return public_links.links_enabled(document)
-
     async def ensure_public_access_token(self, workflow_run_id: int) -> Optional[str]:
         """Generate a public access token if not exists, return existing if present (idempotent).
 
-        The one place a link is born: it mints nothing when links are off for the run's organization, and never
+        The one place a link is born: it mints nothing when links are off for the run's organization (asked through
+        ``OrganizationConfigurationClient.public_links_enabled_for_run``, mixed in beside this client), and never
         again after ``revoke_public_access``. A new token expires ``PUBLIC_LINK_TTL_H`` hours after this call.
 
         Args:

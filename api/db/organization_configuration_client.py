@@ -2,12 +2,16 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from sqlalchemy import update
+from sqlalchemy import Select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.future import select
 
 from api.db.base_client import BaseDBClient
-from api.db.models import OrganizationConfigurationModel
+from api.db.models import (
+    OrganizationConfigurationModel,
+    WorkflowModel,
+    WorkflowRunModel,
+)
 from api.enums import OrganizationConfigurationKey
 from api.services.public_links import links_enabled
 from api.services.runtime.cell_startup import is_cell
@@ -251,19 +255,41 @@ class OrganizationConfigurationClient(BaseDBClient):
 
     async def public_links_enabled(self, organization_id: int | None) -> bool:
         """Whether this organization may have public download links (VOZ-N0-30): always outside a cell, only on
-        its own ``public_links_enabled: true`` inside one. A legacy workflow without an organization has none."""
+        its own ``public_links_enabled: true`` inside one. A legacy workflow without an organization has none
+        (``organization_id`` is NOT NULL, so ``None`` matches no row)."""
+        return await self._public_links_enabled(
+            select(OrganizationConfigurationModel).where(
+                OrganizationConfigurationModel.organization_id == organization_id
+            )
+        )
+
+    async def public_links_enabled_for_run(self, workflow_run_id: int) -> bool:
+        """``public_links_enabled`` for the organization of the run's workflow, in the same single query."""
+        return await self._public_links_enabled(
+            select(OrganizationConfigurationModel)
+            .join(
+                WorkflowModel,
+                WorkflowModel.organization_id
+                == OrganizationConfigurationModel.organization_id,
+            )
+            .join(WorkflowRunModel, WorkflowRunModel.workflow_id == WorkflowModel.id)
+            .where(WorkflowRunModel.id == workflow_run_id)
+        )
+
+    async def _public_links_enabled(self, configurations: Select) -> bool:
+        """The one read behind both questions: no query outside a cell; inside one, the whole configuration entity
+        is loaded, so the ORM load event unseals the document (it may hold a credential_box token)."""
         if not is_cell():
             return True
-        defaults = (
-            await self.get_configuration_value(
-                organization_id,
-                OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value,
-                {},
+        async with self.async_session() as session:
+            result = await session.execute(
+                configurations.where(
+                    OrganizationConfigurationModel.key
+                    == OrganizationConfigurationKey.WORKFLOW_CONFIGURATION_DEFAULTS.value
+                )
             )
-            if organization_id is not None
-            else {}
-        )
-        return links_enabled(defaults)
+            config = result.scalars().first()
+            return links_enabled(config.value if config else None)
 
     async def get_all_configurations_by_key(self, key: str) -> list[dict[str, Any]]:
         """Get all organization configurations for a given key.
