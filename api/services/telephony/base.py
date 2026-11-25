@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
-    from fastapi import WebSocket
+    from fastapi import Response, WebSocket
 
 
 @dataclass
@@ -501,7 +501,7 @@ class TelephonyProvider(ABC):
 
     @staticmethod
     @abstractmethod
-    def generate_error_response(error_type: str, message: str) -> tuple:
+    def generate_error_response(error_type: str, message: str) -> "Response":
         """
         Generate a provider-specific error response.
 
@@ -510,7 +510,7 @@ class TelephonyProvider(ABC):
             message: Operator-facing error text: logged, never spoken to the caller
 
         Returns:
-            Tuple of (Response, media_type) - Response object and content type
+            The Response a route serves as it is, in the provider's own format
         """
         pass
 

@@ -1343,7 +1343,7 @@ class CloudonixProvider(TelephonyProvider):
         return Response(content=twiml_content, media_type="application/xml")
 
     @staticmethod
-    def generate_error_response(error_type: str, message: str) -> tuple:
+    def generate_error_response(error_type: str, message: str):
         """
         Generate a Cloudonix-specific error response.
 
@@ -1359,7 +1359,7 @@ class CloudonixProvider(TelephonyProvider):
     <Hangup/>
 </Response>"""
 
-        return Response(content=twiml, media_type="application/xml"), "application/xml"
+        return Response(content=twiml, media_type="application/xml")
 
     # ======== CALL TRANSFER METHODS ========
     @staticmethod
