@@ -9,7 +9,7 @@ from pipecat.utils.enums import EndTaskReason
 from pipecat.utils.run_context import set_current_org_id, set_current_run_id
 from pydantic import ValidationError
 
-from api.constants import BACKEND_API_ENDPOINT, DEFAULT_WEBHOOK_DELIVERY_CONFIG
+from api.constants import DEFAULT_WEBHOOK_DELIVERY_CONFIG
 from api.db import db_client
 from api.db.models import WorkflowRunModel
 from api.enums import OrganizationConfigurationKey
@@ -34,6 +34,7 @@ from api.services.workflow.dto import (
 )
 from api.services.workflow.qa import run_per_node_qa_analysis
 from api.tasks.function_names import FunctionNames
+from api.utils.artifacts import artifact_url
 from api.utils.recording_artifacts import get_recording_storage_key
 from api.utils.template_renderer import render_template
 
@@ -399,20 +400,21 @@ def _build_render_context(
 
     # Add public download URLs if token is available
     if public_token:
-        base_url = (
-            f"{BACKEND_API_ENDPOINT}/api/v1/public/download/workflow/{public_token}"
-        )
         context["recording_url"] = (
-            f"{base_url}/recording" if workflow_run.recording_url else None
+            artifact_url(public_token, "recording")
+            if workflow_run.recording_url
+            else None
         )
         context["transcript_url"] = (
-            f"{base_url}/transcript" if workflow_run.transcript_url else None
+            artifact_url(public_token, "transcript")
+            if workflow_run.transcript_url
+            else None
         )
         context["user_recording_url"] = (
-            f"{base_url}/user_recording" if user_recording_key else None
+            artifact_url(public_token, "user_recording") if user_recording_key else None
         )
         context["bot_recording_url"] = (
-            f"{base_url}/bot_recording" if bot_recording_key else None
+            artifact_url(public_token, "bot_recording") if bot_recording_key else None
         )
     else:
         # No token: links are off for this organization, or the run was revoked (VOZ-N0-30). The storage URLs and
