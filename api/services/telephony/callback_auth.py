@@ -214,19 +214,29 @@ def require_answer_url_token(
     """Raise the 401 unless the answer URL carries the token minted for ``workflow_run_id``.
 
     A carrier signature on the answer URL binds no run, so a captured one replays against every run of its
-    organization: only this token tells the runs apart. With no secret configured a cell fails closed
-    (VOZ-AC-B0-30) and any other deployment keeps the carrier signature and the run agreement alone, like every
-    other ws_auth surface.
+    organization: only this token tells the runs apart. A missing or wrong token is refused when
+    TELEPHONY_WS_TOKEN_ENFORCE is on (the switch the media WebSocket uses) or in a cell; otherwise it is logged and
+    the request, already carrier-signed, is served, so answer URLs dialed by pre-token code still connect during
+    the soft rollout. With no secret configured a cell fails closed (VOZ-AC-B0-30) and any other deployment keeps
+    the carrier signature and the run agreement alone, like every other ws_auth surface.
     """
     if ws_auth.token_configured():
-        if not ws_auth.verify_answer_url_token(workflow_run_id, token):
-            raise rejected(
-                where,
-                why=f"answer-URL token {'wrong' if token else 'missing'} for run {workflow_run_id}",
-                code="answer_url_token_invalid",
-                reason="the answer URL does not carry the token minted for its run",
-                hint="the answer URL was not minted by this deployment for this run",
+        if ws_auth.verify_answer_url_token(workflow_run_id, token):
+            return
+        why = f"answer-URL token {'wrong' if token else 'missing'} for run {workflow_run_id}"
+        if not (ws_auth.enforcement_enabled() or is_cell()):
+            logger.warning(
+                f"carrier callback served without enforcement (TELEPHONY_WS_TOKEN_ENFORCE off): "
+                f"where={where!r} why={why!r}"
             )
+            return
+        raise rejected(
+            where,
+            why=why,
+            code="answer_url_token_invalid",
+            reason="the answer URL does not carry the token minted for its run",
+            hint="the answer URL was not minted by this deployment for this run",
+        )
     elif is_cell():
         raise rejected(
             where,
