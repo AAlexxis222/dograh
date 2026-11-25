@@ -1134,8 +1134,14 @@ async def handle_inbound_telephony(
     existing provider configurations that still encode ``workflow_id``
     in the URL.
 
-    It is in the closed route list of VOZ-N0-29: every refusal before the
-    request is authenticated is the B0-28 401, never a TwiML document.
+    It is in the closed route list of VOZ-N0-29. A webhook that fails
+    validation (unknown workflow, telephony configuration or called number,
+    or a missing or invalid signature) is refused with the B0-28 401, except
+    a carrier whose signing cannot be verified, which gets that carrier's
+    error document. A body that cannot be parsed, a webhook no provider
+    recognises or that cannot be normalized, a call that is not inbound and
+    any other error before the call starts still answer 200 with a TwiML
+    hangup.
     """
     logger.info(
         f"[legacy /inbound/{{workflow_id}}] Inbound call received for workflow_id: {workflow_id}"

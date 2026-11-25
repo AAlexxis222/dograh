@@ -42,7 +42,7 @@ def test_legacy_inbound_refused_before_authentication_is_401_and_creates_no_run(
     client, world, refusal
 ):
     # An unsigned request must not tell an existing workflow or number from a missing one: every refusal
-    # before the request is authenticated is the same 401, never a TwiML document.
+    # by validation before the request is authenticated is the same 401, never a TwiML document.
     normalized = SimpleNamespace(
         provider="twilio",
         direction="inbound",
