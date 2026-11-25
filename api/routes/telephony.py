@@ -1077,7 +1077,12 @@ async def handle_inbound_fallback(request: Request):
     webhook_data, raw_body = await parse_webhook_or_reject(request, where=where)
     headers = dict(request.headers)
 
-    provider_class = await _detect_provider(webhook_data, headers)
+    try:
+        provider_class = await _detect_provider(webhook_data, headers)
+    except Exception as exc:  # a detector that cannot read the body recognises nothing
+        raise rejected(
+            where, why=f"no provider recognises the request ({type(exc).__name__})"
+        ) from exc
     if not provider_class:
         raise rejected(where, why="no provider recognises the request")
     try:
