@@ -753,9 +753,7 @@ def test_the_webhook_payload_has_no_url_or_storage_path_without_a_link():
 
 
 def test_the_webhook_payload_still_carries_the_public_urls_with_a_link():
-    with patch(
-        "api.utils.artifacts.BACKEND_API_ENDPOINT", "https://api.example"
-    ):
+    with patch("api.utils.artifacts.BACKEND_API_ENDPOINT", "https://api.example"):
         context = _build_render_context(_run_for_context(RECORDINGS_EXTRA), NEW_LINK_ID)
     assert context["recording_url"].endswith(f"/{NEW_LINK_ID}/recording")
     assert context["user_recording_url"].endswith(f"/{NEW_LINK_ID}/user_recording")
