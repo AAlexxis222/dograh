@@ -204,6 +204,15 @@ def test_a_non_positive_ttl_fails_startup_with_a_named_error(raw):
     assert PUBLIC_LINK_TTL_ENV in e.value.reason and e.value.hint
 
 
+@pytest.mark.parametrize("raw", ["87601", "100000000"])
+def test_a_ttl_above_ten_years_fails_startup_with_a_named_error(raw):
+    """Past it, mint time + TTL may not fit a date, and every mint would raise."""
+    with pytest.raises(DurationsError) as e:
+        Durations.from_env({PUBLIC_LINK_TTL_ENV: raw})
+    assert e.value.code == "knob_out_of_range"
+    assert PUBLIC_LINK_TTL_ENV in e.value.reason and e.value.hint
+
+
 def test_a_ttl_that_is_not_a_number_fails_startup_with_a_named_error():
     with pytest.raises(DurationsError) as e:
         Durations.from_env({PUBLIC_LINK_TTL_ENV: "3d"})
