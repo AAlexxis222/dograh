@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 from twilio.request_validator import RequestValidator
 
+from api import constants
 from api.services.telephony.providers.twilio.provider import TwilioProvider
 from api.services.telephony.providers.twilio.routes import (
     handle_twilio_status_callback,
@@ -77,7 +78,11 @@ def _signature(
 
 
 @pytest.mark.asyncio
-async def test_twiml_route_accepts_valid_signature_with_extra_query_param():
+async def test_twiml_route_accepts_valid_signature_with_extra_query_param(monkeypatch):
+    # No answer-URL token secret, enforcement or cell from the process environment: this is the tokenless URL.
+    monkeypatch.setattr(constants, "TELEPHONY_WS_TOKEN_SECRET", None)
+    monkeypatch.setattr(constants, "TELEPHONY_WS_TOKEN_ENFORCE", False)
+    monkeypatch.delenv("CELL_ROLE", raising=False)
     provider = _provider()
     query = {
         "workflow_id": 7,

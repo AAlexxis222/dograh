@@ -7,8 +7,19 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from loguru import logger
 
+from api import constants
 from api.routes.telephony import router
 from api.tests.support.carrier_callbacks import World
+
+
+@pytest.fixture(autouse=True)
+def answer_url_token_off(monkeypatch):
+    """No answer-URL token secret, no enforcement and no cell, whatever the process environment carries (a cell
+    container or an exported secret would turn every tokenless answer URL into a 401). A test that needs them sets
+    its own."""
+    monkeypatch.setattr(constants, "TELEPHONY_WS_TOKEN_SECRET", None)
+    monkeypatch.setattr(constants, "TELEPHONY_WS_TOKEN_ENFORCE", False)
+    monkeypatch.delenv("CELL_ROLE", raising=False)
 
 
 @pytest.fixture

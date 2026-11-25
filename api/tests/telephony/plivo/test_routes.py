@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 import pytest
 from starlette.requests import Request
 
+from api import constants
 from api.services.telephony.providers.plivo.provider import PlivoProvider
 from api.services.telephony.providers.plivo.routes import (
     handle_plivo_hangup_callback,
@@ -88,7 +89,13 @@ def _signature(
 
 
 @pytest.mark.asyncio
-async def test_plivo_xml_route_accepts_valid_signature_with_extra_query_param():
+async def test_plivo_xml_route_accepts_valid_signature_with_extra_query_param(
+    monkeypatch,
+):
+    # No answer-URL token secret, enforcement or cell from the process environment: this is the tokenless URL.
+    monkeypatch.setattr(constants, "TELEPHONY_WS_TOKEN_SECRET", None)
+    monkeypatch.setattr(constants, "TELEPHONY_WS_TOKEN_ENFORCE", False)
+    monkeypatch.delenv("CELL_ROLE", raising=False)
     provider = _provider()
     query = {
         "workflow_id": 7,
