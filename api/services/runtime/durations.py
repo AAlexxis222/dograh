@@ -1,5 +1,8 @@
-"""Single source of call/slot/drain/grace durations (VOZ-AC-B3-55). Only the cell ceiling is written;
-everything else derives from it and is asserted at startup of each role."""
+"""Single source of call/slot/drain/grace durations (VOZ-AC-B3-55) and of the public link TTL (VOZ-N0-30).
+
+Two knobs are written. The cell ceiling: every call/slot/drain/grace duration derives from it and is asserted at
+startup of each role. ``PUBLIC_LINK_TTL_H``: how long a public download link lives, independent of the ceiling
+(never derived from it nor rescaled with it)."""
 
 import os
 import sys
@@ -108,6 +111,9 @@ def _whole_number_env(
 
 @dataclass(frozen=True)
 class Durations:
+    """``ceiling`` and ``public_link_ttl_h`` are the written knobs; the margins are constants of this module and
+    the slot/drain/grace durations derive from the ceiling. The link TTL does not derive from the ceiling."""
+
     ceiling: int
     slot_margin_s: int = 60
     drain_margin_s: int = 60
