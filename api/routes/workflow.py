@@ -26,6 +26,7 @@ from api.schemas.ai_model_configuration import OrganizationAIModelConfigurationV
 from api.schemas.workflow import WorkflowRunResponseSchema
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
 from api.sdk_expose import sdk_expose
+from api.services import public_links
 from api.services.auth.depends import get_user
 from api.services.configuration.ai_model_configuration import (
     WORKFLOW_MODEL_CONFIGURATION_V2_OVERRIDE_KEY,
@@ -1557,7 +1558,9 @@ async def get_workflow_run(
 
     # Links off (VOZ-N0-30): no token in any field, even one stored while they were on.
     links_on = await db_client.public_links_enabled(user.selected_organization_id)
-    public_access_token = run.public_access_token if links_on else None
+    public_access_token = public_links.exposable_token(
+        run.public_access_token, links_on=links_on
+    )
     user_recording_url = get_recording_storage_key(run.extra, "user")
     bot_recording_url = get_recording_storage_key(run.extra, "bot")
     has_user_recording = has_recording_track(run.extra, "user")

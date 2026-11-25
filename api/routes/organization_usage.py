@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from api.constants import DEPLOYMENT_MODE, UI_APP_URL
 from api.db import db_client
 from api.db.models import UserModel
+from api.services import public_links
 from api.services.auth.depends import get_user, get_user_with_selected_organization
 from api.services.call_concurrency import SlotBackendError, call_concurrency
 from api.services.mps_service_key_client import mps_service_key_client
@@ -529,7 +530,9 @@ async def get_usage_history(
         links_on = await db_client.public_links_enabled(user.selected_organization_id)
         for run in runs:
             # Links off (VOZ-N0-30): the raw token leaves the response too, not only the URLs built from it.
-            public_access_token = run.get("public_access_token") if links_on else None
+            public_access_token = public_links.exposable_token(
+                run.get("public_access_token"), links_on=links_on
+            )
             run["public_access_token"] = public_access_token
             run["transcript_public_url"] = artifact_url(
                 public_access_token, "transcript"

@@ -31,6 +31,12 @@ def links_enabled(organization_defaults: Any) -> bool:
     )
 
 
+def exposable_token(token: str | None, *, links_on: bool) -> str | None:
+    """The stored link token an authenticated response may carry: none while links are off for its organization,
+    even one stored while they were on. The routes that show a link (or a URL built from it) ask here."""
+    return token if links_on else None
+
+
 def expiry_from(minted_at: datetime) -> datetime:
     return minted_at + timedelta(hours=cell_durations().public_link_ttl_h)
 
