@@ -604,14 +604,24 @@ async def test_the_usage_route_hides_an_expired_link(world, clock):
 
 
 # ---------------------------------------------------------------------------
-# Links off: no link id, storage URL or storage path in any response or payload
+# Links off. The authenticated routes (run page, usage page) carry no link id and no public URL; they keep the
+# storage paths the logged-in UI plays recordings from, which are not public links (RUL-r1-3). What leaves the
+# organization (webhook payload, Noveum and Tuner, CSV reports) carries no link id, public URL or storage path.
 # ---------------------------------------------------------------------------
 
 
-def assert_clean(value):
+def assert_no_public_link(value):
+    """For the authenticated routes: no link id and no public URL."""
     text = repr(value)
-    for leak in (OLD_LINK_ID, CANARY_BUCKET, "/public/download/"):
+    for leak in (OLD_LINK_ID, "/public/download/"):
         assert leak not in text, f"{leak!r} leaked in {text[:400]}"
+
+
+def assert_clean(value):
+    """For what leaves the organization: no public link and no storage path either."""
+    assert_no_public_link(value)
+    text = repr(value)
+    assert CANARY_BUCKET not in text, f"{CANARY_BUCKET!r} leaked in {text[:400]}"
 
 
 async def stale_run(world):
@@ -639,8 +649,7 @@ async def test_the_run_route_gives_no_link_and_no_public_url_when_links_are_off(
     assert body["public_access_token"] is None
     for field in PUBLIC_URL_FIELDS:
         assert body[field] is None, field
-    assert OLD_LINK_ID not in repr(body)
-    assert "/public/download/" not in repr(body)
+    assert_no_public_link(body)
 
 
 async def test_the_run_route_does_not_mint_when_links_are_off(world, clock, in_cell):
@@ -687,7 +696,7 @@ async def test_the_usage_route_gives_no_link_and_no_public_url_when_links_are_of
     assert row["public_access_token"] is None
     for field in PUBLIC_URL_FIELDS:
         assert row[field] is None, field
-    assert OLD_LINK_ID not in repr(row)
+    assert_no_public_link(row)
 
 
 def _run_for_context(extra):
