@@ -20,7 +20,9 @@ from api.errors.telephony_errors import (
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.callback_auth import (
+    CallbackRefused,
     authenticate_answer_url,
+    route_provider,
 )
 from api.services.telephony.factory import get_telephony_provider_for_run
 from api.services.telephony.providers.twilio.introduction import (
@@ -127,9 +129,16 @@ async def handle_twilio_status_callback(
         logger.warning(f"Workflow {workflow_run.workflow_id} not found")
         return {"status": "ignored", "reason": "workflow_not_found"}
 
-    provider = await get_telephony_provider_for_run(
-        workflow_run, workflow.organization_id
-    )
+    try:
+        provider = await route_provider(
+            get_telephony_provider_for_run(workflow_run, workflow.organization_id),
+            provider_name=TwilioProvider.PROVIDER_NAME,
+            where="POST /telephony/twilio/status-callback/{workflow_run_id}",
+        )
+    except CallbackRefused:
+        raise HTTPException(
+            status_code=401, detail="Invalid webhook signature"
+        ) from None
 
     is_valid = await provider.verify_inbound_signature(
         str(request.url),

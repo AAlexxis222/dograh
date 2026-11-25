@@ -7,6 +7,8 @@ and cannot tell a missing transfer from a bad signature. The reason a request wa
 to the caller, and the log never carries the request's headers or body.
 """
 
+from collections.abc import Awaitable
+
 from fastapi import HTTPException
 from loguru import logger
 
@@ -31,6 +33,11 @@ DEFAULT_REASON = "the callback could not be authenticated against the telephony 
 DEFAULT_HINT = "check that the carrier calls the URL this platform configured, and that the auth token or public key in the telephony configuration is the current one"
 
 
+class CallbackRefused(Exception):
+    """A per-run carrier callback refused before its signature is checked (``route_provider``). The route answers
+    it with the response it gives an invalid signature."""
+
+
 class CredentialStoreUnavailable(Exception):
     """The credential lookup of an inbound webhook could not reach its store (``is_store_unreachable``): the
     request may be genuine, so the caller answers it instead of refusing it."""
@@ -52,8 +59,19 @@ def rejected(
 
     ``where`` and ``why`` are logged as reprs: a request value inside them (a path segment) cannot start a line.
     """
-    logger.warning(f"carrier callback refused: code={code} where={where!r} why={why!r}")
+    _log_refusal(where, why=why, code=code)
     return _unauthenticated(where, code=code, reason=reason, hint=hint)
+
+
+def _log_refusal(where: str, *, why: str, code: str = UNAUTHENTICATED) -> None:
+    logger.warning(f"carrier callback refused: code={code} where={where!r} why={why!r}")
+
+
+def _wrong_provider(provider, provider_name: str) -> str | None:
+    """Why ``provider`` may not verify a callback of the ``provider_name`` route, or None when it may."""
+    if provider.PROVIDER_NAME != provider_name:
+        return f"run is on {provider.PROVIDER_NAME}, not {provider_name}"
+    return None
 
 
 def _unauthenticated(
@@ -101,16 +119,33 @@ async def provider_for_run(
         raise rejected(
             where, why=f"provider unavailable ({type(exc).__name__})"
         ) from exc
-    if provider.PROVIDER_NAME != provider_name:
-        raise rejected(
-            where, why=f"run is on {provider.PROVIDER_NAME}, not {provider_name}"
-        )
+    if why := _wrong_provider(provider, provider_name):
+        raise rejected(where, why=why)
     if (expect_workflow_id is not None and run.workflow_id != expect_workflow_id) or (
         expect_organization_id is not None
         and workflow.organization_id != expect_organization_id
     ):
         raise rejected(where, why=f"query does not match run {workflow_run_id}")
     return run, workflow, provider
+
+
+async def route_provider(lookup: Awaitable, *, provider_name: str, where: str):
+    """The provider the route's own run lookup ``lookup`` resolves, when it may verify a callback of the
+    ``provider_name`` route; otherwise ``CallbackRefused``, before anything is verified.
+
+    Refused: a run of a carrier ``carrier_policy`` disables (``CarrierDisabledError``), and a run of another
+    provider. No provider builds its callback URLs on another provider's route, and another provider's verifier
+    checks another scheme (ARI's accepts every request), so it cannot authenticate this route's callback.
+    """
+    try:
+        provider = await lookup
+    except CarrierDisabledError as exc:
+        _log_refusal(where, why=f"run is on a disabled carrier ({exc.code})")
+        raise CallbackRefused(where) from exc
+    if why := _wrong_provider(provider, provider_name):
+        _log_refusal(where, why=why)
+        raise CallbackRefused(where)
+    return provider
 
 
 async def provider_for_inbound_webhook(

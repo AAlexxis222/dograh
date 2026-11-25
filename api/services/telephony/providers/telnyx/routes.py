@@ -13,7 +13,11 @@ from pipecat.utils.run_context import set_current_run_id
 from api.db import db_client
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
-from api.services.telephony.callback_auth import verify_transfer_callback
+from api.services.telephony.callback_auth import (
+    CallbackRefused,
+    route_provider,
+    verify_transfer_callback,
+)
 from api.services.telephony.factory import get_telephony_provider_for_run
 from api.services.telephony.providers.telnyx.provider import (
     TelnyxProvider,
@@ -142,9 +146,15 @@ async def handle_telnyx_events(
         # existed, re-opening the enumeration channel for that class of run.
         raise HTTPException(status_code=404, detail="Workflow run not found")
 
-    provider = await get_telephony_provider_for_run(
-        workflow_run, workflow.organization_id
-    )
+    try:
+        provider = await route_provider(
+            get_telephony_provider_for_run(workflow_run, workflow.organization_id),
+            provider_name=TelnyxProvider.PROVIDER_NAME,
+            where="POST /telephony/telnyx/events/{workflow_run_id}",
+        )
+    except CallbackRefused:
+        # The same 404 as an unknown run, like an invalid signature below.
+        raise HTTPException(status_code=404, detail="Workflow run not found") from None
 
     signature_valid = await provider.verify_inbound_signature(
         "", event_data, dict(request.headers), raw_body

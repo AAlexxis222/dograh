@@ -13,8 +13,10 @@ from starlette.responses import HTMLResponse
 
 from api.db import db_client
 from api.services.telephony.callback_auth import (
+    CallbackRefused,
     authenticate_answer_url,
     parse_webhook_or_reject,
+    route_provider,
 )
 from api.services.telephony.factory import (
     get_telephony_provider_for_run,
@@ -54,6 +56,21 @@ async def _verify_vobiz_callback(
     if not is_valid:
         logger.warning(f"{log_prefix} Invalid or missing Vobiz callback signature")
         raise HTTPException(status_code=403, detail="Invalid webhook signature")
+
+
+async def _vobiz_provider(workflow_run, organization_id: int, *, where: str):
+    """The run's provider for a Vobiz callback (``route_provider``), or the 403 the callback answers for a bad
+    signature."""
+    try:
+        return await route_provider(
+            get_telephony_provider_for_run(workflow_run, organization_id),
+            provider_name=VobizProvider.PROVIDER_NAME,
+            where=where,
+        )
+    except CallbackRefused:
+        raise HTTPException(
+            status_code=403, detail="Invalid webhook signature"
+        ) from None
 
 
 async def _parse_vobiz_callback(request: Request, *, log_prefix: str):
@@ -157,8 +174,10 @@ async def handle_vobiz_hangup_callback(
         logger.warning(f"[run {workflow_run_id}] Workflow not found")
         return {"status": "ignored", "reason": "workflow_not_found"}
 
-    provider = await get_telephony_provider_for_run(
-        workflow_run, workflow.organization_id
+    provider = await _vobiz_provider(
+        workflow_run,
+        workflow.organization_id,
+        where="POST /telephony/vobiz/hangup-callback/{workflow_run_id}",
     )
 
     # Fail closed: Vobiz signs every callback, so reject unsigned/forged ones
@@ -239,8 +258,10 @@ async def handle_vobiz_ring_callback(
         logger.warning(f"[run {workflow_run_id}] Workflow not found")
         return {"status": "ignored", "reason": "workflow_not_found"}
 
-    provider = await get_telephony_provider_for_run(
-        workflow_run, workflow.organization_id
+    provider = await _vobiz_provider(
+        workflow_run,
+        workflow.organization_id,
+        where="POST /telephony/vobiz/ring-callback/{workflow_run_id}",
     )
 
     # Fail closed: reject unsigned/forged ring callbacks before logging them.
@@ -330,8 +351,10 @@ async def handle_vobiz_hangup_callback_by_workflow(
         f"[workflow {workflow_id}] Found workflow run {workflow_run_id} for call {call_uuid}"
     )
 
-    provider = await get_telephony_provider_for_run(
-        workflow_run, workflow.organization_id
+    provider = await _vobiz_provider(
+        workflow_run,
+        workflow.organization_id,
+        where="POST /telephony/vobiz/hangup-callback/workflow/{workflow_id}",
     )
 
     # Fail closed: Vobiz signs every callback, so reject unsigned/forged ones

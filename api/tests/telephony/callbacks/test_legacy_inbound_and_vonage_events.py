@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from api.services.telephony.providers.twilio.provider import TwilioProvider
+from api.services.telephony.providers.vonage.provider import VonageProvider
 from api.tests.support.carrier_callbacks import (
     CALLER,
     ORG_ID,
@@ -128,6 +129,7 @@ def test_legacy_inbound_refused_before_authentication_is_401_and_creates_no_run(
 
 def test_vonage_event_bad_signature_is_401_and_processes_nothing(client, world):
     world.provider = SimpleNamespace(
+        PROVIDER_NAME=VonageProvider.PROVIDER_NAME,
         verify_inbound_signature=AsyncMock(return_value=False),
         parse_status_callback=Mock(),
     )

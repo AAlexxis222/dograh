@@ -12,7 +12,9 @@ from pipecat.utils.run_context import set_current_run_id
 
 from api.db import db_client
 from api.services.telephony.callback_auth import (
+    CallbackRefused,
     authenticate_answer_url,
+    route_provider,
 )
 from api.services.telephony.factory import get_telephony_provider_for_run
 from api.services.telephony.providers.vonage.provider import VonageProvider
@@ -90,9 +92,16 @@ async def _handle_vonage_event_request(request: Request, workflow_run_id: int):
         logger.error(f"[run {workflow_run_id}] Workflow not found")
         return {"status": "error", "message": "Workflow not found"}
 
-    provider = await get_telephony_provider_for_run(
-        workflow_run, workflow.organization_id
-    )
+    try:
+        provider = await route_provider(
+            get_telephony_provider_for_run(workflow_run, workflow.organization_id),
+            provider_name=VonageProvider.PROVIDER_NAME,
+            where="POST /telephony/vonage/events",
+        )
+    except CallbackRefused:
+        raise HTTPException(
+            status_code=401, detail="Invalid webhook signature"
+        ) from None
     signature_valid = await provider.verify_inbound_signature(
         str(request.url), event_data, dict(request.headers), raw_body
     )
