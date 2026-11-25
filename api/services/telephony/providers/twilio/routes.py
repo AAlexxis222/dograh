@@ -245,7 +245,9 @@ async def transfer_audio(token: str):
     )
 
 
-async def _verified_introduction_transfer(transfer_id: str, request: Request):
+async def _verified_introduction_transfer(
+    transfer_id: str, request: Request, *, where: str
+):
     manager = await get_call_transfer_manager()
     transfer = await manager.get_transfer_context(transfer_id)
     if not transfer or not transfer.introduction_audio_url:
@@ -256,13 +258,19 @@ async def _verified_introduction_transfer(transfer_id: str, request: Request):
     workflow = await db_client.get_workflow_by_id(run.workflow_id)
     if not workflow:
         raise HTTPException(status_code=404, detail="Transfer unavailable")
-    provider = await get_telephony_provider_for_run(run, workflow.organization_id)
-    data = dict(await request.form())
-    if (
-        provider.PROVIDER_NAME != "twilio"
-        or not await provider.verify_inbound_signature(
-            str(request.url), data, dict(request.headers)
+    try:
+        provider = await route_provider(
+            get_telephony_provider_for_run(run, workflow.organization_id),
+            provider_name=TwilioProvider.PROVIDER_NAME,
+            where=where,
         )
+    except CallbackRefused:
+        raise HTTPException(
+            status_code=401, detail="Invalid webhook signature"
+        ) from None
+    data = dict(await request.form())
+    if not await provider.verify_inbound_signature(
+        str(request.url), data, dict(request.headers)
     ):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
     # Twilio may request the destination TwiML before Calls.json returns its SID.
@@ -281,7 +289,9 @@ async def transfer_introduction(
     transfer_id: str, request: Request, skip_audio: bool = False
 ):
     manager, transfer, _, _ = await _verified_introduction_transfer(
-        transfer_id, request
+        transfer_id,
+        request,
+        where="POST /telephony/twilio/transfer-introduction/{transfer_id}",
     )
     result = await manager.get_transfer_result(transfer_id)
     if result and result.type == TransferEventType.TRANSFER_FAILED:
@@ -298,7 +308,9 @@ async def transfer_introduction(
 @router.post("/twilio/transfer-status/{transfer_id}", include_in_schema=False)
 async def introduction_transfer_status(transfer_id: str, request: Request):
     manager, transfer, provider, data = await _verified_introduction_transfer(
-        transfer_id, request
+        transfer_id,
+        request,
+        where="POST /telephony/twilio/transfer-status/{transfer_id}",
     )
     if data.get("CallSid") == transfer.original_call_sid:
         raise HTTPException(status_code=403, detail="Expected destination call")
