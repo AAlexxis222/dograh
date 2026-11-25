@@ -219,7 +219,12 @@ FORGED_SEGMENT = "x%0AFORGED-LINE"
 
 # (route module, path, body kind, body): each handler logs the request's values before any signature check.
 UNSIGNED_VALUE_LOGS = [
-    ("twilio", "/telephony/twilio/status-callback/999", "form", {"CallSid": FORGED, "CallStatus": FORGED}),
+    (
+        "twilio",
+        "/telephony/twilio/status-callback/999",
+        "form",
+        {"CallSid": FORGED, "CallStatus": FORGED},
+    ),
     ("plivo", "/telephony/plivo/hangup-callback/999", "form", {"CallUUID": FORGED}),
     (
         "plivo",
@@ -235,11 +240,26 @@ UNSIGNED_VALUE_LOGS = [
     ),
     ("vobiz", "/telephony/vobiz/hangup-callback/999", "form", {"CallUUID": FORGED}),
     ("vobiz", "/telephony/vobiz/ring-callback/999", "form", {"CallUUID": FORGED}),
-    ("vobiz", "/telephony/vobiz/hangup-callback/workflow/999", "form", {"CallUUID": FORGED}),
+    (
+        "vobiz",
+        "/telephony/vobiz/hangup-callback/workflow/999",
+        "form",
+        {"CallUUID": FORGED},
+    ),
     ("exotel", "/telephony/exotel/status-callback/999", "form", {"CallSid": FORGED}),
-    ("vonage", "/telephony/vonage/events/999", "json", {"uuid": FORGED, "status": FORGED}),
+    (
+        "vonage",
+        "/telephony/vonage/events/999",
+        "json",
+        {"uuid": FORGED, "status": FORGED},
+    ),
     ("vonage", "/telephony/vonage/events", "json", {"uuid": FORGED, "status": FORGED}),
-    ("telnyx", "/telephony/telnyx/events/999", "json", {"data": {"event_type": FORGED}}),
+    (
+        "telnyx",
+        "/telephony/telnyx/events/999",
+        "json",
+        {"data": {"event_type": FORGED}},
+    ),
 ]
 
 

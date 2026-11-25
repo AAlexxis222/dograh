@@ -584,7 +584,9 @@ class PlivoProvider(TelephonyProvider):
             raise ValueError("Plivo provider not properly configured")
 
         from_number = self.select_from_number()
-        logger.info(f"Selected phone number {mask_phone(from_number)} for transfer call")
+        logger.info(
+            f"Selected phone number {mask_phone(from_number)} for transfer call"
+        )
 
         backend_endpoint, _ = await get_backend_endpoints()
 

@@ -309,7 +309,9 @@ def test_fallback_with_a_malformed_unsigned_body_is_401(
 WRONG_TYPED_FIELDS = [{"AccountSid": 5}, {"data": "x"}]
 
 
-@pytest.mark.parametrize("body", WRONG_TYPED_FIELDS, ids=["account-sid-int", "data-str"])
+@pytest.mark.parametrize(
+    "body", WRONG_TYPED_FIELDS, ids=["account-sid-int", "data-str"]
+)
 def test_fallback_with_a_wrong_typed_field_is_401_not_500(world, body):
     app = FastAPI()
     app.include_router(router)

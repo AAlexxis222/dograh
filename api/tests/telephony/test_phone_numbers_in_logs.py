@@ -41,7 +41,9 @@ def log_lines():
 def _assert_masked(log_lines, *tails):
     text = "\n".join(log_lines)
     for tail in tails:
-        assert f"***{tail}" in text, f"no masked ***{tail} in the log: the line did not run"
+        assert f"***{tail}" in text, (
+            f"no masked ***{tail} in the log: the line did not run"
+        )
     for digits in DIGITS:
         assert digits not in text, f"a full number reached the log: {text}"
 
@@ -61,7 +63,10 @@ def _session(status: int, payload: dict) -> MagicMock:
 async def _drive(provider, method: str, payload: dict, status: int = 200, **kwargs):
     module = type(provider).__module__
     with (
-        patch(f"{module}.aiohttp.ClientSession", MagicMock(return_value=_session(status, payload))),
+        patch(
+            f"{module}.aiohttp.ClientSession",
+            MagicMock(return_value=_session(status, payload)),
+        ),
         patch(
             f"{module}.get_backend_endpoints",
             new=AsyncMock(return_value=("https://backend.test", "wss://backend.test")),
@@ -76,7 +81,9 @@ async def _drive(provider, method: str, payload: dict, status: int = 200, **kwar
 
 
 def _transfer(**extra):
-    return dict(destination=OTHER_PARTY, transfer_id="tx-1", conference_name="conf-1", **extra)
+    return dict(
+        destination=OTHER_PARTY, transfer_id="tx-1", conference_name="conf-1", **extra
+    )
 
 
 def _outbound(**extra):
@@ -114,16 +121,24 @@ def _telnyx():
 
 
 def _plivo():
-    return PlivoProvider({"auth_id": "MA1", "auth_token": "t", "from_numbers": [OWN_NUMBER]})
+    return PlivoProvider(
+        {"auth_id": "MA1", "auth_token": "t", "from_numbers": [OWN_NUMBER]}
+    )
 
 
 def _twilio():
-    return TwilioProvider({"account_sid": "AC1", "auth_token": "t", "from_numbers": [OWN_NUMBER]})
+    return TwilioProvider(
+        {"account_sid": "AC1", "auth_token": "t", "from_numbers": [OWN_NUMBER]}
+    )
 
 
 def _cloudonix():
     return CloudonixProvider(
-        {"bearer_token": "b" * 16, "domain_id": "acme.cloudonix.net", "from_numbers": [OWN_NUMBER]}
+        {
+            "bearer_token": "b" * 16,
+            "domain_id": "acme.cloudonix.net",
+            "from_numbers": [OWN_NUMBER],
+        }
     )
 
 
@@ -137,7 +152,8 @@ async def test_ari_transfer_masks_the_destination(log_lines):
 @pytest.mark.asyncio
 async def test_ari_outbound_masks_the_callee(log_lines):
     with patch(
-        "api.services.telephony.providers.ari.provider.register_channel", new=AsyncMock()
+        "api.services.telephony.providers.ari.provider.register_channel",
+        new=AsyncMock(),
     ):
         await _drive(_ari(), "initiate_call", {"state": "Down"}, **_outbound())
 
@@ -155,14 +171,18 @@ async def test_telnyx_transfer_masks_the_destination_and_the_caller_id(log_lines
 
 @pytest.mark.asyncio
 async def test_telnyx_outbound_masks_both_numbers(log_lines):
-    await _drive(_telnyx(), "initiate_call", {"data": {"call_control_id": "cc-1"}}, **_outbound())
+    await _drive(
+        _telnyx(), "initiate_call", {"data": {"call_control_id": "cc-1"}}, **_outbound()
+    )
 
     _assert_masked(log_lines, "2671", "0188")
 
 
 @pytest.mark.asyncio
 async def test_plivo_transfer_masks_the_destination_and_the_caller_id(log_lines):
-    await _drive(_plivo(), "transfer_call", {"request_uuid": "req-1"}, status=201, **_transfer())
+    await _drive(
+        _plivo(), "transfer_call", {"request_uuid": "req-1"}, status=201, **_transfer()
+    )
 
     _assert_masked(log_lines, "2671", "0188")
 
@@ -170,7 +190,12 @@ async def test_plivo_transfer_masks_the_destination_and_the_caller_id(log_lines)
 @pytest.mark.asyncio
 async def test_exotel_outbound_masks_both_numbers(log_lines):
     provider = ExotelProvider(
-        {"account_sid": "acc", "api_key": "k", "api_token": "t", "from_numbers": [OWN_NUMBER]}
+        {
+            "account_sid": "acc",
+            "api_key": "k",
+            "api_token": "t",
+            "from_numbers": [OWN_NUMBER],
+        }
     )
 
     await _drive(provider, "initiate_call", {"Call": {"Sid": "call-1"}}, **_outbound())
@@ -188,7 +213,9 @@ async def test_twilio_outbound_and_transfer_mask_the_caller_id(log_lines):
 
 @pytest.mark.asyncio
 async def test_vobiz_and_vonage_outbound_mask_the_caller_id(log_lines, monkeypatch):
-    vobiz = VobizProvider({"auth_id": "MA1", "auth_token": "t", "from_numbers": [OWN_NUMBER]})
+    vobiz = VobizProvider(
+        {"auth_id": "MA1", "auth_token": "t", "from_numbers": [OWN_NUMBER]}
+    )
     vonage = VonageProvider(
         {
             "application_id": "app",
@@ -199,7 +226,9 @@ async def test_vobiz_and_vonage_outbound_mask_the_caller_id(log_lines, monkeypat
     )
     monkeypatch.setattr(vonage, "_generate_jwt", lambda: "jwt", raising=False)
 
-    await _drive(vobiz, "initiate_call", {"request_uuid": "req-1"}, status=201, **_outbound())
+    await _drive(
+        vobiz, "initiate_call", {"request_uuid": "req-1"}, status=201, **_outbound()
+    )
     await _drive(vonage, "initiate_call", {"uuid": "uuid-1"}, status=201, **_outbound())
 
     _assert_masked(log_lines, "0188")
@@ -217,7 +246,12 @@ async def test_cloudonix_outbound_and_transfer_mask_both_numbers(log_lines):
 
 def test_cloudonix_inbound_webhook_masks_the_caller_and_the_called_number(log_lines):
     CloudonixProvider.parse_inbound_webhook(
-        {"CallSid": "c-1", "AccountSid": "acme.cloudonix.net", "From": OTHER_PARTY, "To": OWN_NUMBER}
+        {
+            "CallSid": "c-1",
+            "AccountSid": "acme.cloudonix.net",
+            "From": OTHER_PARTY,
+            "To": OWN_NUMBER,
+        }
     )
 
     _assert_masked(log_lines, "2671", "0188")
@@ -231,7 +265,9 @@ def _transfer_config(source: str) -> dict:
                 "rules": [
                     {
                         "context_path": "department",
-                        "routes": [{"context_value": "sales", "destination": OTHER_PARTY}],
+                        "routes": [
+                            {"context_value": "sales", "destination": OTHER_PARTY}
+                        ],
                     }
                 ]
             },

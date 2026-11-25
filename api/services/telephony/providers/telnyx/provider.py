@@ -98,7 +98,9 @@ class TelnyxProvider(TelephonyProvider):
             raise ValueError("Telnyx provider not properly configured")
 
         from_number = self.select_from_number(from_number)
-        logger.info(f"Selected phone number {mask_phone(from_number)} for outbound call")
+        logger.info(
+            f"Selected phone number {mask_phone(from_number)} for outbound call"
+        )
 
         backend_endpoint, wss_backend_endpoint = await get_backend_endpoints()
 
