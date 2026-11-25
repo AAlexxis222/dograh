@@ -41,6 +41,7 @@ OTHER_RUN = 8
 @pytest.fixture
 def answer_secret(monkeypatch):
     monkeypatch.setattr(constants, "TELEPHONY_WS_TOKEN_SECRET", secrets.token_hex(16))
+    monkeypatch.setattr(constants, "TELEPHONY_WS_TOKEN_ENFORCE", True)
     monkeypatch.delenv("CELL_ROLE", raising=False)
 
 
@@ -101,6 +102,42 @@ def test_answer_url_with_this_runs_token_returns_the_document(
 
     assert response.status_code == 200, response.text
     build.assert_awaited_once_with(WORKFLOW_ID, ORG_ID, RUN_ID)
+
+
+@pytest.mark.parametrize("route", ANSWER_ROUTES)
+@pytest.mark.parametrize("token", ["missing", "other_run"])
+def test_answer_url_without_this_runs_token_is_served_and_logged_while_enforcement_is_off(
+    client, world, answer_secret, monkeypatch, log_lines, route, token
+):
+    # Soft rollout (secret set, TELEPHONY_WS_TOKEN_ENFORCE off): an answer URL dialed by pre-token code carries no
+    # token, and the carrier signature still holds. The miss is logged, never the token.
+    monkeypatch.setattr(constants, "TELEPHONY_WS_TOKEN_ENFORCE", False)
+    t = None if token == "missing" else ws_auth.mint_answer_url_token(OTHER_RUN)
+
+    response, build = _call_answer_url(client, world, route, t=t)
+
+    assert response.status_code == 200, response.text
+    build.assert_awaited_once_with(WORKFLOW_ID, ORG_ID, RUN_ID)
+    (line,) = [line for line in log_lines if "answer-URL token" in line]
+    assert "WARNING" in line and route in line
+    assert ("missing" if t is None else "wrong") in line
+    if t is not None:
+        assert t not in "\n".join(log_lines)
+
+
+@pytest.mark.parametrize("route", ANSWER_ROUTES)
+def test_answer_url_without_this_runs_token_in_a_cell_is_401_even_with_enforcement_off(
+    client, world, answer_secret, monkeypatch, route
+):
+    monkeypatch.setattr(constants, "TELEPHONY_WS_TOKEN_ENFORCE", False)
+    monkeypatch.setenv("CELL_ROLE", "api")
+    before = world.snapshot()
+
+    response, build = _call_answer_url(client, world, route)
+
+    _assert_b028(response, code="answer_url_token_invalid")
+    build.assert_not_awaited()
+    assert world.snapshot() == before
 
 
 @pytest.mark.parametrize("route", ANSWER_ROUTES)
