@@ -301,3 +301,22 @@ def test_fallback_with_a_malformed_unsigned_body_is_401(
 
     _assert_b028(response)
     assert world.snapshot() == before
+
+
+# 2ba43ab88c3c, 4b239c3f6fd0, 6ee3d8618d46, dfbc798a23ce: provider detection reads the body before anything is
+# authenticated, and the detectors assume field types (Cloudonix calls endswith on AccountSid, Telnyx calls get on
+# data), so a JSON object with a wrong-typed field must get the same 401, not a 500.
+WRONG_TYPED_FIELDS = [{"AccountSid": 5}, {"data": "x"}]
+
+
+@pytest.mark.parametrize("body", WRONG_TYPED_FIELDS, ids=["account-sid-int", "data-str"])
+def test_fallback_with_a_wrong_typed_field_is_401_not_500(world, body):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app, raise_server_exceptions=False)
+    before = world.snapshot()
+
+    response = client.post(FALLBACK_PATH, json=body)
+
+    _assert_b028(response)
+    assert world.snapshot() == before
