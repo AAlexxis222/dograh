@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -17,9 +18,11 @@ from api.app import assert_cell_startup_config
 from api.routes import main as main_routes
 from api.services.observability import loop_lag
 from api.services.runtime import cell_state
+from api.services.runtime.cell_state import is_cell
 from api.services.security import credential_box
 
 SECRET = "test-dograh-devops-secret"
+WS_TOKEN_SECRET = os.urandom(16).hex()
 MASTER_KEY = "k1=" + base64.b64encode(os.urandom(32)).decode()
 
 
@@ -75,6 +78,7 @@ def cell_env(monkeypatch):
     monkeypatch.setenv("LOG_LEVEL", "INFO")
     monkeypatch.setenv("CREDENTIALS_MASTER_KEY", MASTER_KEY)
     monkeypatch.setenv("URL_GUARD_ENFORCE", "true")
+    monkeypatch.setenv("TELEPHONY_WS_TOKEN_SECRET", WS_TOKEN_SECRET)
     monkeypatch.delenv("CALL_K_P", raising=False)
 
 
@@ -184,6 +188,37 @@ def test_startup_validates_the_master_key_without_touching_the_loader_cache(
         credential_box.load_keys.cache_clear()
 
 
+@pytest.mark.parametrize("value", [None, ""])
+def test_startup_refuses_a_cell_without_the_telephony_token_secret(
+    cell_env, monkeypatch, value
+):
+    # Without it every answer URL is refused at call time (callback_auth), so the cell must not start healthy.
+    if value is None:
+        monkeypatch.delenv("TELEPHONY_WS_TOKEN_SECRET")
+    else:
+        monkeypatch.setenv("TELEPHONY_WS_TOKEN_SECRET", value)
+    with pytest.raises(
+        RuntimeError, match="code=telephony_ws_token_secret_missing"
+    ) as e:
+        assert_cell_startup_config()
+    for key in ("where=", "reason=", "hint="):
+        assert key in str(e.value)
+
+
+@pytest.mark.parametrize("role", ["api", "call", "arq", "coordinators"])
+def test_module_refuses_every_cell_role_without_the_telephony_token_secret(role):
+    r = _run_module(
+        role,
+        CELL_ROLE=role,
+        DOGRAH_DEVOPS_SECRET=SECRET,
+        LOG_LEVEL="INFO",
+        CREDENTIALS_MASTER_KEY=MASTER_KEY,
+        URL_GUARD_ENFORCE="true",
+    )
+    assert r.returncode == 1
+    assert f"code=telephony_ws_token_secret_missing where={role} " in r.stderr, r.stderr
+
+
 def test_startup_is_a_noop_outside_a_cell(monkeypatch):
     monkeypatch.delenv("CELL_ROLE", raising=False)
     monkeypatch.delenv("DOGRAH_DEVOPS_SECRET", raising=False)
@@ -209,6 +244,7 @@ def _run_module(role, **env):
         "CALL_K_P",
         "CREDENTIALS_MASTER_KEY",
         "URL_GUARD_ENFORCE",
+        "TELEPHONY_WS_TOKEN_SECRET",
     }
     base = {k: v for k, v in os.environ.items() if k not in cell_vars}
     return subprocess.run(
@@ -240,6 +276,7 @@ def test_module_passes_in_a_valid_cell_and_outside_a_cell():
         LOG_LEVEL="INFO",
         CREDENTIALS_MASTER_KEY=MASTER_KEY,
         URL_GUARD_ENFORCE="true",
+        TELEPHONY_WS_TOKEN_SECRET=WS_TOKEN_SECRET,
     )
     assert (ok.returncode, ok.stderr) == (0, "")
     assert _run_module("arq").returncode == 0
@@ -322,3 +359,36 @@ def test_the_start_gate_module_does_not_load_loguru():
         check=False,
     )
     assert r.returncode == 0, r.stderr
+
+
+# ---------------------------------------------------------------------------------------------------------
+# R8: the cell marker
+# ---------------------------------------------------------------------------------------------------------
+
+
+def test_is_cell_is_true_only_when_cell_role_is_non_empty(monkeypatch):
+    monkeypatch.delenv("CELL_ROLE", raising=False)
+    assert is_cell() is False
+    monkeypatch.setenv("CELL_ROLE", "")
+    assert is_cell() is False
+    monkeypatch.setenv("CELL_ROLE", "call")
+    assert is_cell() is True
+
+
+def test_is_cell_ignores_the_carrier_region_policy(monkeypatch):
+    monkeypatch.delenv("CELL_ROLE", raising=False)
+    monkeypatch.setenv("CARRIER_REGION_POLICY", "eu")
+    assert is_cell() is False
+
+
+def test_cell_startup_uses_is_cell(monkeypatch):
+    """assert_cell_startup_config decides 'in a cell' through is_cell(), not a second inline check."""
+    from api.services.runtime import cell_startup
+
+    monkeypatch.setenv("CELL_ROLE", "call")
+    monkeypatch.delenv("DOGRAH_DEVOPS_SECRET", raising=False)
+    # Not a cell as far as the module is concerned: only the master-key check runs, so no CellStartupError
+    # about DOGRAH_DEVOPS_SECRET even though the real env says CELL_ROLE=call.
+    with patch.object(cell_startup, "is_cell", return_value=False) as marker:
+        cell_startup.assert_cell_startup_config("test")
+    marker.assert_called()

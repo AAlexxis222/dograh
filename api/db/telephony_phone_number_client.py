@@ -20,6 +20,7 @@ from api.db.models import (
     WorkflowModel,
 )
 from api.db.telephony_configuration_client import account_id_for
+from api.services.security.redaction import mask_phone
 from api.utils.telephony_address import normalize_telephony_address
 
 
@@ -275,7 +276,7 @@ class TelephonyPhoneNumberClient(BaseDBClient):
                 logger.info(
                     f"Inbound route lookup miss — provider={provider} "
                     f"account_id={account_id!r} "
-                    f"to={to_number!r} canonical={normalized.canonical!r} "
+                    f"to={mask_phone(to_number)!r} canonical={mask_phone(normalized.canonical)!r} "
                     f"org_scope={organization_id}"
                 )
                 return None
@@ -294,7 +295,7 @@ class TelephonyPhoneNumberClient(BaseDBClient):
                 logger.error(
                     f"Ambiguous inbound route — provider={provider} "
                     f"account_id={account_id!r} "
-                    f"canonical={normalized.canonical!r} matched {len(rows)} "
+                    f"canonical={mask_phone(normalized.canonical)!r} matched {len(rows)} "
                     f"rows, using the first: {candidates}"
                 )
 
@@ -302,9 +303,9 @@ class TelephonyPhoneNumberClient(BaseDBClient):
             logger.info(
                 f"Inbound route resolved — provider={provider} "
                 f"account_id={account_id!r} "
-                f"canonical={normalized.canonical!r} -> config={config.id} "
+                f"canonical={mask_phone(normalized.canonical)!r} -> config={config.id} "
                 f"org={config.organization_id} name={config.name!r} "
-                f"phone={phone_number.id} address={phone_number.address!r} "
+                f"phone={phone_number.id} address={mask_phone(phone_number.address)!r} "
                 f"inbound_workflow_id={phone_number.inbound_workflow_id}"
             )
             return config, phone_number

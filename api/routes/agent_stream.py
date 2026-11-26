@@ -25,10 +25,25 @@ from api.services.call_concurrency import (
 )
 from api.services.quota_service import authorize_workflow_run_start
 from api.services.telephony import registry as telephony_registry
+from api.services.telephony.carrier_policy import (
+    CarrierDisabledError,
+    refuse_disabled_carrier,
+)
 from api.services.workflow.run_creation import prepare_workflow_run_inputs
 from api.services.workflow_run_failure import mark_workflow_run_failed
 
 router = APIRouter(prefix="/agent-stream")
+
+
+def _refusal(provider_name: str, spec) -> str | None:
+    """The 1008 close reason for a provider the agent stream does not serve, or None."""
+    if spec is None:
+        return f"Unknown provider: {provider_name}"
+    try:
+        refuse_disabled_carrier(provider_name)
+    except CarrierDisabledError as e:
+        return e.code
+    return None
 
 
 @router.websocket("/{provider_name}/{workflow_uuid}")
@@ -40,16 +55,17 @@ async def agent_stream_websocket(
     """Generic agent-stream WebSocket.
 
     ``provider_name`` is the registered telephony provider name
-    (e.g. ``cloudonix``).
+    (e.g. ``telnyx``). A carrier disabled in ``carrier_policy`` is refused.
     """
     await websocket.accept()
     params = dict(websocket.query_params)
     params.pop("provider", None)
 
     spec = telephony_registry.get_optional(provider_name)
-    if spec is None:
-        logger.warning(f"agent-stream unknown provider: {provider_name}")
-        await websocket.close(code=1008, reason=f"Unknown provider: {provider_name}")
+    # Before the workflow lookup and the slot: a refused provider takes nothing.
+    if refusal := _refusal(provider_name, spec):
+        logger.warning(f"agent-stream refused {provider_name}: {refusal}")
+        await websocket.close(code=1008, reason=refusal)
         return
 
     workflow = await db_client.get_workflow_by_uuid_unscoped(workflow_uuid)

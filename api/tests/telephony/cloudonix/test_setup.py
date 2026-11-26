@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from api.services.telephony.carrier_policy import CarrierDisabledError
 from api.services.telephony.factory import get_setup_checklist
 from api.services.telephony.outbound_readiness import (
     OutboundSetupIncompleteError,
@@ -167,11 +168,12 @@ async def test_outbound_guard_allows_a_ready_configuration():
 
 @pytest.mark.asyncio
 async def test_outbound_resolver_selects_a_ready_configuration_without_a_default():
+    # Sample rows are Twilio: Cloudonix is a disabled carrier, which the resolver refuses (RUL-r1-31).
     row = SimpleNamespace(
         id=12,
-        name="Dograh Cloudonix SIP",
-        provider="cloudonix",
-        credentials=MANAGED_CREDENTIALS,
+        name="Customer Twilio",
+        provider="twilio",
+        credentials={},
     )
     number = SimpleNamespace(
         is_active=True, inbound_workflow_id=None, telephony_trunk_id=1
@@ -194,15 +196,15 @@ async def test_outbound_resolver_selects_a_ready_configuration_without_a_default
 async def test_outbound_resolver_skips_an_unready_candidate():
     blocked = SimpleNamespace(
         id=12,
-        name="Fresh managed SIP",
-        provider="cloudonix",
-        credentials=MANAGED_CREDENTIALS,
+        name="Fresh Twilio",
+        provider="twilio",
+        credentials={},
     )
     ready = SimpleNamespace(
         id=13,
-        name="Customer Cloudonix",
-        provider="cloudonix",
-        credentials=SELF_SERVE_CREDENTIALS,
+        name="Customer Twilio",
+        provider="twilio",
+        credentials={},
     )
     number = SimpleNamespace(
         is_active=True, inbound_workflow_id=None, telephony_trunk_id=None
@@ -217,3 +219,59 @@ async def test_outbound_resolver_skips_an_unready_candidate():
     db_client.list_trunks_for_config = AsyncMock(return_value=[])
 
     assert await resolve_outbound_configuration_id(None, 7, db=db_client) == ready.id
+
+
+def _ready_resolver_db(rows) -> AsyncMock:
+    """A db whose candidates are ``rows``, each with one active number on an enabled trunk: every row is ready."""
+    number = SimpleNamespace(
+        is_active=True, inbound_workflow_id=None, telephony_trunk_id=1
+    )
+    db_client = AsyncMock()
+    db_client.list_outbound_telephony_configuration_candidates = AsyncMock(
+        return_value=rows
+    )
+    db_client.get_telephony_configuration_for_org = AsyncMock(return_value=rows[0])
+    db_client.list_phone_numbers_for_config = AsyncMock(return_value=[number])
+    db_client.list_trunks_for_config = AsyncMock(
+        return_value=[SimpleNamespace(id=1, enabled=True)]
+    )
+    return db_client
+
+
+def _cloudonix_row(config_id: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=config_id,
+        name="Dograh Cloudonix SIP",
+        provider="cloudonix",
+        credentials=MANAGED_CREDENTIALS,
+    )
+
+
+@pytest.mark.asyncio
+async def test_outbound_resolver_refuses_an_org_whose_every_configuration_is_a_disabled_carrier():
+    db_client = _ready_resolver_db([_cloudonix_row(12), _cloudonix_row(13)])
+
+    with pytest.raises(CarrierDisabledError) as refused:
+        await resolve_outbound_configuration_id(None, 7, db=db_client)
+
+    assert refused.value.code == "cloudonix_signing_unverified"
+
+
+@pytest.mark.asyncio
+async def test_outbound_resolver_skips_a_disabled_default_for_a_ready_second_configuration():
+    ready = SimpleNamespace(
+        id=13, name="Customer Twilio", provider="twilio", credentials={}
+    )
+    db_client = _ready_resolver_db([_cloudonix_row(12), ready])
+
+    assert await resolve_outbound_configuration_id(None, 7, db=db_client) == ready.id
+
+
+@pytest.mark.asyncio
+async def test_outbound_resolver_refuses_an_explicit_disabled_carrier_configuration():
+    db_client = _ready_resolver_db([_cloudonix_row(12)])
+
+    with pytest.raises(CarrierDisabledError) as refused:
+        await resolve_outbound_configuration_id(12, 7, db=db_client)
+
+    assert refused.value.code == "cloudonix_signing_unverified"

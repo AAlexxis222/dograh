@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
-    from fastapi import WebSocket
+    from fastapi import Response, WebSocket
 
 
 @dataclass
@@ -501,18 +501,38 @@ class TelephonyProvider(ABC):
 
     @staticmethod
     @abstractmethod
-    def generate_error_response(error_type: str, message: str) -> tuple:
+    def generate_error_response(error_type: str, message: str) -> "Response":
         """
         Generate a provider-specific error response.
 
         Args:
             error_type: Type of error (auth_failed, not_configured, etc.)
-            message: Error message
+            message: Operator-facing error text: logged, never spoken to the caller
 
         Returns:
-            Tuple of (Response, media_type) - Response object and content type
+            The Response a route serves as it is, in the provider's own format
         """
         pass
+
+    @classmethod
+    def generate_validation_error_response(cls, error_type):
+        """The response to an inbound call refused with ``error_type`` (a TelephonyError or its value).
+
+        A provider without its own speaks the caller sentence of ``error_type`` through its
+        ``generate_error_response``, in its own format; the operator text of the error is logged.
+        """
+        from api.errors.telephony_errors import (
+            TELEPHONY_ERROR_MESSAGES,
+            TelephonyError,
+        )
+
+        return cls.generate_error_response(
+            error_type,
+            TELEPHONY_ERROR_MESSAGES.get(
+                error_type,
+                TELEPHONY_ERROR_MESSAGES[TelephonyError.GENERAL_AUTH_FAILED],
+            ),
+        )
 
     # ======== CALL TRANSFER METHODS ========
 

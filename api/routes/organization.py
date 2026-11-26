@@ -115,6 +115,10 @@ from api.services.pipecat.tracing_config import normalize_langfuse_host
 from api.services.posthog_client import capture_event
 from api.services.telephony import registry as telephony_registry
 from api.services.telephony.base import ProviderPhoneNumberLookupError
+from api.services.telephony.carrier_policy import (
+    UNVERIFIED_CARRIERS,
+    CarrierDisabledError,
+)
 from api.services.telephony.factory import (
     get_provider_connectivity,
     get_setup_checklist,
@@ -958,7 +962,7 @@ async def _ensure_provider_phone_number(
         result = await provider.validate_phone_number(canonical_address)
     except HTTPException:
         raise
-    except ValueError as e:
+    except (ValueError, CarrierDisabledError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except ProviderPhoneNumberLookupError as e:
         # The lookup runs against the org's own provider account, so whatever
@@ -1761,7 +1765,9 @@ async def delete_phone_number(
 ):
     if not user.selected_organization_id:
         raise HTTPException(status_code=400, detail="No organization selected")
-    await _ensure_config_belongs_to_org(config_id, user.selected_organization_id)
+    config = await _ensure_config_belongs_to_org(
+        config_id, user.selected_organization_id
+    )
 
     existing = await db_client.get_phone_number_for_config(phone_number_id, config_id)
     if not existing:
@@ -1773,7 +1779,9 @@ async def delete_phone_number(
         existing.address,
         attach=False,
     )
-    if not provider_sync.ok:
+    # A disabled carrier is never called, so its refusal does not block the delete: its callbacks are refused
+    # anyway, and the row would otherwise be undeletable.
+    if not provider_sync.ok and config.provider not in UNVERIFIED_CARRIERS:
         raise HTTPException(
             status_code=502,
             detail=(

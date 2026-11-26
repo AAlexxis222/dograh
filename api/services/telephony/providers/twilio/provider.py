@@ -13,6 +13,7 @@ from twilio.request_validator import RequestValidator
 
 from api.enums import TelephonyCallStatus, WorkflowRunMode
 from api.services.runtime.durations import ring_timeout_for
+from api.services.security.redaction import mask_phone
 from api.services.telephony import ws_auth
 from api.services.telephony.base import (
     CallInitiationResult,
@@ -37,6 +38,9 @@ if TYPE_CHECKING:
 # Where the `<Connect action>` callback is mounted, relative to the telephony
 # router. The route decorator and the URL builder below both use it.
 CONNECT_ACTION_ROUTE = "/twilio/connect-action"
+
+# The voice of every Spanish Twilio Say verb: the default voice ("man") does not list es-ES and "alice" is retired.
+TWILIO_CALLER_VOICE = "Polly.Lucia"
 
 
 def _xml_attr(value: str) -> str:
@@ -140,8 +144,11 @@ class TwilioProvider(TelephonyProvider):
         endpoint = f"{self.base_url}/Calls.json"
 
         from_number = self.select_from_number(from_number)
-        logger.info(f"Selected phone number {from_number} for outbound call")
-        logger.info(f"Webhook url received - {webhook_url}")
+        logger.info(
+            f"Selected phone number {mask_phone(from_number)} for outbound call"
+        )
+        # Redacted: the query carries the answer-URL token.
+        logger.info(f"Webhook url received - {ws_auth.redact_token(webhook_url)}")
 
         # Prepare call data
         data = {
@@ -649,30 +656,14 @@ class TwilioProvider(TelephonyProvider):
         """
         from fastapi import Response
 
-        twiml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say voice="alice">Sorry, there was an error processing your call. {message}</Say>
-    <Hangup/>
-</Response>"""
-
-        return Response(content=twiml_content, media_type="application/xml")
-
-    @staticmethod
-    def generate_validation_error_response(error_type) -> tuple:
-        """
-        Generate Twilio-specific error response for validation failures with organizational debugging info.
-        """
-        from fastapi import Response
-
-        from api.errors.telephony_errors import TELEPHONY_ERROR_MESSAGES, TelephonyError
-
-        message = TELEPHONY_ERROR_MESSAGES.get(
-            error_type, TELEPHONY_ERROR_MESSAGES[TelephonyError.GENERAL_AUTH_FAILED]
+        from api.errors.telephony_errors import (
+            CALLER_LANGUAGE,
+            log_and_get_caller_text,
         )
 
         twiml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="alice">{message}</Say>
+    <Say voice="{TWILIO_CALLER_VOICE}" language="{CALLER_LANGUAGE}">{log_and_get_caller_text(error_type, message, provider=TwilioProvider.PROVIDER_NAME)}</Say>
     <Hangup/>
 </Response>"""
 
@@ -713,7 +704,9 @@ class TwilioProvider(TelephonyProvider):
             raise ValueError("Twilio provider not properly configured")
 
         from_number = self.select_from_number()
-        logger.info(f"Selected phone number {from_number} for transfer call")
+        logger.info(
+            f"Selected phone number {mask_phone(from_number)} for transfer call"
+        )
 
         backend_endpoint, _ = await get_backend_endpoints()
 
@@ -721,10 +714,15 @@ class TwilioProvider(TelephonyProvider):
             f"{backend_endpoint}/api/v1/telephony/transfer-result/{transfer_id}"
         )
 
+        from api.errors.telephony_errors import (
+            CALLER_LANGUAGE,
+            TRANSFER_GREETING_ES,
+        )
+
         # Inline TwiML: when the destination answers, put them into the conference
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>You have answered a transfer call. Connecting you now.</Say>
+    <Say voice="{TWILIO_CALLER_VOICE}" language="{CALLER_LANGUAGE}">{TRANSFER_GREETING_ES}</Say>
     <Dial>
         <Conference endConferenceOnExit="true">{conference_name}</Conference>
     </Dial>

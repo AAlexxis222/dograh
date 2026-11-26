@@ -36,6 +36,7 @@ from api.services.campaign.traffic_split import (
 from api.services.quota_service import authorize_workflow_run_start
 from api.services.reports import generate_campaign_report_csv
 from api.services.storage import storage_fs
+from api.services.telephony.carrier_policy import CarrierDisabledError
 from api.services.telephony.outbound_readiness import (
     OutboundConfigurationNotFoundError,
     OutboundSetupIncompleteError,
@@ -495,7 +496,7 @@ async def create_campaign(
             user.selected_organization_id,
             db=db_client,
         )
-    except OutboundSetupIncompleteError as e:
+    except (OutboundSetupIncompleteError, CarrierDisabledError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except OutboundConfigurationNotFoundError as e:
         raise HTTPException(

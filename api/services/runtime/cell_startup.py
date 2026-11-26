@@ -1,4 +1,4 @@
-"""Startup assertion of a cell role (VOZ-AC-B3-61, VOZ-AC-B6-52, VOZ-AC-B6-16, VOZ-AC-B5-91), and of the credential master key in every role. Fail closed, VOZ-AC-B0-28 output.
+"""Startup assertion of a cell role (VOZ-AC-B3-61, VOZ-AC-B6-52, VOZ-AC-B6-16, VOZ-AC-B5-91, VOZ-AC-B4-46b), and of the credential master key in every role. Fail closed, VOZ-AC-B0-28 output.
 
 Light on purpose (no FastAPI import): the api lifespan calls it, and scripts/xpand/require_db_head.sh runs it as
 `python -m api.services.runtime.cell_startup <role>` for every role, so arq and coordinators are covered too.
@@ -7,7 +7,7 @@ Light on purpose (no FastAPI import): the api lifespan calls it, and scripts/xpa
 import os
 import sys
 
-from api.services.runtime.cell_state import parse_call_k_p
+from api.services.runtime.cell_state import is_cell, parse_call_k_p
 from api.services.security import credential_box
 from api.services.security.egress_flag import URL_GUARD_FLAG, url_guard_enforced
 
@@ -45,12 +45,6 @@ def _require_valid_master_key(where: str) -> None:
         raise CellStartupError(
             e.code, where, f"{e.where}: {e.reason}", e.hint
         ) from None
-
-
-def is_cell() -> bool:
-    """True when this process runs in a cell: CELL_ROLE is non-empty. The one marker, so a control that fails
-    closed in a cell asks here. Never CARRIER_REGION_POLICY (that selects a carrier region, not a deployment)."""
-    return bool(os.environ.get("CELL_ROLE"))
 
 
 def assert_cell_startup_config(where: str = "api.app") -> None:
@@ -95,6 +89,15 @@ def assert_cell_startup_config(where: str = "api.app") -> None:
             where,
             f"{URL_GUARD_FLAG} is not exactly 'true', so tools could reach cloud metadata (IMDS) and the Docker network",
             f"set {URL_GUARD_FLAG}=true in the cell env (docker-compose.cell.yaml sets it for every role)",
+        )
+    # VOZ-AC-B4-46b: without the secret a cell refuses every answer URL (callback_auth.require_answer_url_token),
+    # so every answered outbound call would drop while the cell reports healthy.
+    if not os.environ.get("TELEPHONY_WS_TOKEN_SECRET"):
+        raise CellStartupError(
+            "telephony_ws_token_secret_missing",
+            where,
+            "TELEPHONY_WS_TOKEN_SECRET is empty, so the cell refuses every answer URL and every answered outbound call drops",
+            "set TELEPHONY_WS_TOKEN_SECRET from the secrets store in the cell env (docker-compose.cell.yaml requires it for every role)",
         )
     # Durations are not checked here: the gate in scripts/xpand/require_db_head.sh owns them for every role.
 

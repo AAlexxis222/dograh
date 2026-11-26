@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from api.enums import TelephonyCallStatus, WorkflowRunMode
+from api.services.security.redaction import mask_phone
 from api.services.telephony import ws_auth
 from api.services.telephony.base import (
     CallInitiationResult,
@@ -204,7 +205,8 @@ class ExotelProvider(TelephonyProvider):
             form["StatusCallbackEvents[]"] = "terminal"
 
         logger.info(
-            f"[Exotel] Initiating call to={to_number} from={from_number} "
+            f"[Exotel] Initiating call to={mask_phone(to_number)} "
+            f"from={mask_phone(from_number)} "
             f"run={workflow_run_id}"
         )
 
@@ -665,25 +667,12 @@ class ExotelProvider(TelephonyProvider):
         return JSONResponse({"url": websocket_url})
 
     @staticmethod
-    def generate_validation_error_response(error_type) -> Response:
-        """TwiML/ExoML hangup used when inbound route/auth validation fails."""
-        from api.errors.telephony_errors import TELEPHONY_ERROR_MESSAGES, TelephonyError
-
-        message = TELEPHONY_ERROR_MESSAGES.get(
-            error_type, TELEPHONY_ERROR_MESSAGES[TelephonyError.GENERAL_AUTH_FAILED]
-        )
-        xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say>{message}</Say>
-    <Hangup/>
-</Response>"""
-        return Response(content=xml, media_type="application/xml")
-
-    @staticmethod
     def generate_error_response(error_type: str, message: str):
+        from api.errors.telephony_errors import log_and_get_caller_text
+
         xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Sorry, there was an error processing your call. {message}</Say>
+    <Say>{log_and_get_caller_text(error_type, message, provider=ExotelProvider.PROVIDER_NAME)}</Say>
     <Hangup/>
 </Response>"""
         return Response(content=xml, media_type="application/xml")

@@ -15,6 +15,7 @@ from loguru import logger
 
 from api.db import db_client
 from api.enums import TelephonyCallStatus, WorkflowRunMode
+from api.services.security.redaction import mask_phone
 from api.services.telephony import ws_auth
 from api.services.telephony.base import (
     CallInitiationResult,
@@ -556,26 +557,11 @@ class PlivoProvider(TelephonyProvider):
     def generate_error_response(error_type: str, message: str) -> tuple:
         from fastapi import Response
 
-        plivo_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Speak>Sorry, there was an error processing your call. {message}</Speak>
-    <Hangup/>
-</Response>"""
-        return Response(content=plivo_xml, media_type="application/xml")
-
-    @staticmethod
-    def generate_validation_error_response(error_type) -> tuple:
-        from fastapi import Response
-
-        from api.errors.telephony_errors import TELEPHONY_ERROR_MESSAGES, TelephonyError
-
-        message = TELEPHONY_ERROR_MESSAGES.get(
-            error_type, TELEPHONY_ERROR_MESSAGES[TelephonyError.GENERAL_AUTH_FAILED]
-        )
+        from api.errors.telephony_errors import CALLER_LANGUAGE, log_and_get_caller_text
 
         plivo_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Speak>{message}</Speak>
+    <Speak language="{CALLER_LANGUAGE}">{log_and_get_caller_text(error_type, message, provider=PlivoProvider.PROVIDER_NAME)}</Speak>
     <Hangup/>
 </Response>"""
         return Response(content=plivo_xml, media_type="application/xml")
@@ -598,7 +584,9 @@ class PlivoProvider(TelephonyProvider):
             raise ValueError("Plivo provider not properly configured")
 
         from_number = self.select_from_number()
-        logger.info(f"Selected phone number {from_number} for transfer call")
+        logger.info(
+            f"Selected phone number {mask_phone(from_number)} for transfer call"
+        )
 
         backend_endpoint, _ = await get_backend_endpoints()
 
@@ -621,7 +609,7 @@ class PlivoProvider(TelephonyProvider):
         try:
             logger.debug(
                 f"Dialing Plivo transfer destination for transfer_id={transfer_id} "
-                f"to destination={destination}"
+                f"to destination={mask_phone(destination)}"
             )
 
             async with aiohttp.ClientSession() as session:

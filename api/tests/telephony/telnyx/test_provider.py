@@ -700,3 +700,28 @@ def test_informational_event_types_match_telnyx_catalog():
     } <= _INFORMATIONAL_EVENT_TYPES
     # Streaming events keep their pre-existing skip.
     assert {"streaming.started", "streaming.stopped"} <= _INFORMATIONAL_EVENT_TYPES
+
+
+@pytest.mark.asyncio
+async def test_transfer_without_a_webhook_public_key_is_refused_before_dialing():
+    # RUL-r1-23: the destination's call.answered would be refused 401, so the transfer could never bridge; it is
+    # refused at the start instead, through the transfer's existing provider-failure path.
+    session = MagicMock(side_effect=AssertionError("test: the transfer dialed"))
+    with (
+        patch(
+            "api.services.telephony.providers.telnyx.provider.get_backend_endpoints",
+            new=AsyncMock(return_value=("https://api.example.com", "")),
+        ),
+        patch(
+            "api.services.telephony.providers.telnyx.provider.aiohttp.ClientSession",
+            session,
+        ),
+        pytest.raises(ValueError, match="webhook_public_key"),
+    ):
+        await _provider("").transfer_call(
+            destination="+15551230003",
+            transfer_id="tx-1",
+            conference_name="conf-1",
+        )
+
+    session.assert_not_called()

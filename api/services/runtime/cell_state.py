@@ -39,6 +39,12 @@ def call_k_p() -> int:
     return _resolve_call_k_p(os.environ.get("CALL_K_P"))
 
 
+def is_cell() -> bool:
+    """True when this process runs in a cell: CELL_ROLE is non-empty. The one marker, so a control that fails
+    closed in a cell asks here. Never CARRIER_REGION_POLICY (that selects a carrier region, not a deployment)."""
+    return bool(os.environ.get("CELL_ROLE"))
+
+
 def is_draining() -> bool:
     """True once the call entrypoint received SIGTERM (it creates the flag file and removes it at start)."""
     return os.path.exists(os.environ.get("DRAIN_FLAG_FILE", DEFAULT_DRAIN_FLAG_FILE))

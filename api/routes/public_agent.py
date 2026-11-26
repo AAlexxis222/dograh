@@ -20,6 +20,9 @@ from api.services.call_concurrency import (
     call_concurrency,
 )
 from api.services.quota_service import authorize_workflow_run_start
+from api.services.security.redaction import mask_phone
+from api.services.telephony import ws_auth
+from api.services.telephony.carrier_policy import CarrierDisabledError
 from api.services.telephony.factory import get_telephony_provider_by_id
 from api.services.telephony.outbound_readiness import (
     OutboundConfigurationNotFoundError,
@@ -204,7 +207,7 @@ async def _execute_resolved_target(
         provider = await get_telephony_provider_by_id(
             resolved_cfg_id, target.organization_id
         )
-    except OutboundSetupIncompleteError as e:
+    except (OutboundSetupIncompleteError, CarrierDisabledError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except OutboundConfigurationNotFoundError as e:
         if request.telephony_configuration_id is not None:
@@ -309,7 +312,7 @@ async def _execute_resolved_target(
         f"Created workflow run {workflow_run.id} for public agent "
         f"{target.identifier_type}={target.identifier_value} "
         f"(mode={'test' if use_draft else 'production'}) "
-        f"to phone number {request.phone_number}"
+        f"to phone number {mask_phone(request.phone_number)}"
     )
 
     # Check Dograh quota after the run exists so hosted v2 can mint and store
@@ -332,13 +335,12 @@ async def _execute_resolved_target(
     except Exception:
         await call_concurrency.release_workflow_run_slot(workflow_run.id)
         raise
-    webhook_endpoint = provider.WEBHOOK_ENDPOINT
-
-    webhook_url = (
-        f"{backend_endpoint}/api/v1/telephony/{webhook_endpoint}"
-        f"?workflow_id={target.workflow.id}"
-        f"&workflow_run_id={workflow_run.id}"
-        f"&organization_id={target.organization_id}"
+    webhook_url = ws_auth.build_answer_url(
+        backend_endpoint,
+        provider.WEBHOOK_ENDPOINT,
+        target.workflow.id,
+        workflow_run.id,
+        target.organization_id,
     )
 
     # 10. Initiate call via telephony provider. workflow_id and organization_id

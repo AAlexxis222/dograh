@@ -12,6 +12,7 @@ from loguru import logger
 
 from api.db import db_client
 from api.services.security.egress_guard import ToolUrlBlocked, guard_egress
+from api.services.security.redaction import mask_phone
 from api.services.workflow.tools.custom_tool import _resolve_preset_parameters
 from api.utils.credential_auth import build_auth_header
 from api.utils.template_renderer import render_template
@@ -434,7 +435,7 @@ async def resolve_transfer_config(
             f"rule_index={resolved.metadata.get('rule_index')} "
             f"fallback={bool(resolved.metadata.get('fallback'))} "
             f"source={resolved.source} "
-            f"destination={resolved.destination}"
+            f"destination={mask_phone(resolved.destination)}"
         )
         return resolved
 
@@ -447,7 +448,7 @@ async def resolve_transfer_config(
         )
         logger.info(
             "Transfer destination resolved "
-            f"source={resolved.source} destination={resolved.destination} "
+            f"source={resolved.source} destination={mask_phone(resolved.destination)} "
             f"timeout={resolved.timeout_seconds}"
         )
         return resolved
@@ -481,7 +482,7 @@ async def resolve_transfer_config(
     logger.info(
         "Transfer destination resolved "
         f"resolution_id={resolution_id} source={resolved.source} "
-        f"destination={resolved.destination} "
+        f"destination={mask_phone(resolved.destination)} "
         f"timeout={resolved.timeout_seconds} "
         f"custom_message_present={bool(resolved.message)}"
     )

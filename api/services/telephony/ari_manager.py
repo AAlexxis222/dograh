@@ -42,6 +42,7 @@ from api.services.call_concurrency import (
 )
 from api.services.organization_preferences import external_pbx_integrations_enabled
 from api.services.quota_service import authorize_workflow_run_start
+from api.services.security.redaction import mask_phone
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.providers.ari import channel_registry
@@ -534,7 +535,7 @@ class ARIConnection:
             logger.info(
                 f"[ARI org={self.organization_id}] StasisStart: "
                 f"channel={channel_id}, state={channel_state}, "
-                f"caller={caller.get('number', 'unknown')}, "
+                f"caller={mask_phone(caller.get('number', 'unknown'))}, "
                 f"args={app_args}"
             )
 
@@ -926,7 +927,7 @@ class ARIConnection:
             ):
                 logger.warning(
                     f"[ARI org={self.organization_id}] Inbound call to extension "
-                    f"{called_number} on channel {channel_id} — no matching phone "
+                    f"{mask_phone(called_number)} on channel {channel_id} — no matching phone "
                     f"number registered for config {self.telephony_configuration_id}, "
                     f"hanging up"
                 )
@@ -937,8 +938,8 @@ class ARIConnection:
             if not inbound_workflow_id:
                 logger.warning(
                     f"[ARI org={self.organization_id}] Inbound call to extension "
-                    f"{called_number} on channel {channel_id} — phone number "
-                    f"{phone_row.address} has no inbound_workflow_id assigned, "
+                    f"{mask_phone(called_number)} on channel {channel_id} — phone number "
+                    f"{mask_phone(phone_row.address)} has no inbound_workflow_id assigned, "
                     f"hanging up"
                 )
                 await self._delete_channel(channel_id)
@@ -1016,7 +1017,7 @@ class ARIConnection:
             logger.info(
                 f"[ARI org={self.organization_id}] Created inbound workflow run "
                 f"{workflow_run.id} for channel {channel_id} "
-                f"(caller={caller_number}, called={called_number})"
+                f"(caller={mask_phone(caller_number)}, called={mask_phone(called_number)})"
             )
 
             # 4. Check quota after the run exists so hosted v2 can mint and

@@ -3,7 +3,6 @@ Telephony routes - handles all telephony-related endpoints.
 Consolidated from split modules for easier maintenance.
 """
 
-import json
 import uuid
 from typing import Optional
 
@@ -39,6 +38,15 @@ from api.services.call_concurrency import (
 from api.services.quota_service import authorize_workflow_run_start
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
+from api.services.telephony.callback_auth import (
+    CredentialStoreUnavailable,
+    parse_webhook_or_reject,
+    provider_for_inbound_webhook,
+    rejected,
+    verify_signature,
+    verify_transfer_callback,
+)
+from api.services.telephony.carrier_policy import CarrierDisabledError
 from api.services.telephony.factory import (
     get_all_telephony_providers,
     get_telephony_provider_by_id,
@@ -49,6 +57,7 @@ from api.services.telephony.outbound_readiness import (
     OutboundSetupIncompleteError,
     resolve_outbound_configuration_id,
 )
+from api.services.telephony.providers.twilio.provider import TwilioProvider
 from api.services.telephony.transfer_event_protocol import (
     TransferEvent,
     TransferEventType,
@@ -119,7 +128,7 @@ async def initiate_call(
         provider = await get_telephony_provider_by_id(
             telephony_configuration_id, user.selected_organization_id
         )
-    except OutboundSetupIncompleteError as e:
+    except (OutboundSetupIncompleteError, CarrierDisabledError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except OutboundConfigurationNotFoundError as e:
         detail = (
@@ -262,13 +271,12 @@ async def initiate_call(
         # Construct webhook URL based on provider type
         backend_endpoint, _ = await get_backend_endpoints()
 
-        webhook_endpoint = provider.WEBHOOK_ENDPOINT
-
-        webhook_url = (
-            f"{backend_endpoint}/api/v1/telephony/{webhook_endpoint}"
-            f"?workflow_id={workflow.id}"
-            f"&workflow_run_id={workflow_run_id}"
-            f"&organization_id={user.selected_organization_id}"
+        webhook_url = ws_auth.build_answer_url(
+            backend_endpoint,
+            provider.WEBHOOK_ENDPOINT,
+            workflow.id,
+            workflow_run_id,
+            user.selected_organization_id,
         )
 
         keywords = {
@@ -333,7 +341,7 @@ async def _verify_organization_phone_number(
         )
         if match and match.telephony_configuration_id == telephony_configuration_id:
             logger.info(
-                f"Phone number {phone_number} matched row {match.id} for org "
+                f"Called number matched row {match.id} for org "
                 f"{organization_id} / config {telephony_configuration_id}"
             )
             return match.id
@@ -346,21 +354,21 @@ async def _verify_organization_phone_number(
                 continue
             if numbers_match(phone_number, row.address, to_country, from_country):
                 logger.info(
-                    f"Phone number {phone_number} matched (fuzzy) row {row.id} "
+                    f"Called number matched (fuzzy) row {row.id} "
                     f"for config {telephony_configuration_id}"
                 )
                 return row.id
 
         logger.warning(
-            f"Phone number {phone_number} not registered to config "
+            f"Called number not registered to config "
             f"{telephony_configuration_id} (org={organization_id}, "
-            f"to_country={to_country}, from_country={from_country})"
+            f"to_country={to_country!r}, from_country={from_country!r})"
         )
         return None
 
     except Exception as e:
         logger.error(
-            f"Error verifying phone number {phone_number} for organization "
+            f"Error verifying the called number for organization "
             f"{organization_id} / config {telephony_configuration_id}: {e}"
         )
         return None
@@ -451,20 +459,16 @@ async def _validate_inbound_request(
     # Verify webhook signature using the matched config's credentials. The
     # provider extracts its own signature/timestamp/nonce headers from the
     # dict, so this dispatcher stays generic.
-    provider_instance = await get_telephony_provider_by_id(
-        telephony_configuration_id, organization_id
+    provider_instance, refusal = await _verified_inbound_provider(
+        telephony_configuration_id,
+        organization_id,
+        webhook_url,
+        webhook_data,
+        headers,
+        raw_body,
     )
-    signature_valid = await provider_instance.verify_inbound_signature(
-        webhook_url, webhook_data, headers, raw_body
-    )
-    logger.info(f"Signature validation for {provider}: {signature_valid}")
-    if not signature_valid:
-        return (
-            False,
-            TelephonyError.SIGNATURE_VALIDATION_FAILED,
-            {},
-            provider_instance,
-        )
+    if refusal:
+        return False, refusal, {}, None
 
     # Return success with workflow context
     workflow_context = {
@@ -476,6 +480,41 @@ async def _validate_inbound_request(
         "from_phone_number_id": phone_number_id,
     }
     return (True, "", workflow_context, provider_instance)
+
+
+async def _verified_inbound_provider(
+    telephony_configuration_id: int,
+    organization_id: int,
+    webhook_url: str,
+    webhook_data: dict,
+    headers: dict,
+    raw_body: str,
+):
+    """``(provider, None)`` when the matched config's provider verifies the inbound webhook, else
+    ``(None, refusal)``. A carrier disabled in ``carrier_policy`` is refused before it verifies anything, and a
+    provider build or verifier that raises authenticates nothing.
+    """
+    try:
+        provider = await get_telephony_provider_by_id(
+            telephony_configuration_id, organization_id
+        )
+        verified = await provider.verify_inbound_signature(
+            webhook_url, webhook_data, headers, raw_body
+        )
+    except CarrierDisabledError as e:
+        logger.warning(f"Inbound call refused: {e}")
+        return None, TelephonyError.CARRIER_SIGNING_UNVERIFIED
+    except Exception as e:
+        logger.warning(
+            f"Inbound webhook could not be verified (config {telephony_configuration_id}): {type(e).__name__}"
+        )
+        return None, TelephonyError.SIGNATURE_VALIDATION_FAILED
+    if not verified:
+        logger.warning(
+            f"Inbound webhook signature did not verify (config {telephony_configuration_id})"
+        )
+        return None, TelephonyError.SIGNATURE_VALIDATION_FAILED
+    return provider, None
 
 
 async def _create_inbound_workflow_run(
@@ -572,7 +611,7 @@ async def _resolve_inbound_telephony_config(
         if not match:
             logger.warning(
                 f"Account validation failed for {provider_class.PROVIDER_NAME}: "
-                f"webhook account_id={account_id} (org {organization_id})"
+                f"webhook account_id={account_id!r} (org {organization_id})"
             )
             return TelephonyError.ACCOUNT_VALIDATION_FAILED, None
 
@@ -811,6 +850,30 @@ async def _handle_telephony_websocket(
             pass
 
 
+async def _find_inbound_route(provider_class, normalized_data):
+    """The ``(config, phone_number)`` an inbound webhook belongs to, or None.
+
+    One SQL roundtrip that joins telephony_configurations and
+    telephony_phone_numbers and filters on (provider, account_id, called
+    number canonical address, is_active).
+    """
+    if normalized_data.account_id:
+        return await db_client.find_inbound_route_by_account(
+            provider=provider_class.PROVIDER_NAME,
+            account_id=normalized_data.account_id,
+            to_number=normalized_data.to_number,
+            country_hint=normalized_data.to_country,
+        )
+    # Exotel Voicebot Applet dynamic-URL webhooks omit AccountSid;
+    # resolve org/config from the called number when it is uniquely
+    # registered for this provider (fail closed on ambiguity).
+    return await db_client.find_inbound_route_by_called_number(
+        provider=provider_class.PROVIDER_NAME,
+        to_number=normalized_data.to_number,
+        country_hint=normalized_data.to_country,
+    )
+
+
 # Exotel's inbound webhook is a GET, everyone else POSTs.
 @router.get("/inbound/run")
 @router.post("/inbound/run")
@@ -827,7 +890,6 @@ async def handle_inbound_run(request: Request):
     each provider's ``verify_inbound_signature`` reads its own headers from
     the dict, so adding a new provider doesn't require changes to this route.
     """
-    from api.services.telephony import registry as telephony_registry
 
     logger.info("Inbound /run dispatch received")
 
@@ -843,48 +905,29 @@ async def handle_inbound_run(request: Request):
         normalized_data = normalize_webhook_data(provider_class, webhook_data, headers)
         logger.info(
             f"/inbound/run normalized data — provider={normalized_data.provider} "
-            f"to={normalized_data.to_number} from={normalized_data.from_number} "
             f"account_id={normalized_data.account_id!r} "
-            f"direction={normalized_data.direction} "
-            f"call_id={normalized_data.call_id} "
-            f"to_country={normalized_data.to_country}"
+            f"direction={normalized_data.direction!r} "
+            f"call_id={normalized_data.call_id!r} "
+            f"to_country={normalized_data.to_country!r}"
         )
 
         if normalized_data.direction != "inbound":
             logger.warning(
-                f"Non-inbound call on /inbound/run: {normalized_data.direction}"
+                f"Non-inbound call on /inbound/run: {normalized_data.direction!r}"
             )
             return generic_hangup_response()
 
-        # 1. Resolve (config, phone_number) in a single SQL roundtrip that
-        # joins telephony_configurations and telephony_phone_numbers and
-        # filters on (provider, account_id, called number
-        # canonical address, is_active). The phone-number row's existence in
-        # the matched config simultaneously identifies the org — we never
+        # 1. Resolve (config, phone_number). The phone-number row's existence
+        # in the matched config simultaneously identifies the org — we never
         # match a config from one org against a phone owned by another.
-        if normalized_data.account_id:
-            match = await db_client.find_inbound_route_by_account(
-                provider=provider_class.PROVIDER_NAME,
-                account_id=normalized_data.account_id,
-                to_number=normalized_data.to_number,
-                country_hint=normalized_data.to_country,
-            )
-        else:
-            # Exotel Voicebot Applet dynamic-URL webhooks omit AccountSid;
-            # resolve org/config from the called number when it is uniquely
-            # registered for this provider (fail closed on ambiguity).
-            match = await db_client.find_inbound_route_by_called_number(
-                provider=provider_class.PROVIDER_NAME,
-                to_number=normalized_data.to_number,
-                country_hint=normalized_data.to_country,
-            )
+        match = await _find_inbound_route(provider_class, normalized_data)
 
         if not match:
             logger.warning(
                 f"/inbound/run: no inbound route matched "
                 f"provider={provider_class.PROVIDER_NAME} "
-                f"account_id={normalized_data.account_id} "
-                f"to={normalized_data.to_number}"
+                f"account_id={normalized_data.account_id!r} "
+                f"call_id={normalized_data.call_id!r}"
             )
             return provider_class.generate_validation_error_response(
                 TelephonyError.PHONE_NUMBER_NOT_CONFIGURED
@@ -899,13 +942,13 @@ async def handle_inbound_run(request: Request):
             f"/inbound/run matched route — org={config.organization_id} "
             f"config={config.id} name={config.name!r} "
             f"webhook_account_id={normalized_data.account_id!r} "
-            f"phone={phone_row.id} address={phone_row.address!r} "
+            f"phone={phone_row.id} "
             f"inbound_workflow_id={phone_row.inbound_workflow_id}"
         )
 
         if not phone_row.inbound_workflow_id:
             logger.warning(
-                f"/inbound/run: number {normalized_data.to_number} has no "
+                f"/inbound/run: phone number {phone_row.id} has no "
                 f"inbound_workflow_id assigned"
             )
             return provider_class.generate_validation_error_response(
@@ -926,20 +969,16 @@ async def handle_inbound_run(request: Request):
         user_id = workflow.user_id
 
         # 3. Verify webhook signature against the matched config's credentials.
-        provider_instance = await get_telephony_provider_by_id(
-            telephony_configuration_id, config.organization_id
+        provider_instance, refusal = await _verified_inbound_provider(
+            telephony_configuration_id,
+            config.organization_id,
+            str(request.url),
+            webhook_data,
+            headers,
+            raw_body,
         )
-        signature_valid = await provider_instance.verify_inbound_signature(
-            str(request.url), webhook_data, headers, raw_body
-        )
-        if not signature_valid:
-            logger.warning(
-                f"/inbound/run: signature validation failed for "
-                f"{provider_class.PROVIDER_NAME}"
-            )
-            return provider_class.generate_validation_error_response(
-                TelephonyError.SIGNATURE_VALIDATION_FAILED
-            )
+        if refusal:
+            return provider_class.generate_validation_error_response(refusal)
 
         try:
             concurrency_slot = await call_concurrency.acquire_org_slot(
@@ -1017,38 +1056,68 @@ async def handle_inbound_run(request: Request):
         return generic_hangup_response()
 
 
+def _fallback_unavailable(provider_class):
+    # The second argument is logged for the operator; the caller hears the Spanish table text.
+    return provider_class.generate_error_response(
+        "SYSTEM_UNAVAILABLE",
+        "Our system is temporarily unavailable. Please try again later.",
+    )
+
+
 @router.post("/inbound/fallback")
 async def handle_inbound_fallback(request: Request):
     """Fallback endpoint that returns audio message when calls cannot be processed."""
-
-    webhook_data, _ = await parse_webhook_request(request)
+    # Authenticated like /inbound/run: the account id of the webhook names the telephony
+    # configuration, and that configuration's credentials must verify the signature. Anything
+    # else is a 401, except a database outage during that lookup: the carrier calls this URL
+    # precisely when /inbound/run failed, so the caller hears the static Spanish sentence
+    # and nothing is written. Neither the headers nor the body are logged, only the call id.
+    # (Comments, not docstring: the docstring is published in openapi.json and the generated clients.)
+    where = "POST /telephony/inbound/fallback"
+    webhook_data, raw_body = await parse_webhook_or_reject(request, where=where)
     headers = dict(request.headers)
 
-    # Detect provider
-    provider_class = await _detect_provider(webhook_data, headers)
+    try:
+        provider_class = await _detect_provider(webhook_data, headers)
+    except Exception as exc:  # a detector that cannot read the body recognises nothing
+        raise rejected(
+            where, why=f"no provider recognises the request ({type(exc).__name__})"
+        ) from exc
+    if not provider_class:
+        raise rejected(where, why="no provider recognises the request")
+    try:
+        normalized_data, provider = await provider_for_inbound_webhook(
+            provider_class,
+            webhook_data,
+            headers,
+            where=where,
+            find_route=_find_inbound_route,
+        )
+    except CredentialStoreUnavailable:
+        return _fallback_unavailable(provider_class)
+    await verify_signature(
+        provider,
+        where=where,
+        url=str(request.url),
+        data=webhook_data,
+        headers=headers,
+        body=raw_body,
+    )
 
-    if provider_class:
-        # Use provider-specific error response
-        call_id = (
-            webhook_data.get("CallSid")
-            or webhook_data.get("CallUUID")
-            or webhook_data.get("call_uuid")
-        )
-        logger.info(
-            f"[fallback] Received {provider_class.PROVIDER_NAME} callback for call {call_id}: {json.dumps(webhook_data)}"
-        )
+    logger.info(
+        f"[fallback] Received {provider_class.PROVIDER_NAME} callback for call {normalized_data.call_id}"
+    )
+    return _fallback_unavailable(provider_class)
 
-        return provider_class.generate_error_response(
-            "SYSTEM_UNAVAILABLE",
-            "Our system is temporarily unavailable. Please try again later.",
-        )
-    else:
-        # Unknown provider - return generic XML
-        logger.info(
-            f"[fallback] Received unknown provider callback: {json.dumps(webhook_data)} and request headers: {json.dumps(headers)}"
-        )
 
-        return generic_hangup_response()
+def _legacy_inbound_refusal(provider_class, error_type: TelephonyError):
+    """Answer a refused legacy inbound request: the 401, except an unverified carrier signing."""
+    if error_type != TelephonyError.CARRIER_SIGNING_UNVERIFIED:
+        # Every other refusal comes before the request is authenticated: one 401, so an unsigned request
+        # cannot tell an existing workflow or number from a missing one.
+        raise rejected("POST /telephony/inbound/{workflow_id}", why=error_type.value)
+    logger.error(f"Request validation failed: {error_type}")
+    return provider_class.generate_validation_error_response(error_type)
 
 
 @router.post("/inbound/{workflow_id}", deprecated=True)
@@ -1064,6 +1133,15 @@ async def handle_inbound_telephony(
     their provider at ``/inbound/run``; this route is kept only for
     existing provider configurations that still encode ``workflow_id``
     in the URL.
+
+    It is in the closed route list of VOZ-N0-29. A webhook that fails
+    validation (unknown workflow, telephony configuration or called number,
+    or a missing or invalid signature) is refused with the B0-28 401, except
+    a carrier whose signing cannot be verified, which gets that carrier's
+    error document. A body that cannot be parsed, a webhook no provider
+    recognises or that cannot be normalized, a call that is not inbound and
+    any other error before the call starts still answer 200 with a TwiML
+    hangup.
     """
     logger.info(
         f"[legacy /inbound/{{workflow_id}}] Inbound call received for workflow_id: {workflow_id}"
@@ -1071,7 +1149,6 @@ async def handle_inbound_telephony(
 
     try:
         webhook_data, raw_body = await parse_webhook_request(request)
-        logger.info(f"Inbound call data: {dict(webhook_data)}")
         headers = dict(request.headers)
 
         # Detect provider and normalize data
@@ -1082,12 +1159,14 @@ async def handle_inbound_telephony(
 
         normalized_data = normalize_webhook_data(provider_class, webhook_data, headers)
 
-        logger.info(f"Inbound call - Provider: {normalized_data.provider}")
-        logger.info(f"Normalized data: {normalized_data}")
+        # Provider and call id only: the body and NormalizedInboundData carry names, numbers and SIP headers.
+        logger.info(
+            f"Inbound call - provider={normalized_data.provider} call_id={normalized_data.call_id!r}"
+        )
 
         # Validate inbound direction
         if normalized_data.direction != "inbound":
-            logger.warning(f"Non-inbound call received: {normalized_data.direction}")
+            logger.warning(f"Non-inbound call received: {normalized_data.direction!r}")
             return generic_hangup_response()
 
         (
@@ -1106,8 +1185,7 @@ async def handle_inbound_telephony(
         )
 
         if not is_valid:
-            logger.error(f"Request validation failed: {error_type}")
-            return provider_class.generate_validation_error_response(error_type)
+            return _legacy_inbound_refusal(provider_class, error_type)
 
         user_id = workflow_context["user_id"]
         organization_id = workflow_context["organization_id"]
@@ -1188,6 +1266,8 @@ async def handle_inbound_telephony(
         logger.error(f"Request parsing error: {e}")
         return generic_hangup_response()
     except Exception as e:
+        if isinstance(e, HTTPException) and e.status_code == 401:
+            raise  # the refusal above: never turned into a hangup
         logger.error(f"Error processing inbound call: {e}")
         return generic_hangup_response()
 
@@ -1201,6 +1281,18 @@ async def complete_transfer_function_call(transfer_id: str, request: Request):
     form_data = await request.form()
     data = dict(form_data)
 
+    # Only a request signed with the token of the organization that owns the transfer gets further;
+    # an unsigned or unattributable one is a 401 and changes nothing.
+    transfer_context = await verify_transfer_callback(
+        transfer_id,
+        provider_name=TwilioProvider.PROVIDER_NAME,
+        where="POST /telephony/transfer-result/{transfer_id}",
+        url=str(request.url),
+        data=data,
+        headers=dict(request.headers),
+    )
+    call_transfer_manager = await get_call_transfer_manager()
+
     call_status = data.get("CallStatus", "")
     call_sid = data.get("CallSid", "")
 
@@ -1208,12 +1300,8 @@ async def complete_transfer_function_call(transfer_id: str, request: Request):
         f"Transfer result(call status) webhook: {transfer_id} status={call_status}"
     )
 
-    # Get transfer context from Redis for additional information
-    call_transfer_manager = await get_call_transfer_manager()
-    transfer_context = await call_transfer_manager.get_transfer_context(transfer_id)
-
-    original_call_sid = transfer_context.original_call_sid if transfer_context else None
-    conference_name = transfer_context.conference_name if transfer_context else None
+    original_call_sid = transfer_context.original_call_sid
+    conference_name = transfer_context.conference_name
 
     # Determine the result based on call status with user-friendly messaging
     if call_status in ("in-progress", "answered"):

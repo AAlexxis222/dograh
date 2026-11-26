@@ -86,6 +86,15 @@ export const handleInboundFallbackApiV1TelephonyInboundFallbackPost = <ThrowOnEr
  * existing provider configurations that still encode ``workflow_id``
  * in the URL.
  *
+ * It is in the closed route list of VOZ-N0-29. A webhook that fails
+ * validation (unknown workflow, telephony configuration or called number,
+ * or a missing or invalid signature) is refused with the B0-28 401, except
+ * a carrier whose signing cannot be verified, which gets that carrier's
+ * error document. A body that cannot be parsed, a webhook no provider
+ * recognises or that cannot be normalized, a call that is not inbound and
+ * any other error before the call starts still answer 200 with a TwiML
+ * hangup.
+ *
  * @deprecated
  */
 export const handleInboundTelephonyApiV1TelephonyInboundWorkflowIdPost = <ThrowOnError extends boolean = false>(options: Options<HandleInboundTelephonyApiV1TelephonyInboundWorkflowIdPostData, ThrowOnError>): RequestResult<HandleInboundTelephonyApiV1TelephonyInboundWorkflowIdPostResponses, HandleInboundTelephonyApiV1TelephonyInboundWorkflowIdPostErrors, ThrowOnError> => (options.client ?? client).post<HandleInboundTelephonyApiV1TelephonyInboundWorkflowIdPostResponses, HandleInboundTelephonyApiV1TelephonyInboundWorkflowIdPostErrors, ThrowOnError>({ url: '/api/v1/telephony/inbound/{workflow_id}', ...options });
