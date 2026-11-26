@@ -9,8 +9,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from loguru import logger
 
+from api.routes.public_agent import (
+    ResolvedAgentTarget,
+    TriggerCallRequest,
+    _execute_resolved_target,
+)
+from api.services.telephony.ari_manager import ARIConnection
 from api.services.telephony.providers.ari.provider import ARIProvider
 from api.services.telephony.providers.cloudonix.provider import CloudonixProvider
 from api.services.telephony.providers.exotel.provider import ExotelProvider
@@ -300,4 +307,144 @@ async def test_transfer_resolver_masks_the_resolved_destination(log_lines, sourc
 
     # No behaviour change in what is dialed: only the log line is masked.
     assert resolved.destination == OTHER_PARTY
+    _assert_masked(log_lines, "2671")
+
+
+# RUL-r2-1: the same rule outside the provider modules.
+
+ARI_INBOUND_ROWS = {
+    "unregistered": None,
+    "no-workflow": SimpleNamespace(
+        telephony_configuration_id=10, inbound_workflow_id=None, address=OWN_NUMBER
+    ),
+    "created": SimpleNamespace(
+        telephony_configuration_id=10, inbound_workflow_id=7, address=OWN_NUMBER
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("row", sorted(ARI_INBOUND_ROWS))
+async def test_ari_inbound_masks_the_caller_and_the_called_number(log_lines, row):
+    connection = ARIConnection(
+        organization_id=9,
+        telephony_configuration_id=10,
+        ari_endpoint="http://asterisk.test:8088",
+        app_name="dograh",
+        app_password="pw",
+    )
+    event = {
+        "type": "StasisStart",
+        "channel": {
+            "id": "chan-in",
+            "state": "Ring",
+            "caller": {"number": OTHER_PARTY},
+            "dialplan": {"exten": OWN_NUMBER},
+        },
+        "args": [],
+    }
+    db = MagicMock()
+    db.find_active_phone_number_for_inbound = AsyncMock(
+        return_value=ARI_INBOUND_ROWS[row]
+    )
+    db.get_workflow = AsyncMock(return_value=SimpleNamespace(user_id=1))
+    db.create_workflow_run = AsyncMock(return_value=SimpleNamespace(id=42))
+    module = "api.services.telephony.ari_manager"
+    inbound = connection._handle_inbound_stasis_start
+    with (
+        patch(f"{module}.db_client", db),
+        patch(f"{module}.call_concurrency") as concurrency,
+        patch(
+            f"{module}.prepare_workflow_run_inputs",
+            new=AsyncMock(
+                return_value=SimpleNamespace(
+                    definition_id=1, effective_configurations={}
+                )
+            ),
+        ),
+        patch(
+            f"{module}.authorize_workflow_run_start",
+            new=AsyncMock(
+                return_value=SimpleNamespace(has_quota=False, error_message="quota")
+            ),
+        ),
+        patch(f"{module}.mark_workflow_run_failed", new=AsyncMock()),
+        patch.object(connection, "_delete_channel", new=AsyncMock()),
+        patch.object(connection, "_is_ext_channel", new=AsyncMock(return_value=False)),
+    ):
+        concurrency.acquire_org_slot = AsyncMock(return_value=object())
+        concurrency.bind_workflow_run = AsyncMock()
+        concurrency.release_workflow_run_slot = AsyncMock()
+        concurrency.release_slot = AsyncMock()
+        # The StasisStart line, then the inbound handler it would schedule, awaited here.
+        with patch.object(connection, "_handle_inbound_stasis_start", new=AsyncMock()):
+            await connection._handle_event(json.dumps(event))
+        await inbound("chan-in", "Ring", event)
+
+    if row == "created":
+        # No behaviour change in what is stored: only the log line is masked.
+        run = db.create_workflow_run.call_args.kwargs
+        assert run["name"] == f"ARI Inbound {OTHER_PARTY}"
+        assert run["initial_context"]["caller_number"] == OTHER_PARTY
+        assert run["initial_context"]["called_number"] == OWN_NUMBER
+    _assert_masked(log_lines, "2671", "0188")
+
+
+@pytest.mark.asyncio
+async def test_public_agent_dial_masks_the_callee(log_lines):
+    provider = SimpleNamespace(
+        PROVIDER_NAME="ari",
+        WEBHOOK_ENDPOINT="outbound",
+        validate_config=MagicMock(return_value=True),
+    )
+    prepare = AsyncMock(
+        return_value=SimpleNamespace(
+            initial_context={},
+            definition_id=1,
+            effective_configurations={},
+            use_draft=False,
+        )
+    )
+    target = ResolvedAgentTarget(
+        workflow=SimpleNamespace(id=33, user_id=99, workflow_uuid="wf-1"),
+        organization_id=11,
+        identifier_type="workflow_uuid",
+        identifier_value="wf-1",
+    )
+    module = "api.routes.public_agent"
+    with (
+        patch(
+            f"{module}.resolve_outbound_configuration_id",
+            new=AsyncMock(return_value=55),
+        ),
+        patch(
+            f"{module}.get_telephony_provider_by_id",
+            new=AsyncMock(return_value=provider),
+        ),
+        patch(f"{module}.call_concurrency") as concurrency,
+        patch(f"{module}.prepare_workflow_run_inputs", new=prepare),
+        patch(f"{module}.db_client") as db,
+        patch(
+            f"{module}.authorize_workflow_run_start",
+            new=AsyncMock(
+                return_value=SimpleNamespace(has_quota=False, error_message="quota")
+            ),
+        ),
+        patch(f"{module}.mark_workflow_run_failed", new=AsyncMock()),
+    ):
+        concurrency.acquire_org_slot = AsyncMock(return_value=object())
+        concurrency.bind_workflow_run = AsyncMock()
+        concurrency.release_workflow_run_slot = AsyncMock()
+        db.create_workflow_run = AsyncMock(return_value=SimpleNamespace(id=501))
+        with pytest.raises(HTTPException):
+            await _execute_resolved_target(
+                target,
+                TriggerCallRequest(phone_number=OTHER_PARTY),
+                use_draft=False,
+                api_key_id=None,
+                api_key_created_by=None,
+            )
+
+    # No behaviour change in the number the run carries: only the log line is masked.
+    assert prepare.call_args.kwargs["initial_context"]["called_number"] == OTHER_PARTY
     _assert_masked(log_lines, "2671")
