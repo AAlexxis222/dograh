@@ -393,3 +393,60 @@ def test_a_malformed_stored_aws_region_fails_the_build(build, region):
 def test_a_real_aws_region_still_builds(build, region):
     # Regression: the check refuses shapes, not regions nobody listed.
     build(region).assert_called_once()
+
+
+# --- a Deepgram URL cannot carry its own mip_opt_out ---------------------------
+
+
+def _flux_with_url(url):
+    return create_stt_service(
+        _stt_user_config(model="flux-general-en"),
+        audio_config(),
+        tuning={"stt": {"deepgram": {"ctor": {"url": url}}}},
+    )
+
+
+_STORED_FALSE = "https://api.eu.deepgram.com/?mip_opt_out=false"
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(
+            lambda: _flux_with_url(f"{EU_WS}/v2/listen?mip_opt_out=false&x="),
+            id="flux-tuned-url",
+        ),
+        pytest.param(
+            lambda: _flux_with_url(f"{EU_WS}/v2/listen?MIP_OPT_OUT=false"),
+            id="flux-tuned-url-upper-case",
+        ),
+        pytest.param(
+            lambda: create_stt_service(
+                _stt_user_config(model="flux-general-en", base_url=_STORED_FALSE),
+                audio_config(),
+            ),
+            id="flux-stored-base-url",
+        ),
+        pytest.param(
+            lambda: create_tts_service(
+                _tts_user_config(base_url=_STORED_FALSE), audio_config()
+            ),
+            id="tts-stored-base-url",
+        ),
+    ],
+)
+def test_a_deepgram_url_carrying_mip_opt_out_is_refused(build):
+    # Red at RUL-r1-4: pipecat appends its query after the URL
+    # (flux/stt.py:299), so the URL's false goes on the wire before the fixed
+    # true.
+    with pytest.raises(HTTPException) as exc_info:
+        build()
+    assert exc_info.value.status_code == 400
+
+
+def test_a_flux_url_with_other_query_parameters_still_builds():
+    # Regression: a proxy URL may carry its own token, so only mip_opt_out is
+    # refused.
+    url = "wss://proxy.example/v2/listen?token=abc"
+    kwargs = _ctor_kwargs("DeepgramFluxSTTService", lambda: _flux_with_url(url))
+    assert kwargs["url"] == url
