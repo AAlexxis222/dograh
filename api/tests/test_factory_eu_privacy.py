@@ -471,15 +471,45 @@ def _google_tts(location):
     )["location"]
 
 
-_LOCATION_BUILDS = [_google_stt, _google_tts, _build_llm, _build_realtime]
+def _azure_stt(region):
+    config = user_config_stt(
+        "azure_speech", model="default", language="en-US", region=region
+    )
+    return _ctor_kwargs(
+        "AzureSTTService", lambda: create_stt_service(config, audio_config())
+    )["region"]
+
+
+def _azure_tts(region):
+    config = user_config_tts(
+        "azure_speech",
+        model="neural",
+        voice="en-US-AriaNeural",
+        language="en-US",
+        region=region,
+    )
+    return _ctor_kwargs(
+        "AzureTTSService", lambda: create_tts_service(config, audio_config())
+    )["region"]
+
+
+_LOCATION_BUILDS = [
+    _google_stt,
+    _google_tts,
+    _build_llm,
+    _build_realtime,
+    _azure_stt,
+    _azure_tts,
+]
 
 
 @pytest.mark.parametrize("build", _LOCATION_BUILDS)
 @pytest.mark.parametrize("location", ["x@10.0.0.5:8443/", "evil.example.com/#"])
 def test_a_malformed_stored_location_fails_the_build(build, location):
     # Red at RUL-r1-6: pipecat builds the Google STT and TTS hosts from the
-    # location (google/stt.py:702, google/tts.py:937) and google-genai the
-    # Vertex one (_api_client.py:695), so this value picks the host.
+    # location (google/stt.py:702, google/tts.py:937), google-genai the Vertex
+    # one (_api_client.py:695) and the Azure Speech SDK its host from the
+    # region, so this value picks the host.
     with pytest.raises(HTTPException) as exc_info:
         build(location)
     assert exc_info.value.status_code == 400
@@ -488,8 +518,8 @@ def test_a_malformed_stored_location_fails_the_build(build, location):
 @pytest.mark.parametrize("build", _LOCATION_BUILDS)
 @pytest.mark.parametrize(
     "location",
-    # The registry's Vertex locations, a Google region, and two Azure region
-    # names, which have the same shape.
+    # The registry's Vertex locations, a Google region and two offered Azure
+    # regions; every builder takes every shape.
     ["global", "eu", "us", "europe-west4", "us-central1", "westeurope", "eastus2"],
 )
 def test_a_real_location_still_builds(build, location):
