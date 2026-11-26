@@ -12,7 +12,9 @@ import pytest
 import sqlalchemy.exc
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
+from api.db import db_client
 from api.errors.telephony_errors import CALLER_MESSAGES_ES
 from api.routes.telephony import router
 from api.tests.support.carrier_callbacks import (
@@ -322,3 +324,32 @@ def test_fallback_with_a_wrong_typed_field_is_401_not_500(world, body):
 
     _assert_b028(response)
     assert world.snapshot() == before
+
+
+async def test_fallback_telnyx_integer_connection_id_is_401_against_the_real_database(
+    db_session,
+):
+    # 008247dd32b8, 85d32bf8dbc5: a Telnyx-shaped body whose connection_id is an integer reaches the real route
+    # lookup in the test database. Postgres refusing the value is an error of the request, not an outage: the 401.
+    body = {
+        "data": {
+            "record_type": "event",
+            "event_type": "call.initiated",
+            "payload": {
+                "call_control_id": "cc-int",
+                "connection_id": 12345,
+                "to": "+34911000111",
+                "direction": "incoming",
+            },
+        }
+    }
+    app = FastAPI()
+    app.include_router(router)
+    # A pass-through spy: the real lookup runs, the spy only proves the request reached it.
+    lookup = AsyncMock(wraps=db_client.find_inbound_route_by_account)
+    with patch.object(db_client, "find_inbound_route_by_account", lookup):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url=BASE) as http:
+            response = await http.post(FALLBACK_PATH, json=body)
+
+    _assert_b028(response)
+    assert lookup.await_args.kwargs["account_id"] == 12345
