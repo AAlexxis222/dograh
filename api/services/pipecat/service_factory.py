@@ -434,6 +434,25 @@ def _nova_ctor_allowed() -> frozenset[str]:
     return SPECS[("stt", "deepgram")].ctor_allowed - {"url"}
 
 
+def _warn_dropped_nova_ctor(model: str, dropped: set[str]) -> None:
+    """Warn about the ctor kwargs a Nova model does not take, by reason."""
+    _warn_dropped(
+        "ctor",
+        "stt.deepgram",
+        model,
+        dropped - {"mip_opt_out"},
+        "Flux-only constructor argument, Nova takes base_url",
+    )
+    # A stale stored value: the run does not re-validate its tuning.
+    _warn_dropped(
+        "ctor",
+        "stt.deepgram",
+        model,
+        dropped & {"mip_opt_out"},
+        "fixed platform policy, the opt-out is always sent",
+    )
+
+
 def _openai_realtime_stt_base_url(base_url: str) -> str:
     """The websocket URL the Realtime transcription session needs, derived
     from a configured http(s) base (#7).
@@ -699,22 +718,7 @@ def create_stt_service(
         # Nova takes base_url, not url; url is Flux-only, so drop it here even
         # though the shared allow-list accepts ctor.url for either model.
         ctor = {k: v for k, v in plan.ctor.items() if k in _nova_ctor_allowed()}
-        dropped = set(plan.ctor) - set(ctor)
-        _warn_dropped(
-            "ctor",
-            "stt.deepgram",
-            user_config.stt.model,
-            dropped - {"mip_opt_out"},
-            "Flux-only constructor argument, Nova takes base_url",
-        )
-        # A stale stored value: the run does not re-validate its tuning.
-        _warn_dropped(
-            "ctor",
-            "stt.deepgram",
-            user_config.stt.model,
-            dropped & {"mip_opt_out"},
-            "fixed platform policy, the opt-out is always sent",
-        )
+        _warn_dropped_nova_ctor(user_config.stt.model, set(plan.ctor) - set(ctor))
         return DeepgramSTTService(
             api_key=user_config.stt.api_key,
             settings=settings,
