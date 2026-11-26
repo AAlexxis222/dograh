@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from functools import wraps
 from typing import TYPE_CHECKING, Any
@@ -426,9 +426,10 @@ def _tts_provider_ctor(plan) -> dict:
 # sends. Caller audio can carry health data, so every Deepgram request opts
 # out. It is a policy rather than a default an operator can pick, so it is
 # fixed here and the tuning allow-list does not offer it: a tuned ``false``
-# would undo it. It is merged last wherever it is splatted, so a stale stored
-# value cannot win or collide with it.
-_DEEPGRAM_PRIVACY = {"mip_opt_out": True}
+# would undo it. This helper merges it last, so a stale stored value cannot win
+# or collide with it; every Deepgram construction site goes through it.
+def _with_deepgram_privacy(ctor: Mapping[str, Any]) -> dict[str, Any]:
+    return {**ctor, "mip_opt_out": True}
 
 
 def _deepgram_base_url(service_config) -> str:
@@ -582,11 +583,12 @@ def create_stt_service(
                 sample_rate=audio_config.transport_in_sample_rate,
                 # Flux takes a fully-qualified socket URL, not a host. A tuned
                 # ctor.url (validated above) overrides the regional default.
-                **{
-                    "url": _deepgram_websocket_url(deepgram_base_url, "/v2/listen"),
-                    **plan.ctor,
-                    **_DEEPGRAM_PRIVACY,
-                },
+                **_with_deepgram_privacy(
+                    {
+                        "url": _deepgram_websocket_url(deepgram_base_url, "/v2/listen"),
+                        **plan.ctor,
+                    }
+                ),
             )
 
         # Other models than flux
@@ -633,7 +635,7 @@ def create_stt_service(
             # Takes the host and derives the wss and https URLs itself. The
             # regional host is the only source: the tuning allow-list has no
             # base_url, and the Flux-only ctor.url was dropped above.
-            **{"base_url": deepgram_base_url, **ctor, **_DEEPGRAM_PRIVACY},
+            **_with_deepgram_privacy({"base_url": deepgram_base_url, **ctor}),
         )
     elif user_config.stt.provider == ServiceProviders.OPENAI.value:
         plan = tuning_for(tuning, "stt", ServiceProviders.OPENAI.value)
@@ -764,7 +766,7 @@ def create_stt_service(
                 should_interrupt=False,  # external turn strategies own interruption
                 sample_rate=audio_config.transport_in_sample_rate,
                 # dograh's ctor allow-list has no "url" (SPECS)
-                **{**plan.ctor, **_DEEPGRAM_PRIVACY},
+                **_with_deepgram_privacy(plan.ctor),
             )
 
         # The non-Flux Dograh service takes none of the stt.dograh knobs (its
@@ -1101,8 +1103,7 @@ def create_tts_service(
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            **_DEEPGRAM_PRIVACY,
-            **silence,
+            **_with_deepgram_privacy(silence),
         )
     elif user_config.tts.provider == ServiceProviders.OPENAI.value:
         kwargs = {}
