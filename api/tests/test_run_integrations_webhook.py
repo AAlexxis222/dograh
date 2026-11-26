@@ -109,7 +109,7 @@ def test_build_render_context_exposes_public_transcript_download_url():
     )
 
     with patch(
-        "api.tasks.run_integrations.BACKEND_API_ENDPOINT",
+        "api.utils.artifacts.BACKEND_API_ENDPOINT",
         "https://api.example.com",
     ):
         context = _build_render_context(workflow_run, public_token="public-token")

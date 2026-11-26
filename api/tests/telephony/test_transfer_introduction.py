@@ -173,6 +173,27 @@ async def test_callbacks_require_this_organizations_signature(transfer):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["transfer-introduction", "transfer-status"])
+async def test_callback_of_a_transfer_on_a_disabled_carrier_is_refused_not_a_500(
+    transfer, path
+):
+    # A run on a carrier carrier_policy disables (Cloudonix) gets the route's invalid-signature answer.
+    from api.services.telephony.carrier_policy import CarrierDisabledError
+
+    transfer.lookup.side_effect = CarrierDisabledError("cloudonix")
+
+    response = await signed_post(
+        transfer.client,
+        f"/api/v1/telephony/twilio/{path}/tx-1",
+        {"CallSid": "CA-destination", "CallStatus": "in-progress"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Invalid webhook signature"}
+    assert not transfer.redis.published
+
+
+@pytest.mark.asyncio
 async def test_answer_is_available_even_before_waiter_subscribes(transfer):
     response = await signed_post(
         transfer.client,

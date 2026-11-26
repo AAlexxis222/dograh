@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from loguru import logger
 
 from api.enums import TelephonyCallStatus, WorkflowRunMode
+from api.services.security.redaction import mask_phone
 from api.services.telephony import ws_auth
 from api.services.telephony.base import (
     CallInitiationResult,
@@ -85,7 +86,9 @@ class VobizProvider(TelephonyProvider):
         endpoint = f"{self.base_url}/v1/Account/{self.auth_id}/Call/"
 
         from_number = self.select_from_number(from_number)
-        logger.info(f"Selected Vobiz phone number {from_number} for outbound call")
+        logger.info(
+            f"Selected Vobiz phone number {mask_phone(from_number)} for outbound call"
+        )
 
         # Remove + prefix if present (Vobiz expects E.164 without +)
         to_number_clean = to_number.lstrip("+")
@@ -751,35 +754,16 @@ class VobizProvider(TelephonyProvider):
         """
         from fastapi import Response
 
-        # Vobiz error responses should be valid XML like Plivo
+        from api.errors.telephony_errors import CALLER_LANGUAGE, log_and_get_caller_text
+
+        # Vobiz error responses should be valid XML like Plivo.
         vobiz_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Speak voice="WOMAN">Sorry, there was an error processing your call. {message}</Speak>
+    <Speak voice="WOMAN" language="{CALLER_LANGUAGE}">{log_and_get_caller_text(error_type, message, provider=VobizProvider.PROVIDER_NAME)}</Speak>
     <Hangup/>
 </Response>"""
 
         return Response(content=vobiz_xml, media_type="application/xml")
-
-    @staticmethod
-    def generate_validation_error_response(error_type) -> tuple:
-        """
-        Generate Vobiz-specific error response for validation failures with organizational debugging info.
-        """
-        from fastapi import Response
-
-        from api.errors.telephony_errors import TELEPHONY_ERROR_MESSAGES, TelephonyError
-
-        message = TELEPHONY_ERROR_MESSAGES.get(
-            error_type, TELEPHONY_ERROR_MESSAGES[TelephonyError.GENERAL_AUTH_FAILED]
-        )
-
-        vobiz_xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Speak voice="WOMAN">{message}</Speak>
-    <Hangup/>
-</Response>"""
-
-        return Response(content=vobiz_xml_content, media_type="application/xml")
 
     # ======== CALL TRANSFER METHODS ========
 

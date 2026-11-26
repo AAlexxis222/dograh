@@ -13,6 +13,11 @@ from pipecat.utils.run_context import set_current_run_id
 from api.db import db_client
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
+from api.services.telephony.callback_auth import (
+    CallbackRefused,
+    route_provider,
+    verify_transfer_callback,
+)
 from api.services.telephony.factory import get_telephony_provider_for_run
 from api.services.telephony.providers.telnyx.provider import (
     TelnyxProvider,
@@ -124,9 +129,8 @@ async def handle_telnyx_events(
     event_type = normalize_event_type(data.get("event_type", ""))
 
     logger.info(
-        f"[run {workflow_run_id}] Received Telnyx event: event_type={event_type}"
+        f"[run {workflow_run_id}] Received Telnyx event: event_type={event_type!r}"
     )
-    logger.debug(f"[run {workflow_run_id}] Telnyx event body: {json.dumps(event_data)}")
 
     # Get workflow run and provider
     workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
@@ -142,9 +146,15 @@ async def handle_telnyx_events(
         # existed, re-opening the enumeration channel for that class of run.
         raise HTTPException(status_code=404, detail="Workflow run not found")
 
-    provider = await get_telephony_provider_for_run(
-        workflow_run, workflow.organization_id
-    )
+    try:
+        provider = await route_provider(
+            get_telephony_provider_for_run(workflow_run, workflow.organization_id),
+            provider_name=TelnyxProvider.PROVIDER_NAME,
+            where="POST /telephony/telnyx/events/{workflow_run_id}",
+        )
+    except CallbackRefused:
+        # The same 404 as an unknown run, like an invalid signature below.
+        raise HTTPException(status_code=404, detail="Workflow run not found") from None
 
     signature_valid = await provider.verify_inbound_signature(
         "", event_data, dict(request.headers), raw_body
@@ -152,8 +162,8 @@ async def handle_telnyx_events(
     if not signature_valid:
         logger.warning(
             f"[run {workflow_run_id}] Invalid Telnyx webhook signature "
-            f"(event_type={event_type}, "
-            f"timestamp={request.headers.get('telnyx-timestamp')}, "
+            f"(event_type={event_type!r}, "
+            f"timestamp={request.headers.get('telnyx-timestamp')!r}, "
             f"body_len={len(raw_body)})"
         )
         # Deliberately identical to the unknown-run 404 above so unsigned
@@ -227,11 +237,21 @@ async def handle_telnyx_transfer_result(transfer_id: str, request: Request):
         - call.answered: https://developers.telnyx.com/api-reference/callbacks/call-answered
         - call.hangup:   https://developers.telnyx.com/api-reference/callbacks/call-hangup
     """
-    event_data = await request.json()
-    logger.info(
-        f"Telnyx transfer-result webhook (transfer_id={transfer_id}): "
-        f"{json.dumps(event_data)}"
+    # Telnyx signs the exact bytes (timestamp|body), so verify before parsing anything. The credentials
+    # come from the transfer's context; a request that cannot be attributed to one is a 401.
+    raw_body = (await request.body()).decode("utf-8", errors="replace")
+    transfer_context = await verify_transfer_callback(
+        transfer_id,
+        provider_name=TelnyxProvider.PROVIDER_NAME,
+        where="POST /telephony/telnyx/transfer-result/{transfer_id}",
+        url="",
+        data={},
+        headers=dict(request.headers),
+        body=raw_body,
     )
+
+    event_data = await request.json()
+    logger.info(f"Telnyx transfer-result webhook (transfer_id={transfer_id!r})")
 
     data = event_data.get("data", {})
     event_type = normalize_event_type(data.get("event_type", ""))
@@ -243,9 +263,8 @@ async def handle_telnyx_transfer_result(transfer_id: str, request: Request):
         return {"status": "pending"}
 
     call_transfer_manager = await get_call_transfer_manager()
-    transfer_context = await call_transfer_manager.get_transfer_context(transfer_id)
-    original_call_sid = transfer_context.original_call_sid if transfer_context else ""
-    conference_name = transfer_context.conference_name if transfer_context else None
+    original_call_sid = transfer_context.original_call_sid
+    conference_name = transfer_context.conference_name
 
     if event_type == "call.answered":
         # Seed the conference now with the destination's live call_control_id

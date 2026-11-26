@@ -4,7 +4,6 @@ Mounted under ``/api/v1/telephony`` by ``api.routes.telephony`` via the
 provider registry — see ProviderSpec.router.
 """
 
-import json
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, HTTPException, Request
@@ -14,15 +13,28 @@ from starlette.responses import HTMLResponse, Response
 
 from api.db import db_client
 from api.enums import WorkflowRunState
+from api.errors.telephony_errors import (
+    CALL_NOT_ATTENDED_MESSAGE_ES,
+    CALLER_LANGUAGE,
+)
 from api.services.telephony import ws_auth
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
+from api.services.telephony.callback_auth import (
+    CallbackRefused,
+    authenticate_answer_url,
+    route_provider,
+)
 from api.services.telephony.factory import get_telephony_provider_for_run
 from api.services.telephony.providers.twilio.introduction import (
     caller_left,
     introduction_twiml,
     process_introduction_status,
 )
-from api.services.telephony.providers.twilio.provider import CONNECT_ACTION_ROUTE
+from api.services.telephony.providers.twilio.provider import (
+    CONNECT_ACTION_ROUTE,
+    TWILIO_CALLER_VOICE,
+    TwilioProvider,
+)
 from api.services.telephony.status_processor import (
     StatusCallbackRequest,
     _process_status_update,
@@ -32,12 +44,6 @@ from api.services.telephony.transfer_event_protocol import TransferEventType
 from api.services.workflow.run_ending import get_run_ending
 
 router = APIRouter()
-
-# Played when the media socket ended and the call did not finish normally.
-_CALL_NOT_ATTENDED_ES = (
-    "Ahora mismo no podemos atender tu llamada. "
-    "Por favor, inténtalo de nuevo en unos minutos."
-)
 
 
 def _connect_action_twiml(call_ended: bool) -> str:
@@ -51,8 +57,8 @@ def _connect_action_twiml(call_ended: bool) -> str:
     if call_ended:
         return "<Response><Hangup/></Response>"
     return (
-        '<Response><Say language="es-ES">'
-        f"{escape(_CALL_NOT_ATTENDED_ES)}"
+        f'<Response><Say voice="{TWILIO_CALLER_VOICE}" language="{CALLER_LANGUAGE}">'
+        f"{escape(CALL_NOT_ATTENDED_MESSAGE_ES)}"
         "</Say><Hangup/></Response>"
     )
 
@@ -63,26 +69,29 @@ async def handle_twiml_webhook(
     workflow_run_id: int,
     organization_id: int,
     request: Request,
+    t: str | None = None,
 ):
     """
     Handle initial webhook from telephony provider.
     Returns provider-specific response (e.g., TwiML for Twilio).
+
+    The request must be signed with the token of the run's own organization, and the
+    ``workflow_id`` and ``organization_id`` of the query must agree with the run, which
+    decides (401 otherwise): the query never chooses whose credentials verify it. The signature binds no run,
+    so ``t`` must be the answer-URL token of ``workflow_run_id`` (``require_answer_url_token``).
     """
-
-    workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
-    provider = await get_telephony_provider_for_run(workflow_run, organization_id)
-    callback_data = dict(await request.form())
-
-    is_valid = await provider.verify_inbound_signature(
-        str(request.url),
-        callback_data,
-        dict(request.headers),
+    where = "POST /telephony/twiml"
+    _, provider = await authenticate_answer_url(
+        provider_name=TwilioProvider.PROVIDER_NAME,
+        where=where,
+        workflow_id=workflow_id,
+        workflow_run_id=workflow_run_id,
+        organization_id=organization_id,
+        t=t,
+        url=str(request.url),
+        data=dict(await request.form()),
+        headers=dict(request.headers),
     )
-    if not is_valid:
-        logger.warning(
-            f"[run {workflow_run_id}] Invalid Twilio signature on answer webhook"
-        )
-        raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
     response_content = await provider.get_webhook_response(
         workflow_id, organization_id, workflow_run_id
@@ -104,7 +113,8 @@ async def handle_twilio_status_callback(
     callback_data = dict(form_data)
 
     logger.info(
-        f"[run {workflow_run_id}] Received status callback: {json.dumps(callback_data)}"
+        f"[run {workflow_run_id}] Received Twilio status callback for call "
+        f"{callback_data.get('CallSid')!r} status={callback_data.get('CallStatus')!r}"
     )
 
     # Get workflow run to find organization
@@ -119,9 +129,16 @@ async def handle_twilio_status_callback(
         logger.warning(f"Workflow {workflow_run.workflow_id} not found")
         return {"status": "ignored", "reason": "workflow_not_found"}
 
-    provider = await get_telephony_provider_for_run(
-        workflow_run, workflow.organization_id
-    )
+    try:
+        provider = await route_provider(
+            get_telephony_provider_for_run(workflow_run, workflow.organization_id),
+            provider_name=TwilioProvider.PROVIDER_NAME,
+            where="POST /telephony/twilio/status-callback/{workflow_run_id}",
+        )
+    except CallbackRefused:
+        raise HTTPException(
+            status_code=401, detail="Invalid webhook signature"
+        ) from None
 
     is_valid = await provider.verify_inbound_signature(
         str(request.url),
@@ -228,7 +245,9 @@ async def transfer_audio(token: str):
     )
 
 
-async def _verified_introduction_transfer(transfer_id: str, request: Request):
+async def _verified_introduction_transfer(
+    transfer_id: str, request: Request, *, where: str
+):
     manager = await get_call_transfer_manager()
     transfer = await manager.get_transfer_context(transfer_id)
     if not transfer or not transfer.introduction_audio_url:
@@ -239,13 +258,19 @@ async def _verified_introduction_transfer(transfer_id: str, request: Request):
     workflow = await db_client.get_workflow_by_id(run.workflow_id)
     if not workflow:
         raise HTTPException(status_code=404, detail="Transfer unavailable")
-    provider = await get_telephony_provider_for_run(run, workflow.organization_id)
-    data = dict(await request.form())
-    if (
-        provider.PROVIDER_NAME != "twilio"
-        or not await provider.verify_inbound_signature(
-            str(request.url), data, dict(request.headers)
+    try:
+        provider = await route_provider(
+            get_telephony_provider_for_run(run, workflow.organization_id),
+            provider_name=TwilioProvider.PROVIDER_NAME,
+            where=where,
         )
+    except CallbackRefused:
+        raise HTTPException(
+            status_code=401, detail="Invalid webhook signature"
+        ) from None
+    data = dict(await request.form())
+    if not await provider.verify_inbound_signature(
+        str(request.url), data, dict(request.headers)
     ):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
     # Twilio may request the destination TwiML before Calls.json returns its SID.
@@ -264,7 +289,9 @@ async def transfer_introduction(
     transfer_id: str, request: Request, skip_audio: bool = False
 ):
     manager, transfer, _, _ = await _verified_introduction_transfer(
-        transfer_id, request
+        transfer_id,
+        request,
+        where="POST /telephony/twilio/transfer-introduction/{transfer_id}",
     )
     result = await manager.get_transfer_result(transfer_id)
     if result and result.type == TransferEventType.TRANSFER_FAILED:
@@ -281,7 +308,9 @@ async def transfer_introduction(
 @router.post("/twilio/transfer-status/{transfer_id}", include_in_schema=False)
 async def introduction_transfer_status(transfer_id: str, request: Request):
     manager, transfer, provider, data = await _verified_introduction_transfer(
-        transfer_id, request
+        transfer_id,
+        request,
+        where="POST /telephony/twilio/transfer-status/{transfer_id}",
     )
     if data.get("CallSid") == transfer.original_call_sid:
         raise HTTPException(status_code=403, detail="Expected destination call")

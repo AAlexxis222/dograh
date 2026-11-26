@@ -80,23 +80,23 @@ async def test_agent_stream_uses_provider_path_param_not_query_param():
         db_client.create_workflow_run = AsyncMock(return_value=workflow_run)
         db_client.update_workflow_run = AsyncMock()
 
-        await agent_stream_websocket(websocket, "cloudonix", "agent-uuid")
+        await agent_stream_websocket(websocket, "telnyx", "agent-uuid")
 
-    registry.get_optional.assert_called_once_with("cloudonix")
+    registry.get_optional.assert_called_once_with("telnyx")
     db_client.create_workflow_run.assert_awaited_once()
     mock_concurrency.acquire_org_slot.assert_awaited_once_with(
         workflow.organization_id,
-        source="agent_stream:cloudonix",
+        source="agent_stream:telnyx",
         timeout=0,
     )
     mock_concurrency.bind_workflow_run.assert_awaited_once_with(slot, workflow_run.id)
     mock_concurrency.unregister_active_call.assert_awaited_once_with(workflow_run.id)
     create_args = db_client.create_workflow_run.await_args.args
     create_kwargs = db_client.create_workflow_run.await_args.kwargs
-    assert create_args[2] == "cloudonix"
+    assert create_args[2] == "telnyx"
     assert create_kwargs["organization_id"] == workflow.organization_id
     assert create_kwargs["initial_context"] == {
-        "provider": "cloudonix",
+        "provider": "telnyx",
         "direction": "inbound",
     }
     assert create_kwargs["definition_id"] == 55
@@ -152,7 +152,7 @@ async def test_agent_stream_marks_run_failed_when_quota_exceeded():
         mock_concurrency.bind_workflow_run = AsyncMock()
         mock_concurrency.release_workflow_run_slot = AsyncMock()
 
-        await agent_stream_websocket(websocket, "cloudonix", "agent-uuid")
+        await agent_stream_websocket(websocket, "telnyx", "agent-uuid")
 
     mark_failed_mock.assert_awaited_once_with(workflow_run.id, "Quota exceeded")
     mock_concurrency.release_workflow_run_slot.assert_awaited_once_with(workflow_run.id)
@@ -200,13 +200,13 @@ async def test_agent_stream_rejects_when_concurrency_limit_reached(
             side_effect=_refusal(
                 reason,
                 organization_id=workflow.organization_id,
-                source="agent_stream:cloudonix",
+                source="agent_stream:telnyx",
                 wait_time=0,
                 max_concurrent=1,
             )
         )
 
-        await agent_stream_websocket(websocket, "cloudonix", "agent-uuid")
+        await agent_stream_websocket(websocket, "telnyx", "agent-uuid")
 
     websocket.close.assert_awaited_once_with(code=code, reason=close_reason)
     assert (

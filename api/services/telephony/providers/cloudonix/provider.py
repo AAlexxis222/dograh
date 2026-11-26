@@ -14,6 +14,7 @@ from loguru import logger
 
 from api.db import db_client
 from api.enums import TelephonyCallStatus, WorkflowRunMode
+from api.services.security.redaction import mask_phone
 from api.services.telephony import ws_auth
 from api.services.telephony.base import (
     CallInitiationResult,
@@ -197,7 +198,8 @@ class CloudonixProvider(TelephonyProvider):
                 "Please configure phone numbers in the telephony settings."
             )
         logger.info(
-            f"Selected phone number {from_number} for outbound call to {to_number}"
+            f"Selected phone number {mask_phone(from_number)} for outbound call to "
+            f"{mask_phone(to_number)}"
         )
         workflow_id, organization_id = (
             kwargs["workflow_id"],
@@ -243,15 +245,20 @@ class CloudonixProvider(TelephonyProvider):
         logger.info(
             f"[Cloudonix] Initiating outbound call:\n"
             f"  Endpoint: {endpoint}\n"
-            f"  To: {to_number}\n"
-            f"  From: {from_number}\n"
+            f"  To: {mask_phone(to_number)}\n"
+            f"  From: {mask_phone(from_number)}\n"
             f"  Workflow Run ID: {workflow_run_id}"
         )
         # Redacted: the embedded CXML's stream URL carries a bearer capability token.
+        logged_data = {
+            **data,
+            "destination": mask_phone(to_number),
+            "caller-id": mask_phone(from_number),
+        }
         logger.debug(
             f"[Cloudonix] Request details:\n"
             f"  Headers: {masked_headers}\n"
-            f"  Payload: {ws_auth.redact_token(json.dumps(data, indent=2))}"
+            f"  Payload: {ws_auth.redact_token(json.dumps(logged_data, indent=2))}"
         )
 
         async with aiohttp.ClientSession() as session:
@@ -280,8 +287,8 @@ class CloudonixProvider(TelephonyProvider):
                     f"  Session Token: {session_token}\n"
                     f"  Domain ID: {domain_id}\n"
                     f"  Subscriber ID: {subscriber_id}\n"
-                    f"  To: {to_number}\n"
-                    f"  From: {from_number}\n"
+                    f"  To: {mask_phone(to_number)}\n"
+                    f"  From: {mask_phone(from_number)}\n"
                     f"  Workflow Run ID: {workflow_run_id}"
                 )
 
@@ -489,9 +496,11 @@ class CloudonixProvider(TelephonyProvider):
             "get_webhook_response called for Cloudonix - this should not happen. "
             "Cloudonix embeds CXML directly in API calls."
         )
-        return """<?xml version="1.0" encoding="UTF-8"?>
+        from api.errors.telephony_errors import CALLER_LANGUAGE, UNAVAILABLE_MESSAGE_ES
+
+        return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Error: This endpoint should not be called for Cloudonix</Say>
+    <Say language="{CALLER_LANGUAGE}">{UNAVAILABLE_MESSAGE_ES}</Say>
 </Response>"""
 
     async def handle_websocket(
@@ -885,7 +894,8 @@ class CloudonixProvider(TelephonyProvider):
         logger.info(
             f"Cloudonix inbound webhook domain fields — Domain={raw_domain!r} "
             f"AccountSid={raw_account_sid!r} normalized={account_id!r} "
-            f"To={webhook_data.get('To')!r} From={webhook_data.get('From')!r}"
+            f"To={mask_phone(webhook_data.get('To'))} "
+            f"From={mask_phone(webhook_data.get('From'))}"
         )
 
         # Extract underlying provider information from SessionData if available
@@ -1330,22 +1340,18 @@ class CloudonixProvider(TelephonyProvider):
         """
         from fastapi import Response
 
-        from api.errors.telephony_errors import TELEPHONY_ERROR_MESSAGES, TelephonyError
-
-        message = TELEPHONY_ERROR_MESSAGES.get(
-            error_type, TELEPHONY_ERROR_MESSAGES[TelephonyError.GENERAL_AUTH_FAILED]
-        )
+        from api.errors.telephony_errors import CALLER_LANGUAGE, caller_message_es
 
         twiml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="alice">{message}</Say>
+    <Say language="{CALLER_LANGUAGE}">{caller_message_es(error_type)}</Say>
     <Hangup/>
 </Response>"""
 
         return Response(content=twiml_content, media_type="application/xml")
 
     @staticmethod
-    def generate_error_response(error_type: str, message: str) -> tuple:
+    def generate_error_response(error_type: str, message: str):
         """
         Generate a Cloudonix-specific error response.
 
@@ -1353,43 +1359,26 @@ class CloudonixProvider(TelephonyProvider):
         """
         from fastapi import Response
 
-        # Map error types to appropriate TwiML responses
-        if error_type == "auth_failed":
-            twiml = """<?xml version="1.0" encoding="UTF-8"?>
+        from api.errors.telephony_errors import CALLER_LANGUAGE, log_and_get_caller_text
+
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Authentication failed. This call cannot be processed.</Say>
-    <Hangup/>
-</Response>"""
-        elif error_type == "not_configured":
-            twiml = """<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say>Service not configured. Please contact support.</Say>
-    <Hangup/>
-</Response>"""
-        elif error_type == "invalid_number":
-            twiml = """<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say>Invalid phone number. This call cannot be processed.</Say>
-    <Hangup/>
-</Response>"""
-        else:
-            # Generic error
-            twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Say>An error occurred: {message}</Say>
+    <Say language="{CALLER_LANGUAGE}">{log_and_get_caller_text(error_type, message, provider=CloudonixProvider.PROVIDER_NAME)}</Say>
     <Hangup/>
 </Response>"""
 
-        return Response(content=twiml, media_type="application/xml"), "application/xml"
+        return Response(content=twiml, media_type="application/xml")
 
     # ======== CALL TRANSFER METHODS ========
     @staticmethod
     def _conference_join_cxml(conference_name: str, callback_url: str) -> str:
         """CXML the destination leg runs once it answers: join the conference."""
+        from api.errors.telephony_errors import CALLER_LANGUAGE, TRANSFER_GREETING_ES
+
         return (
             '<?xml version="1.0" encoding="UTF-8"?>'
             "<Response>"
-            "<Say>You have answered a transfer call. Connecting you now.</Say>"
+            f'<Say language="{CALLER_LANGUAGE}">{TRANSFER_GREETING_ES}</Say>'
             "<Dial>"
             f'<Conference endConferenceOnExit="true" statusCallback="{callback_url}" statusCallbackEvent="join" holdMusic="false">{conference_name}</Conference>'
             "</Dial>"
@@ -1441,9 +1430,8 @@ class CloudonixProvider(TelephonyProvider):
         data.update(kwargs)
         self._pin_trunk(data, from_number)
         headers = self._get_auth_headers()
-        masked_destination = f"***{destination[-4:]}" if len(destination) > 4 else "***"
         logger.info(
-            f"[Cloudonix Transfer] Dialing {masked_destination} into conference "
+            f"[Cloudonix Transfer] Dialing {mask_phone(destination)} into conference "
             f"{conference_name} (transfer_id={transfer_id})"
         )
 

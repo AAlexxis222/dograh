@@ -169,6 +169,48 @@ def caller_id_only_checklist(
     )
 
 
+def webhook_secret_checklist_resolver(
+    *,
+    display_name: str,
+    docs_url: Optional[str],
+    field: str,
+    label: str,
+) -> "SetupChecklistResolver":
+    """The checklist resolver of a carrier whose call callbacks are verified with ``field``, a credential its
+    configuration may omit: the shared caller-ID step, plus that credential.
+
+    Without it every such callback is refused (401), so a call would die on answer; the configuration is not ready
+    for outbound until it has one. Saving and reading it are unaffected.
+    """
+
+    def resolve(
+        credentials: Dict[str, Any], state: "ConfigurationSetupState"
+    ) -> ProviderSetupChecklist:
+        caller_id = caller_id_only_checklist(
+            display_name=display_name,
+            has_caller_id=state.active_phone_number_count > 0,
+        )
+        return ProviderSetupChecklist.from_steps(
+            [
+                *caller_id.steps,
+                SetupStep(
+                    key=field,
+                    title=f"Add the {label}",
+                    description=(
+                        f"Outbound calls need the {display_name} {label} ({field}): "
+                        f"without it {display_name}'s call callbacks cannot be "
+                        f"verified and are refused. Add it to this configuration."
+                    ),
+                    complete=credential_value(credentials, field) is not None,
+                    blocks_outbound=True,
+                ),
+            ],
+            docs_url=docs_url,
+        )
+
+    return resolve
+
+
 @dataclass(frozen=True)
 class ConfigurationSetupState:
     """Stored facts a checklist resolver needs beyond the credentials blob.

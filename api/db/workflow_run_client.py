@@ -18,6 +18,7 @@ from api.db.models import (
 from api.enums import CallType, StorageBackend, WorkflowRunMode
 from api.schemas.workflow import WorkflowRunResponseSchema
 from api.services.configuration.credential_refs import check_no_credential_values
+from api.services import public_links
 from api.services.workflow.run_usage_response import format_public_cost_info
 from api.utils.recording_artifacts import get_recording_storage_key
 
@@ -504,18 +505,27 @@ class WorkflowRunClient(BaseDBClient):
     async def ensure_public_access_token(self, workflow_run_id: int) -> Optional[str]:
         """Generate a public access token if not exists, return existing if present (idempotent).
 
+        The one place a link is born: it mints nothing when links are off for the run's organization (asked through
+        ``OrganizationConfigurationClient.public_links_enabled_for_run``, mixed in beside this client), and never
+        again after ``revoke_public_access``. A new token expires ``PUBLIC_LINK_TTL_H`` hours after this call.
+
         Args:
             workflow_run_id: The ID of the workflow run
 
         Returns:
-            The public access token string, or None if workflow run not found
+            The public access token string, or None if the run does not exist, its links are off or it was revoked
         """
+        if not await self.public_links_enabled_for_run(workflow_run_id):
+            return None
         async with self.async_session() as session:
+            # Row lock: a revoke landing between this read and the commit must not be undone by the mint.
             result = await session.execute(
-                select(WorkflowRunModel).where(WorkflowRunModel.id == workflow_run_id)
+                select(WorkflowRunModel)
+                .where(WorkflowRunModel.id == workflow_run_id)
+                .with_for_update()
             )
             run = result.scalars().first()
-            if not run:
+            if not run or run.public_access_revoked_at is not None:
                 return None
 
             # Return existing token if present
@@ -523,8 +533,8 @@ class WorkflowRunClient(BaseDBClient):
                 return run.public_access_token
 
             # Generate and persist new token
-            token = str(uuid.uuid4())
-            run.public_access_token = token
+            run.public_access_token = str(uuid.uuid4())
+            run.public_access_expires_at = public_links.expiry_from(public_links.now())
 
             try:
                 await session.commit()
@@ -534,6 +544,32 @@ class WorkflowRunClient(BaseDBClient):
             await session.refresh(run)
 
             return run.public_access_token
+
+    async def revoke_public_access(self, workflow_run_id: int) -> bool:
+        """Delete the run's public token for good: the link stops opening and ``ensure_public_access_token``
+        never mints another one. Idempotent. No route calls it yet (callers arrive in VOZ-FASE-7).
+
+        Returns:
+            True if the run exists, False otherwise
+        """
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(WorkflowRunModel)
+                .where(WorkflowRunModel.id == workflow_run_id)
+                .with_for_update()
+            )
+            run = result.scalars().first()
+            if not run:
+                return False
+            run.public_access_token = None
+            if run.public_access_revoked_at is None:
+                run.public_access_revoked_at = public_links.now()
+            try:
+                await session.commit()
+            except Exception as e:
+                await session.rollback()
+                raise e
+            return True
 
     async def get_workflow_run_by_public_token(
         self, token: str

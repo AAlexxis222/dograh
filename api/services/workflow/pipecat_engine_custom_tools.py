@@ -21,6 +21,7 @@ from api.db import db_client
 from api.enums import ToolCategory, WorkflowRunMode
 from api.services.pipecat.audio_playback import play_audio_loop
 from api.services.pipecat.speech_playback import PlaybackOutcome, SpeechPlayback
+from api.services.security.redaction import mask_phone
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
 from api.services.telephony.external_pbx import resolve_external_pbx_field_mappings
 from api.services.telephony.factory import get_telephony_provider_for_run
@@ -952,9 +953,7 @@ class CustomToolManager:
 
                 # Initiate transfer via provider with inline TwiML
                 try:
-                    masked_destination = (
-                        f"***{destination[-4:]}" if len(destination) > 4 else "***"
-                    )
+                    masked_destination = mask_phone(destination)
                     logger.info(
                         "Transfer provider call starting "
                         f"source={resolved_transfer.source} "

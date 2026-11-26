@@ -5,14 +5,15 @@ provider registry.
 """
 
 import hmac
-import json
 
 from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 from pipecat.utils.run_context import set_current_run_id
 
 from api.db import db_client
+from api.services.telephony.callback_auth import CallbackRefused, route_provider
 from api.services.telephony.factory import get_telephony_provider_for_run
+from api.services.telephony.providers.exotel.provider import ExotelProvider
 from api.services.telephony.status_processor import (
     StatusCallbackRequest,
     _process_status_update,
@@ -42,7 +43,8 @@ async def handle_exotel_status_callback(workflow_run_id: int, request: Request):
         return {"status": "ignored", "reason": "malformed_body"}
 
     logger.info(
-        f"[run {workflow_run_id}] Exotel status callback: {json.dumps(callback_data)}"
+        f"[run {workflow_run_id}] Exotel status callback for call "
+        f"{callback_data.get('CallSid')!r}"
     )
 
     workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
@@ -53,9 +55,16 @@ async def handle_exotel_status_callback(workflow_run_id: int, request: Request):
     if not workflow:
         return {"status": "ignored", "reason": "workflow_not_found"}
 
-    provider = await get_telephony_provider_for_run(
-        workflow_run, workflow.organization_id
-    )
+    try:
+        provider = await route_provider(
+            get_telephony_provider_for_run(workflow_run, workflow.organization_id),
+            provider_name=ExotelProvider.PROVIDER_NAME,
+            where="POST /telephony/exotel/status-callback/{workflow_run_id}",
+        )
+    except CallbackRefused:
+        raise HTTPException(
+            status_code=401, detail="Invalid webhook signature"
+        ) from None
 
     is_valid = await provider.verify_inbound_signature(
         str(request.url),

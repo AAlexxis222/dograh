@@ -11,6 +11,11 @@ resolution paths exist:
   iterate the org's active configs of that provider and return the one whose
   stored account-id credential matches.
 
+The three paths build a provider to carry a call, so a carrier in
+``carrier_policy.UNVERIFIED_CARRIERS`` raises ``CarrierDisabledError`` there,
+before any slot or run exists. SIP details for configuration responses build
+through ``_instantiate`` and stay available.
+
 Provider classes don't need to know about the new storage shape. They still
 receive a normalized config dict containing credentials plus a
 ``from_numbers`` list of address strings, which the factory assembles by
@@ -27,6 +32,7 @@ from api.db.models import TelephonyConfigurationModel, WorkflowRunModel
 from api.errors.failure import log_failure
 from api.services.telephony import registry
 from api.services.telephony.base import SIPConnectivityDetails, TelephonyProvider
+from api.services.telephony.carrier_policy import refuse_disabled_carrier
 from api.services.telephony.failure_reporting import (
     classify_telephony_exception,
     instrument_telephony_provider,
@@ -158,7 +164,7 @@ async def get_telephony_provider_by_id(
     config = await load_telephony_config_by_id(
         telephony_configuration_id, organization_id
     )
-    return _instantiate(config)
+    return _instantiate_for_call(config)
 
 
 async def get_telephony_provider_for_run(
@@ -182,7 +188,7 @@ async def get_telephony_provider_for_run(
 async def get_default_telephony_provider(organization_id: int) -> TelephonyProvider:
     set_current_org_id(organization_id)
     config = await load_default_telephony_config(organization_id)
-    return _instantiate(config)
+    return _instantiate_for_call(config)
 
 
 async def get_telephony_provider_for_inbound(
@@ -196,7 +202,7 @@ async def get_telephony_provider_for_inbound(
     if not match:
         return None
     config_id, config = match
-    return config_id, _instantiate(config)
+    return config_id, _instantiate_for_call(config)
 
 
 async def load_credentials_for_transport(
@@ -348,6 +354,12 @@ async def _normalize_with_phone_numbers(
             "trunk_id_by_number"
         ] = await db_client.get_trunk_ids_by_address_for_config(row.id)
     return base
+
+
+def _instantiate_for_call(config: Dict[str, Any]) -> TelephonyProvider:
+    """``_instantiate`` for a call path: a disabled carrier raises ``CarrierDisabledError``."""
+    refuse_disabled_carrier(config["provider"])
+    return _instantiate(config)
 
 
 def _instantiate(config: Dict[str, Any]) -> TelephonyProvider:

@@ -4,6 +4,10 @@ from typing import Any
 
 from api.db import db_client as default_db_client
 from api.services.telephony import registry
+from api.services.telephony.carrier_policy import (
+    CarrierDisabledError,
+    refuse_disabled_carrier,
+)
 from api.services.telephony.factory import get_setup_checklist
 
 
@@ -66,13 +70,16 @@ async def _ensure_row_outbound_setup_ready(row: Any, *, db: Any) -> int:
     return row.id
 
 
-async def ensure_outbound_setup_ready(
-    telephony_configuration_id: int,
-    organization_id: int,
-    *,
-    db: Any = default_db_client,
-) -> int:
-    """Validate the exact, organization-scoped configuration selected by a caller."""
+async def _ensure_row_dialable(row: Any, *, db: Any) -> int:
+    """``_ensure_row_outbound_setup_ready`` for a row the resolver dials through: a carrier ``carrier_policy``
+    disables raises ``CarrierDisabledError`` first."""
+    refuse_disabled_carrier(row.provider)
+    return await _ensure_row_outbound_setup_ready(row, db=db)
+
+
+async def _active_configuration_for_org(
+    telephony_configuration_id: int, organization_id: int, *, db: Any
+) -> Any:
     if not organization_id:
         raise OutboundConfigurationNotFoundError("organization_id is required")
 
@@ -86,6 +93,19 @@ async def ensure_outbound_setup_ready(
             f"Telephony configuration {telephony_configuration_id} not found "
             f"for organization {organization_id}"
         )
+    return row
+
+
+async def ensure_outbound_setup_ready(
+    telephony_configuration_id: int,
+    organization_id: int,
+    *,
+    db: Any = default_db_client,
+) -> int:
+    """Validate the exact, organization-scoped configuration selected by a caller."""
+    row = await _active_configuration_for_org(
+        telephony_configuration_id, organization_id, db=db
+    )
     return await _ensure_row_outbound_setup_ready(row, db=db)
 
 
@@ -100,13 +120,16 @@ async def resolve_outbound_configuration_id(
     An explicit id is authoritative and never falls through to another config.
     Without one, DB ordering considers the marked default first, followed by
     the organization's remaining active configurations in creation order.
+    A configuration of a carrier ``carrier_policy`` disables is never chosen:
+    an explicit one raises ``CarrierDisabledError``, and the fallback skips it
+    like an incomplete one, raising the first candidate's error when none is
+    ready.
     """
     if telephony_configuration_id is not None:
-        return await ensure_outbound_setup_ready(
-            telephony_configuration_id,
-            organization_id,
-            db=db,
+        row = await _active_configuration_for_org(
+            telephony_configuration_id, organization_id, db=db
         )
+        return await _ensure_row_dialable(row, db=db)
     if not organization_id:
         raise OutboundConfigurationNotFoundError("organization_id is required")
 
@@ -121,11 +144,11 @@ async def resolve_outbound_configuration_id(
             f"{organization_id}"
         )
 
-    first_blocked: OutboundSetupIncompleteError | None = None
+    first_blocked: OutboundSetupIncompleteError | CarrierDisabledError | None = None
     for row in candidates:
         try:
-            return await _ensure_row_outbound_setup_ready(row, db=db)
-        except OutboundSetupIncompleteError as exc:
+            return await _ensure_row_dialable(row, db=db)
+        except (OutboundSetupIncompleteError, CarrierDisabledError) as exc:
             if first_blocked is None:
                 first_blocked = exc
 

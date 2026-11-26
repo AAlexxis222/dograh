@@ -11,7 +11,13 @@ from loguru import logger
 from pipecat.utils.run_context import set_current_run_id
 
 from api.db import db_client
+from api.services.telephony.callback_auth import (
+    CallbackRefused,
+    authenticate_answer_url,
+    route_provider,
+)
 from api.services.telephony.factory import get_telephony_provider_for_run
+from api.services.telephony.providers.vonage.provider import VonageProvider
 
 router = APIRouter()
 
@@ -21,14 +27,31 @@ async def handle_ncco_webhook(
     workflow_id: int,
     workflow_run_id: int,
     organization_id: int,
+    request: Request,
+    t: str | None = None,
 ):
     """Handle NCCO (Nexmo Call Control Objects) webhook for Vonage.
 
     Returns JSON response instead of XML like TwiML.
-    """
 
-    workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
-    provider = await get_telephony_provider_for_run(workflow_run, organization_id)
+    The NCCO carries the media-stream URL and its token, so the request must carry the signed
+    webhook JWT of the run's own organization (401 otherwise), checked exactly as the events
+    webhook is. The query is not covered by that check, so ``workflow_id`` and
+    ``organization_id`` must agree with the run, which decides. The JWT binds no run either (a GET carries no
+    payload hash), so ``t`` must be the answer-URL token of ``workflow_run_id`` (``require_answer_url_token``).
+    """
+    where = "GET /telephony/ncco"
+    _, provider = await authenticate_answer_url(
+        provider_name=VonageProvider.PROVIDER_NAME,
+        where=where,
+        workflow_id=workflow_id,
+        workflow_run_id=workflow_run_id,
+        organization_id=organization_id,
+        t=t,
+        url=str(request.url),
+        data=dict(request.query_params),
+        headers=dict(request.headers),
+    )
 
     response_content = await provider.get_webhook_response(
         workflow_id, organization_id, workflow_run_id
@@ -56,7 +79,7 @@ async def _handle_vonage_event_request(request: Request, workflow_run_id: int):
     event_data, raw_body = await _read_json_body(request)
     logger.info(
         f"[run {workflow_run_id}] Received Vonage event "
-        f"uuid={event_data.get('uuid')} status={event_data.get('status')}"
+        f"uuid={event_data.get('uuid')!r} status={event_data.get('status')!r}"
     )
 
     workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
@@ -69,9 +92,16 @@ async def _handle_vonage_event_request(request: Request, workflow_run_id: int):
         logger.error(f"[run {workflow_run_id}] Workflow not found")
         return {"status": "error", "message": "Workflow not found"}
 
-    provider = await get_telephony_provider_for_run(
-        workflow_run, workflow.organization_id
-    )
+    try:
+        provider = await route_provider(
+            get_telephony_provider_for_run(workflow_run, workflow.organization_id),
+            provider_name=VonageProvider.PROVIDER_NAME,
+            where="POST /telephony/vonage/events",
+        )
+    except CallbackRefused:
+        raise HTTPException(
+            status_code=401, detail="Invalid webhook signature"
+        ) from None
     signature_valid = await provider.verify_inbound_signature(
         str(request.url), event_data, dict(request.headers), raw_body
     )
@@ -123,6 +153,6 @@ async def handle_vonage_events_without_run(request: Request):
 
     logger.info(
         "Received unmatched Vonage application event "
-        f"uuid={event_data.get('uuid')} status={event_data.get('status')}"
+        f"uuid={event_data.get('uuid')!r} status={event_data.get('status')!r}"
     )
     return {"status": "ok"}

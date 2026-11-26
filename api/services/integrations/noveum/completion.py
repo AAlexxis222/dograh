@@ -8,10 +8,10 @@ from typing import Any
 
 from loguru import logger
 
-from api.constants import BACKEND_API_ENDPOINT
 from api.services.integrations.base import IntegrationCompletionContext
 from api.services.integrations.registry import is_active
 from api.services.storage import storage_fs
+from api.utils.artifacts import artifact_url
 
 from .client import build_noveum_client
 from .collector import NOVEUM_PAYLOAD_LOG_KEY, NOVEUM_SNAPSHOT_SCHEMA_VERSION
@@ -26,11 +26,13 @@ _AUDIO_UPLOAD_CONCURRENCY = 6
 def _build_recording_url(
     context: IntegrationCompletionContext,
 ) -> str | None:
-    workflow_run = context.workflow_run
-    if context.public_token:
-        base_url = f"{BACKEND_API_ENDPOINT}/api/v1/public/download/workflow/{context.public_token}"
-        return f"{base_url}/recording" if workflow_run.recording_url else None
-    return workflow_run.recording_url
+    # Without a token (links off or revoked, VOZ-N0-30) artifact_url is None: the internal storage URL never goes to
+    # a third party.
+    return (
+        artifact_url(context.public_token, "recording")
+        if context.workflow_run.recording_url
+        else None
+    )
 
 
 def _make_temp_wav_path() -> str:

@@ -13,6 +13,7 @@ from api.services.telephony.registry import (
     ProviderUIField,
     ProviderUIMetadata,
     register,
+    webhook_secret_checklist_resolver,
 )
 from api.utils.common import get_backend_endpoints
 
@@ -283,6 +284,12 @@ SPEC = ProviderSpec(
     ui_metadata=_UI_METADATA,
     account_id_credential_field="connection_id",
     preprocess_credentials_on_save=_ensure_connection_id,
+    setup_checklist_resolver=webhook_secret_checklist_resolver(
+        display_name=_UI_METADATA.display_name,
+        docs_url=_UI_METADATA.docs_url,
+        field="webhook_public_key",
+        label="Webhook Public Key",
+    ),
 )
 
 

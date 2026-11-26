@@ -4,7 +4,6 @@ Mounted under ``/api/v1/telephony`` by ``api.routes.telephony`` via the
 provider registry — see ProviderSpec.router.
 """
 
-import json
 from xml.sax.saxutils import escape
 
 from fastapi import APIRouter, Request
@@ -13,8 +12,15 @@ from pipecat.utils.run_context import set_current_run_id
 from starlette.responses import HTMLResponse
 
 from api.db import db_client
+from api.errors.telephony_errors import CALLER_LANGUAGE, TRANSFER_GREETING_ES
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
+from api.services.telephony.callback_auth import (
+    CallbackRefused,
+    authenticate_answer_url,
+    route_provider,
+)
 from api.services.telephony.factory import get_telephony_provider_for_run
+from api.services.telephony.providers.plivo.provider import PlivoProvider
 from api.services.telephony.status_processor import (
     StatusCallbackRequest,
     _process_status_update,
@@ -41,7 +47,7 @@ def _conference_xml_response(conference_name: str) -> HTMLResponse:
     safe_conference_name = escape(conference_name)
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Speak>You have answered a transfer call. Connecting you now.</Speak>
+    <Speak language="{CALLER_LANGUAGE}">{TRANSFER_GREETING_ES}</Speak>
     <Conference endConferenceOnExit="true">{safe_conference_name}</Conference>
 </Response>"""
     return HTMLResponse(content=xml, media_type="application/xml")
@@ -56,7 +62,8 @@ async def _handle_plivo_status_callback(
     form_data = await request.form()
     callback_data = dict(form_data)
     logger.info(
-        f"[run {workflow_run_id}] Received Plivo callback: {json.dumps(callback_data)}"
+        f"[run {workflow_run_id}] Received Plivo callback for call "
+        f"{callback_data.get('CallUUID')!r}"
     )
 
     workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
@@ -69,9 +76,14 @@ async def _handle_plivo_status_callback(
         logger.warning(f"Workflow {workflow_run.workflow_id} not found")
         return {"status": "ignored", "reason": "workflow_not_found"}
 
-    provider = await get_telephony_provider_for_run(
-        workflow_run, workflow.organization_id
-    )
+    try:
+        provider = await route_provider(
+            get_telephony_provider_for_run(workflow_run, workflow.organization_id),
+            provider_name=PlivoProvider.PROVIDER_NAME,
+            where="POST /telephony/plivo/{hangup|ring}-callback/{workflow_run_id}",
+        )
+    except CallbackRefused:
+        return {"status": "error", "reason": "invalid_signature"}
 
     is_valid = await provider.verify_inbound_signature(
         str(request.url),
@@ -103,28 +115,31 @@ async def handle_plivo_xml_webhook(
     workflow_run_id: int,
     organization_id: int,
     request: Request,
+    t: str | None = None,
 ):
     """
     Handle initial webhook from Plivo when an outbound call is answered.
     Returns Plivo XML response with Stream element.
+
+    The request must be signed with the token of the run's own organization, and the
+    unsigned ``workflow_id`` and ``organization_id`` of the query must agree with the run,
+    which decides (401 otherwise): the query never chooses whose credentials verify it. The signature binds no
+    run, so ``t`` must be the answer-URL token of ``workflow_run_id`` (``require_answer_url_token``).
     """
     set_current_run_id(workflow_run_id)
-    workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
-    provider = await get_telephony_provider_for_run(workflow_run, organization_id)
-
-    form_data = await request.form()
-    callback_data = dict(form_data)
-
-    is_valid = await provider.verify_inbound_signature(
-        str(request.url), callback_data, dict(request.headers)
+    where = "POST /telephony/plivo-xml"
+    callback_data = dict(await request.form())
+    workflow_run, provider = await authenticate_answer_url(
+        provider_name=PlivoProvider.PROVIDER_NAME,
+        where=where,
+        workflow_id=workflow_id,
+        workflow_run_id=workflow_run_id,
+        organization_id=organization_id,
+        t=t,
+        url=str(request.url),
+        data=callback_data,
+        headers=dict(request.headers),
     )
-    if not is_valid:
-        logger.warning(
-            f"[run {workflow_run_id}] Invalid Plivo signature on answer webhook"
-        )
-        return provider.generate_error_response(
-            "invalid_signature", "Invalid webhook signature."
-        )
 
     call_id = callback_data.get("CallUUID") or callback_data.get("RequestUUID")
     if call_id:
@@ -178,8 +193,8 @@ async def handle_plivo_transfer_xml(
     leg_name = "original" if is_original_leg else "destination"
 
     logger.info(
-        f"Plivo transfer XML requested (transfer_id={transfer_id}, leg={leg_name}): "
-        f"CallUUID={callback_call_uuid} conference={conference_name}"
+        f"Plivo transfer XML requested (transfer_id={transfer_id!r}, leg={leg_name}): "
+        f"CallUUID={callback_call_uuid!r} conference={conference_name!r}"
     )
 
     call_transfer_manager = await get_call_transfer_manager()
@@ -190,7 +205,7 @@ async def handle_plivo_transfer_xml(
     if conference_name != transfer_context.conference_name:
         logger.warning(
             f"Conference mismatch for Plivo transfer {transfer_id}: "
-            f"requested={conference_name} expected={transfer_context.conference_name}"
+            f"requested={conference_name!r} expected={transfer_context.conference_name}"
         )
         return _hangup_xml_response()
 
@@ -203,9 +218,14 @@ async def handle_plivo_transfer_xml(
     workflow = await db_client.get_workflow_by_id(workflow_run.workflow_id)
     if not workflow:
         return _hangup_xml_response()
-    provider = await get_telephony_provider_for_run(
-        workflow_run, workflow.organization_id
-    )
+    try:
+        provider = await route_provider(
+            get_telephony_provider_for_run(workflow_run, workflow.organization_id),
+            provider_name=PlivoProvider.PROVIDER_NAME,
+            where="POST /telephony/plivo/transfer-xml/{conference_name}/{transfer_id}",
+        )
+    except CallbackRefused:
+        return _hangup_xml_response()
 
     is_valid = await provider.verify_inbound_signature(
         str(request.url), data, dict(request.headers)
@@ -256,8 +276,8 @@ async def handle_plivo_transfer_result(transfer_id: str, request: Request):
     hangup_cause = data.get("HangupCause", "")
 
     logger.info(
-        f"Plivo transfer-result webhook (transfer_id={transfer_id}): "
-        f"Event={event} CallUUID={destination_call_uuid} HangupCause={hangup_cause}"
+        f"Plivo transfer-result webhook (transfer_id={transfer_id!r}): "
+        f"Event={event!r} CallUUID={destination_call_uuid!r} HangupCause={hangup_cause!r}"
     )
 
     call_transfer_manager = await get_call_transfer_manager()
@@ -274,9 +294,14 @@ async def handle_plivo_transfer_result(transfer_id: str, request: Request):
     workflow = await db_client.get_workflow_by_id(workflow_run.workflow_id)
     if not workflow:
         return {"status": "error", "reason": "invalid_workflow"}
-    provider = await get_telephony_provider_for_run(
-        workflow_run, workflow.organization_id
-    )
+    try:
+        provider = await route_provider(
+            get_telephony_provider_for_run(workflow_run, workflow.organization_id),
+            provider_name=PlivoProvider.PROVIDER_NAME,
+            where="POST /telephony/plivo/transfer-result/{transfer_id}",
+        )
+    except CallbackRefused:
+        return {"status": "error", "reason": "invalid_signature"}
 
     is_valid = await provider.verify_inbound_signature(
         str(request.url), data, dict(request.headers)

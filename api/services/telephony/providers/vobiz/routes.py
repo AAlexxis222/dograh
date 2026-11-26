@@ -4,7 +4,6 @@ Mounted under ``/api/v1/telephony`` by ``api.routes.telephony`` via the
 provider registry — see ProviderSpec.router.
 """
 
-import json
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Request
@@ -13,9 +12,16 @@ from pipecat.utils.run_context import set_current_run_id
 from starlette.responses import HTMLResponse
 
 from api.db import db_client
+from api.services.telephony.callback_auth import (
+    CallbackRefused,
+    authenticate_answer_url,
+    parse_webhook_or_reject,
+    route_provider,
+)
 from api.services.telephony.factory import (
     get_telephony_provider_for_run,
 )
+from api.services.telephony.providers.vobiz.provider import VobizProvider
 from api.services.telephony.status_processor import (
     StatusCallbackRequest,
     _process_status_update,
@@ -52,35 +58,82 @@ async def _verify_vobiz_callback(
         raise HTTPException(status_code=403, detail="Invalid webhook signature")
 
 
+async def _vobiz_provider(workflow_run, organization_id: int, *, where: str):
+    """The run's provider for a Vobiz callback (``route_provider``), or the 403 the callback answers for a bad
+    signature."""
+    try:
+        return await route_provider(
+            get_telephony_provider_for_run(workflow_run, organization_id),
+            provider_name=VobizProvider.PROVIDER_NAME,
+            where=where,
+        )
+    except CallbackRefused:
+        raise HTTPException(
+            status_code=403, detail="Invalid webhook signature"
+        ) from None
+
+
+async def _parse_vobiz_callback(request: Request, *, log_prefix: str):
+    """``(callback_data, raw_body)`` of a Vobiz callback, or the 403 the callback answers for a bad signature:
+    a body with no fields to read cannot be a signed Vobiz callback."""
+    try:
+        return await parse_webhook_request(request)
+    except ValueError:
+        logger.warning(f"{log_prefix} Vobiz callback without a parseable body")
+        raise HTTPException(
+            status_code=403, detail="Invalid webhook signature"
+        ) from None
+
+
 @router.post("/vobiz-xml", include_in_schema=False)
 async def handle_vobiz_xml_webhook(
-    workflow_id: int, workflow_run_id: int, organization_id: int
+    workflow_id: int,
+    workflow_run_id: int,
+    organization_id: int,
+    request: Request,
+    t: str | None = None,
 ):
     """
     Handle initial webhook from Vobiz when call is answered.
     Returns Vobiz XML response with Stream element.
 
     Vobiz uses Plivo-compatible XML format similar to Twilio's TwiML.
+
+    The XML carries the media-stream URL and its token, so the request must be signed
+    with the token of the run's own organization (401 otherwise). Vobiz signs the public
+    URL the platform gave it, without its query string, so the signature does not cover ``workflow_id`` and
+    ``organization_id``: they must agree with the run, which decides. Nor does it bind the run, so ``t`` must be
+    the answer-URL token of ``workflow_run_id`` (``require_answer_url_token``).
     """
     set_current_run_id(workflow_run_id)
+    where = "POST /telephony/vobiz-xml"
+    callback_data, raw_body = await parse_webhook_or_reject(request, where=where)
+    # The URL the platform gave Vobiz, as the sibling callbacks verify: behind a proxy or tunnel the scheme or
+    # host this app sees in request.url differs from the public one Vobiz signed.
+    backend_endpoint, _ = await get_backend_endpoints()
+    _, provider = await authenticate_answer_url(
+        provider_name=VobizProvider.PROVIDER_NAME,
+        where=where,
+        workflow_id=workflow_id,
+        workflow_run_id=workflow_run_id,
+        organization_id=organization_id,
+        t=t,
+        url=f"{backend_endpoint}/api/v1/telephony/vobiz-xml",
+        data=callback_data,
+        headers=dict(request.headers),
+        body=raw_body,
+    )
     logger.info(
         f"[run {workflow_run_id}] Vobiz XML webhook called - "
         f"workflow_id={workflow_id}, org_id={organization_id}"
     )
 
-    workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
-    provider = await get_telephony_provider_for_run(workflow_run, organization_id)
-
     logger.debug(f"[run {workflow_run_id}] Using provider: {provider.PROVIDER_NAME}")
 
+    # Never logged: the XML carries the media-stream URL and its capability token.
     response_content = await provider.get_webhook_response(
         workflow_id, organization_id, workflow_run_id
     )
-
-    logger.debug(
-        f"[run {workflow_run_id}] Vobiz XML response generated:\n{response_content}"
-    )
-
     return HTMLResponse(content=response_content, media_type="application/xml")
 
 
@@ -100,10 +153,13 @@ async def handle_vobiz_hangup_callback(
 
     # Parse the callback data from the raw body so signed webhooks can verify
     # the exact bytes Vobiz sent without draining the request stream first.
-    callback_data, raw_body = await parse_webhook_request(request)
+    callback_data, raw_body = await _parse_vobiz_callback(
+        request, log_prefix=f"[run {workflow_run_id}]"
+    )
 
     logger.info(
-        f"[run {workflow_run_id}] Received Vobiz hangup callback {json.dumps(callback_data)}"
+        f"[run {workflow_run_id}] Received Vobiz hangup callback for call "
+        f"{callback_data.get('CallUUID')!r}"
     )
 
     workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
@@ -118,8 +174,10 @@ async def handle_vobiz_hangup_callback(
         logger.warning(f"[run {workflow_run_id}] Workflow not found")
         return {"status": "ignored", "reason": "workflow_not_found"}
 
-    provider = await get_telephony_provider_for_run(
-        workflow_run, workflow.organization_id
+    provider = await _vobiz_provider(
+        workflow_run,
+        workflow.organization_id,
+        where="POST /telephony/vobiz/hangup-callback/{workflow_run_id}",
     )
 
     # Fail closed: Vobiz signs every callback, so reject unsigned/forged ones
@@ -179,10 +237,13 @@ async def handle_vobiz_ring_callback(
 
     # Parse the callback data from the raw body so signed webhooks can verify
     # the exact bytes Vobiz sent without draining the request stream first.
-    callback_data, raw_body = await parse_webhook_request(request)
+    callback_data, raw_body = await _parse_vobiz_callback(
+        request, log_prefix=f"[run {workflow_run_id}]"
+    )
 
     logger.info(
-        f"[run {workflow_run_id}] Received Vobiz ring callback {json.dumps(callback_data)}"
+        f"[run {workflow_run_id}] Received Vobiz ring callback for call "
+        f"{callback_data.get('CallUUID')!r}"
     )
 
     workflow_run = await db_client.get_workflow_run_by_id(workflow_run_id)
@@ -197,8 +258,10 @@ async def handle_vobiz_ring_callback(
         logger.warning(f"[run {workflow_run_id}] Workflow not found")
         return {"status": "ignored", "reason": "workflow_not_found"}
 
-    provider = await get_telephony_provider_for_run(
-        workflow_run, workflow.organization_id
+    provider = await _vobiz_provider(
+        workflow_run,
+        workflow.organization_id,
+        where="POST /telephony/vobiz/ring-callback/{workflow_run_id}",
     )
 
     # Fail closed: reject unsigned/forged ring callbacks before logging them.
@@ -254,7 +317,7 @@ async def handle_vobiz_hangup_callback_by_workflow(
 
     call_uuid = callback_data.get("CallUUID") or callback_data.get("call_uuid")
     logger.info(
-        f"[workflow {workflow_id}] Received Vobiz hangup callback for call {call_uuid}: {json.dumps(callback_data)}"
+        f"[workflow {workflow_id}] Received Vobiz hangup callback for call {call_uuid!r}"
     )
 
     if not call_uuid:
@@ -272,24 +335,26 @@ async def handle_vobiz_hangup_callback_by_workflow(
         workflow_run = await db_client.get_workflow_run_by_call_id(call_uuid)
     except Exception as e:
         logger.error(
-            f"[workflow {workflow_id}] Error finding workflow run for call {call_uuid}: {e}"
+            f"[workflow {workflow_id}] Error finding workflow run for call {call_uuid!r}: {e}"
         )
         return {"status": "error", "message": str(e)}
 
     if not workflow_run or workflow_run.workflow_id != workflow_id:
         logger.warning(
-            f"[workflow {workflow_id}] No workflow run found for call {call_uuid}"
+            f"[workflow {workflow_id}] No workflow run found for call {call_uuid!r}"
         )
         return {"status": "ignored", "reason": "workflow_run_not_found"}
 
     workflow_run_id = workflow_run.id
     set_current_run_id(workflow_run_id)
     logger.info(
-        f"[workflow {workflow_id}] Found workflow run {workflow_run_id} for call {call_uuid}"
+        f"[workflow {workflow_id}] Found workflow run {workflow_run_id} for call {call_uuid!r}"
     )
 
-    provider = await get_telephony_provider_for_run(
-        workflow_run, workflow.organization_id
+    provider = await _vobiz_provider(
+        workflow_run,
+        workflow.organization_id,
+        where="POST /telephony/vobiz/hangup-callback/workflow/{workflow_id}",
     )
 
     # Fail closed: Vobiz signs every callback, so reject unsigned/forged ones

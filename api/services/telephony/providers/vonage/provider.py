@@ -14,6 +14,7 @@ from loguru import logger
 
 from api.enums import TelephonyCallStatus, WorkflowRunMode
 from api.services.runtime.durations import ring_timeout_for
+from api.services.security.redaction import mask_phone
 from api.services.telephony import ws_auth
 from api.services.telephony.base import (
     CallInitiationResult,
@@ -102,7 +103,9 @@ class VonageProvider(TelephonyProvider):
         from_number = from_number.replace("+", "")
         to_number = to_number.replace("+", "")
 
-        logger.info(f"Selected phone number {from_number} for outbound call")
+        logger.info(
+            f"Selected phone number {mask_phone(from_number)} for outbound call"
+        )
 
         # Prepare call data
         data = {
@@ -779,12 +782,17 @@ class VonageProvider(TelephonyProvider):
         """
         from fastapi import Response
 
+        from api.errors.telephony_errors import CALLER_LANGUAGE, log_and_get_caller_text
+
         error_ncco = [
             {
                 "action": "talk",
-                "text": f"Sorry, there was an error processing your call. {message}",
+                "text": log_and_get_caller_text(
+                    error_type, message, provider=VonageProvider.PROVIDER_NAME
+                ),
+                "language": CALLER_LANGUAGE,
             },
-            {"action": "hangup"},
+            # No hangup action: NCCO has none, and the call ends when the actions run out.
         ]
 
         return Response(content=json.dumps(error_ncco), media_type="application/json")

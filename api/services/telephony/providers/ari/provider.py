@@ -18,6 +18,7 @@ from pipecat.utils.enums import EndTaskReason
 from api.db import db_client
 from api.enums import TelephonyCallStatus, WorkflowRunMode
 from api.services.runtime.durations import ring_timeout_for
+from api.services.security.redaction import mask_phone
 from api.services.telephony.base import (
     CallInitiationResult,
     NormalizedInboundData,
@@ -139,7 +140,7 @@ class ARIProvider(TelephonyProvider):
             params["callerId"] = from_number
 
         logger.info(
-            f"[ARI] Initiating call to {dial_string} "
+            f"[ARI] Initiating call to {mask_phone(to_number)} "
             f"via app={self.stasis_app_name}, workflow_run_id={workflow_run_id}"
         )
 
@@ -497,7 +498,7 @@ class ARIProvider(TelephonyProvider):
             raise ValueError("ARI provider not properly configured")
 
         logger.info(
-            f"[ARI Transfer] Initiating transfer {transfer_id} to {destination} "
+            f"[ARI Transfer] Initiating transfer {transfer_id} to {mask_phone(destination)} "
             f"(timeout: {timeout}s)"
         )
 

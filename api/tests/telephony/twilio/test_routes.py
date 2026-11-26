@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 from twilio.request_validator import RequestValidator
 
+from api import constants
 from api.services.telephony.providers.twilio.provider import TwilioProvider
 from api.services.telephony.providers.twilio.routes import (
     handle_twilio_status_callback,
@@ -77,7 +78,11 @@ def _signature(
 
 
 @pytest.mark.asyncio
-async def test_twiml_route_accepts_valid_signature_with_extra_query_param():
+async def test_twiml_route_accepts_valid_signature_with_extra_query_param(monkeypatch):
+    # No answer-URL token secret, enforcement or cell from the process environment: this is the tokenless URL.
+    monkeypatch.setattr(constants, "TELEPHONY_WS_TOKEN_SECRET", None)
+    monkeypatch.setattr(constants, "TELEPHONY_WS_TOKEN_ENFORCE", False)
+    monkeypatch.delenv("CELL_ROLE", raising=False)
     provider = _provider()
     query = {
         "workflow_id": 7,
@@ -101,9 +106,9 @@ async def test_twiml_route_accepts_valid_signature_with_extra_query_param():
     )
 
     with (
-        patch("api.services.telephony.providers.twilio.routes.db_client") as db_client,
+        patch("api.services.telephony.callback_auth.db_client") as db_client,
         patch(
-            "api.services.telephony.providers.twilio.routes.get_telephony_provider_for_run",
+            "api.services.telephony.callback_auth.get_telephony_provider_for_run",
             new_callable=AsyncMock,
             return_value=provider,
         ),
@@ -115,7 +120,10 @@ async def test_twiml_route_accepts_valid_signature_with_extra_query_param():
         ) as get_webhook_response,
     ):
         db_client.get_workflow_run_by_id = AsyncMock(
-            return_value=SimpleNamespace(id=123)
+            return_value=SimpleNamespace(id=123, workflow_id=7)
+        )
+        db_client.get_workflow_by_id = AsyncMock(
+            return_value=SimpleNamespace(id=7, organization_id=11)
         )
 
         response = await handle_twiml_webhook(
@@ -143,15 +151,18 @@ async def test_twiml_route_rejects_missing_signature():
     )
 
     with (
-        patch("api.services.telephony.providers.twilio.routes.db_client") as db_client,
+        patch("api.services.telephony.callback_auth.db_client") as db_client,
         patch(
-            "api.services.telephony.providers.twilio.routes.get_telephony_provider_for_run",
+            "api.services.telephony.callback_auth.get_telephony_provider_for_run",
             new_callable=AsyncMock,
             return_value=provider,
         ),
     ):
         db_client.get_workflow_run_by_id = AsyncMock(
-            return_value=SimpleNamespace(id=123)
+            return_value=SimpleNamespace(id=123, workflow_id=7)
+        )
+        db_client.get_workflow_by_id = AsyncMock(
+            return_value=SimpleNamespace(id=7, organization_id=11)
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -163,7 +174,7 @@ async def test_twiml_route_rejects_missing_signature():
             )
 
     assert exc_info.value.status_code == 401
-    assert exc_info.value.detail == "Invalid webhook signature"
+    assert exc_info.value.detail["code"] == "carrier_callback_unauthenticated"
 
 
 @pytest.mark.asyncio
