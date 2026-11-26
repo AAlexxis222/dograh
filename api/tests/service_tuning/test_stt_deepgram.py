@@ -338,7 +338,7 @@ def _endpoint_lines(infos):
     return [i for i in infos if i.startswith("Creating STT service:")]
 
 
-def test_flux_logs_the_tuned_url_it_connects_to(infos):
+def test_flux_logs_the_host_of_the_tuned_url_it_connects_to(infos):
     create_stt_service(
         user_config_stt(**FLUX),
         audio_config(),
@@ -347,7 +347,7 @@ def test_flux_logs_the_tuned_url_it_connects_to(infos):
         },
     )
     (line,) = _endpoint_lines(infos)
-    assert line.endswith("endpoint=wss://proxy.example/v2/listen")
+    assert line.endswith("endpoint=proxy.example")
 
 
 def test_nova_logs_the_regional_endpoint_not_a_dropped_url(infos):
@@ -359,4 +359,4 @@ def test_nova_logs_the_regional_endpoint_not_a_dropped_url(infos):
         },
     )
     (line,) = _endpoint_lines(infos)
-    assert "proxy.example" not in line and "endpoint=https://" in line
+    assert "proxy.example" not in line and line.endswith("endpoint=api.eu.deepgram.com")

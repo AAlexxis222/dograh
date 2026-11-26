@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from loguru import logger
 from pydantic import ValidationError
 
 from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
@@ -48,8 +49,8 @@ def _stt_user_config(**fields):
     return SimpleNamespace(stt=DeepgramSTTConfiguration(api_key="test-key", **fields))
 
 
-def _tts_user_config():
-    return SimpleNamespace(tts=DeepgramTTSConfiguration(api_key="test-key"))
+def _tts_user_config(**fields):
+    return SimpleNamespace(tts=DeepgramTTSConfiguration(api_key="test-key", **fields))
 
 
 def _ctor_kwargs(service_name: str, build):
@@ -285,3 +286,60 @@ async def test_openai_responses_wire_sends_store_false():
         tuning=responses_tuning(),
     )
     assert (await one_responses_turn(llm))["store"] is False
+
+
+# --- the creation log names the endpoint host, never a tuned URL ---------------
+
+
+@pytest.fixture
+def infos():
+    records = []
+    sink = logger.add(lambda m: records.append(m.record["message"]), level="INFO")
+    yield records
+    logger.remove(sink)
+
+
+_SECRET_URL = "https://proxy.example/t0ken?sig=s3cr3t"
+
+
+@pytest.mark.parametrize(
+    "build, prefix",
+    [
+        pytest.param(
+            lambda: create_stt_service(
+                _stt_user_config(model="flux-general-multi"),
+                audio_config(),
+                tuning={
+                    "stt": {
+                        "deepgram": {
+                            "ctor": {"url": "wss://proxy.example/t0ken?auth=s3cr3t"}
+                        }
+                    }
+                },
+            ),
+            "Creating STT service:",
+            id="flux-tuned-url",
+        ),
+        pytest.param(
+            lambda: create_stt_service(
+                _stt_user_config(base_url=_SECRET_URL), audio_config()
+            ),
+            "Creating STT service:",
+            id="nova-stored-base-url",
+        ),
+        pytest.param(
+            lambda: create_tts_service(
+                _tts_user_config(base_url=_SECRET_URL), audio_config()
+            ),
+            "Creating TTS service:",
+            id="tts-stored-base-url",
+        ),
+    ],
+)
+def test_creation_log_names_only_the_endpoint_host(infos, build, prefix):
+    # Red at RUL-r1-2: the line logs the whole URL, token path and query
+    # included, and service_tuning ctor.url is a registered secret leaf.
+    build()
+    (line,) = [i for i in infos if i.startswith(prefix)]
+    assert line.endswith("endpoint=proxy.example")
+    assert "t0ken" not in line and "s3cr3t" not in line
