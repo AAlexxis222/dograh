@@ -47,10 +47,16 @@ def _require_valid_master_key(where: str) -> None:
         ) from None
 
 
+def is_cell() -> bool:
+    """True when this process runs in a cell: CELL_ROLE is non-empty. The one marker, so a control that fails
+    closed in a cell asks here. Never CARRIER_REGION_POLICY (that selects a carrier region, not a deployment)."""
+    return bool(os.environ.get("CELL_ROLE"))
+
+
 def assert_cell_startup_config(where: str = "api.app") -> None:
     """Fail closed in a cell (CELL_ROLE set). Outside a cell only the credential master key is checked: a key that is
     set must be valid, a missing one is allowed and logged."""
-    if not os.environ.get("CELL_ROLE"):
+    if not is_cell():
         _warn_if_credentials_in_clear(where)
         if credential_box.key_configured():
             _require_valid_master_key(where)

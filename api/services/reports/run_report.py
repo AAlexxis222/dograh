@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import Any, List, Optional
 
 from api.db import db_client
+from api.services import public_links
 from api.utils.artifacts import artifact_url
 
 
@@ -26,8 +27,20 @@ def _collect_extracted_variable_keys(runs: List[Any]) -> list[str]:
     return list(keys)
 
 
-def build_run_report_csv(runs: List[Any]) -> io.StringIO:
-    """Build a CSV from completed workflow runs."""
+def _report_token(run: Any, links_on: bool) -> str | None:
+    # Only a stored token has a deadline to read.
+    if not run.public_access_token:
+        return None
+    return public_links.exposable_token(
+        run.public_access_token,
+        links_on=links_on,
+        expires_at=run.public_access_expires_at,
+    )
+
+
+def build_run_report_csv(runs: List[Any], *, links_on: bool = False) -> io.StringIO:
+    """Build a CSV from completed workflow runs. ``links_on``: whether public links are on for the runs'
+    organization (VOZ-N0-30); off by default, so a caller that does not say gets no link cells."""
     extracted_var_keys = _collect_extracted_variable_keys(runs)
 
     output = io.StringIO()
@@ -75,10 +88,11 @@ def build_run_report_csv(runs: List[Any]) -> io.StringIO:
             extracted = {}
         extracted_values = [extracted.get(key, "") for key in extracted_var_keys]
 
+        token = _report_token(run, links_on)
         post_values = [
             call_tags,
-            artifact_url(run.public_access_token, "transcript") or "",
-            artifact_url(run.public_access_token, "recording") or "",
+            artifact_url(token, "transcript") or "",
+            artifact_url(token, "recording") or "",
         ]
 
         writer.writerow(pre_values + extracted_values + post_values)
@@ -91,24 +105,34 @@ async def generate_campaign_report_csv(
     campaign_id: int,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    *,
+    links_on: bool,
 ) -> tuple[io.StringIO, str]:
     """Generate a CSV report for a campaign."""
     runs = await db_client.get_completed_runs_for_report(
         campaign_id=campaign_id, start_date=start_date, end_date=end_date
     )
-    return build_run_report_csv(runs), f"campaign_{campaign_id}_report.csv"
+    return (
+        build_run_report_csv(runs, links_on=links_on),
+        f"campaign_{campaign_id}_report.csv",
+    )
 
 
 async def generate_workflow_report_csv(
     workflow_id: int,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    *,
+    links_on: bool,
 ) -> tuple[io.StringIO, str]:
     """Generate a CSV report for all completed runs of a workflow."""
     runs = await db_client.get_completed_runs_for_report(
         workflow_id=workflow_id, start_date=start_date, end_date=end_date
     )
-    return build_run_report_csv(runs), f"workflow_{workflow_id}_report.csv"
+    return (
+        build_run_report_csv(runs, links_on=links_on),
+        f"workflow_{workflow_id}_report.csv",
+    )
 
 
 async def generate_usage_runs_report_csv(
@@ -127,5 +151,9 @@ async def generate_usage_runs_report_csv(
         end_date=end_date,
         filters=filters,
     )
+    links_on = await db_client.public_links_enabled(organization_id)
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    return build_run_report_csv(runs), f"usage_runs_{timestamp}.csv"
+    return (
+        build_run_report_csv(runs, links_on=links_on),
+        f"usage_runs_{timestamp}.csv",
+    )
