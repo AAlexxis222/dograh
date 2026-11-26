@@ -370,8 +370,9 @@ def _host_label(value: str | None, field_name: str) -> str | None:
     """A stored region or location that ends up inside an endpoint host.
 
     pipecat builds the Google STT and TTS hosts from the location
-    (google/stt.py:702, google/tts.py:937) and google-genai the Vertex one
-    (``https://{location}-aiplatform.googleapis.com``), so only a bare label of
+    (google/stt.py:702, google/tts.py:937), google-genai the Vertex one
+    (``https://{location}-aiplatform.googleapis.com``) and the Azure Speech SDK
+    ``{region}.stt.speech.microsoft.com`` from the region, so only a bare label of
     lowercase letters, digits and single hyphens may get there. An unset value
     names no host and is passed through as before.
     """
@@ -1070,7 +1071,9 @@ def create_stt_service(
 
         plan = tuning_for(tuning, "stt", ServiceProviders.AZURE_SPEECH.value)
         language_code = getattr(user_config.stt, "language", None) or "en-US"
-        region = getattr(user_config.stt, "region", None) or "eastus"
+        region = _host_label(
+            getattr(user_config.stt, "region", None) or "eastus", "stt.region"
+        )
         try:
             pipecat_language = PipecatLanguage(language_code)
         except ValueError:
@@ -1516,7 +1519,9 @@ def create_tts_service(
             **silence,
         )
     elif user_config.tts.provider == ServiceProviders.AZURE_SPEECH.value:
-        region = getattr(user_config.tts, "region", None) or "eastus"
+        region = _host_label(
+            getattr(user_config.tts, "region", None) or "eastus", "tts.region"
+        )
         voice = getattr(user_config.tts, "voice", None) or "en-US-AriaNeural"
         language = getattr(user_config.tts, "language", None) or "en-US"
         speed = getattr(user_config.tts, "speed", None) or 1.0
