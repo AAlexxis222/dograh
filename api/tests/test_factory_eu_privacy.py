@@ -40,7 +40,9 @@ from api.tests.service_tuning._transport import (
     query_params,
     responses_tuning,
     user_config_stt,
+    user_config_tts,
 )
+from api.tests.test_google_vertex_location import _build_llm, _build_realtime
 
 EU = "https://api.eu.deepgram.com"
 EU_WS = "wss://api.eu.deepgram.com"
@@ -450,3 +452,46 @@ def test_a_flux_url_with_other_query_parameters_still_builds():
     url = "wss://proxy.example/v2/listen?token=abc"
     kwargs = _ctor_kwargs("DeepgramFluxSTTService", lambda: _flux_with_url(url))
     assert kwargs["url"] == url
+
+
+# --- a stored region or location that ends up inside a host -------------------
+
+
+def _google_stt(location):
+    config = user_config_stt("google", model="chirp_3", location=location)
+    return _ctor_kwargs(
+        "GoogleSTTService", lambda: create_stt_service(config, audio_config())
+    )["location"]
+
+
+def _google_tts(location):
+    config = user_config_tts("google", model="chirp_3_hd", location=location)
+    return _ctor_kwargs(
+        "GoogleTTSService", lambda: create_tts_service(config, audio_config())
+    )["location"]
+
+
+_LOCATION_BUILDS = [_google_stt, _google_tts, _build_llm, _build_realtime]
+
+
+@pytest.mark.parametrize("build", _LOCATION_BUILDS)
+@pytest.mark.parametrize("location", ["x@10.0.0.5:8443/", "evil.example.com/#"])
+def test_a_malformed_stored_location_fails_the_build(build, location):
+    # Red at RUL-r1-6: pipecat builds the Google STT and TTS hosts from the
+    # location (google/stt.py:702, google/tts.py:937) and google-genai the
+    # Vertex one (_api_client.py:695), so this value picks the host.
+    with pytest.raises(HTTPException) as exc_info:
+        build(location)
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.parametrize("build", _LOCATION_BUILDS)
+@pytest.mark.parametrize(
+    "location",
+    # The registry's Vertex locations, a Google region, and two Azure region
+    # names, which have the same shape.
+    ["global", "eu", "us", "europe-west4", "us-central1", "westeurope", "eastus2"],
+)
+def test_a_real_location_still_builds(build, location):
+    # Regression: the check refuses shapes, not locations nobody listed.
+    assert build(location) == location
