@@ -1,8 +1,16 @@
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from functools import wraps
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlencode, urlparse, urlsplit, urlunparse, urlunsplit
+from urllib.parse import (
+    parse_qsl,
+    urlencode,
+    urlparse,
+    urlsplit,
+    urlunparse,
+    urlunsplit,
+)
 
 import aiohttp
 from fastapi import HTTPException
@@ -333,6 +341,49 @@ def _validate_runtime_service_url(url: str, field_name: str) -> None:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+# Partition prefixes are not always two letters: the European Sovereign Cloud
+# region is eusc-de-east-1.
+_AWS_REGION_NAME = re.compile(r"[a-z]+(-[a-z]+)+-[0-9]+")
+
+
+def _aws_region(region: str | None) -> str | None:
+    """A stored AWS region, refused unless it has the shape of a region name.
+
+    pipecat builds the endpoint host from the region (nova_sonic/llm.py:895,
+    ``bedrock-runtime.{region}.amazonaws.com``), so a free-form value such as
+    ``x@10.0.0.5:8443/`` would pick the host the server connects to. An unset
+    or empty value names no host and is passed through as before (Bedrock
+    resolves it from the environment).
+    """
+    if region and not _AWS_REGION_NAME.fullmatch(region):
+        raise HTTPException(
+            status_code=400,
+            detail=f"aws_region {region!r} is not an AWS region name",
+        )
+    return region
+
+
+_HOST_LABEL = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
+
+
+def _host_label(value: str | None, field_name: str) -> str | None:
+    """A stored region or location that ends up inside an endpoint host.
+
+    pipecat builds the Google STT and TTS hosts from the location
+    (google/stt.py:702, google/tts.py:937), google-genai the Vertex one
+    (``https://{location}-aiplatform.googleapis.com``) and the Azure Speech SDK
+    ``{region}.stt.speech.microsoft.com`` from the region, so only a bare label of
+    lowercase letters, digits and single hyphens may get there. An unset value
+    names no host and is passed through as before.
+    """
+    if value and not _HOST_LABEL.fullmatch(value):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} {value!r} is not a region or location name",
+        )
+    return value
+
+
 _DEEPGRAM_MULTI_MODEL = "flux-general-multi"
 
 
@@ -383,6 +434,25 @@ def _nova_ctor_allowed() -> frozenset[str]:
     return SPECS[("stt", "deepgram")].ctor_allowed - {"url"}
 
 
+def _warn_dropped_nova_ctor(model: str, dropped: set[str]) -> None:
+    """Warn about the ctor kwargs a Nova model does not take, by reason."""
+    _warn_dropped(
+        "ctor",
+        "stt.deepgram",
+        model,
+        dropped - {"mip_opt_out"},
+        "Flux-only constructor argument, Nova takes base_url",
+    )
+    # A stale stored value: the run does not re-validate its tuning.
+    _warn_dropped(
+        "ctor",
+        "stt.deepgram",
+        model,
+        dropped & {"mip_opt_out"},
+        "fixed platform policy, the opt-out is always sent",
+    )
+
+
 def _openai_realtime_stt_base_url(base_url: str) -> str:
     """The websocket URL the Realtime transcription session needs, derived
     from a configured http(s) base (#7).
@@ -422,6 +492,35 @@ def _tts_provider_ctor(plan) -> dict:
     return {name: value for name, value in plan.ctor.items() if name not in common}
 
 
+# Deepgram's Model Improvement Program may train on the audio and text a call
+# sends. Caller audio can carry health data, so Deepgram STT (Nova and Flux)
+# and Deepgram TTS opt out, and Dograh Flux sends the same flag to the Dograh
+# MPS in front of Deepgram. The non-Flux Dograh STT and Dograh TTS cannot:
+# their protocol has no field for it. It is a policy rather than a default an
+# operator can pick, so it is fixed here and the tuning allow-list does not
+# offer it: a tuned ``false`` would undo it. This helper merges it last, so a
+# stale stored value cannot win or collide with it; each of those four
+# construction sites goes through it.
+def _with_deepgram_privacy(ctor: Mapping[str, Any]) -> dict[str, Any]:
+    return {**ctor, "mip_opt_out": True}
+
+
+def _validate_deepgram_url(url: str, field_name: str) -> None:
+    """The runtime URL check, and the URL may not carry its own ``mip_opt_out``.
+
+    pipecat appends its query after the given URL (deepgram/flux/stt.py:299),
+    so a ``mip_opt_out`` already in it goes on the wire before the fixed
+    ``true``. Other query parameters stay: a proxy URL may carry its own token.
+    """
+    _validate_runtime_service_url(url, field_name)
+    query = parse_qsl(urlsplit(url).query, keep_blank_values=True)
+    if any(name.lower() == "mip_opt_out" for name, _ in query):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} may not set mip_opt_out; the opt-out is fixed",
+        )
+
+
 def _deepgram_base_url(service_config) -> str:
     """Resolve the Deepgram endpoint for an STT or TTS config section.
 
@@ -438,8 +537,17 @@ def _deepgram_base_url(service_config) -> str:
     # TLS rather than reject a value that is obviously well intentioned.
     if "://" not in base_url:
         base_url = f"https://{base_url}"
-    _validate_runtime_service_url(base_url, "base_url")
+    _validate_deepgram_url(base_url, "base_url")
     return base_url.rstrip("/")
+
+
+def _endpoint_host(url: str) -> str | None:
+    """What a creation log line may say about an endpoint: its host.
+
+    A tuned ``ctor.url`` is a registered secret leaf and a stored base URL may
+    belong to a proxy, so the path, query and credentials can carry a token.
+    """
+    return urlsplit(url).hostname
 
 
 def _deepgram_websocket_url(base_url: str, path: str = "") -> str:
@@ -474,7 +582,7 @@ def _google_vertex_location(location: str | None, service: str) -> str:
     if resolved:
         # The resolved value is reported by the caller, on the same line as the
         # service being created - one decision, one line.
-        return resolved
+        return _host_label(resolved, f"Google Vertex {service} location")
 
     # Unset is the one case where nobody picked the endpoint, and the default
     # carries no residency commitment, so it gets a line of its own rather than
@@ -522,7 +630,7 @@ def create_stt_service(
     logger.info(
         f"Creating STT service: provider={user_config.stt.provider}, "
         f"model={user_config.stt.model}"
-        + (f", endpoint={endpoint}" if endpoint else "")
+        + (f", endpoint={_endpoint_host(endpoint)}" if endpoint else "")
     )
 
     if is_deepgram:
@@ -564,7 +672,7 @@ def create_stt_service(
                     _as_language(h) for h in settings.language_hints
                 ]
             if "url" in plan.ctor:
-                _validate_runtime_service_url(plan.ctor["url"], "stt.deepgram.ctor.url")
+                _validate_deepgram_url(plan.ctor["url"], "stt.deepgram.ctor.url")
 
             return DeepgramFluxSTTService(
                 api_key=user_config.stt.api_key,
@@ -573,10 +681,12 @@ def create_stt_service(
                 sample_rate=audio_config.transport_in_sample_rate,
                 # Flux takes a fully-qualified socket URL, not a host. A tuned
                 # ctor.url (validated above) overrides the regional default.
-                **{
-                    "url": _deepgram_websocket_url(deepgram_base_url, "/v2/listen"),
-                    **plan.ctor,
-                },
+                **_with_deepgram_privacy(
+                    {
+                        "url": _deepgram_websocket_url(deepgram_base_url, "/v2/listen"),
+                        **plan.ctor,
+                    }
+                ),
             )
 
         # Other models than flux
@@ -608,13 +718,7 @@ def create_stt_service(
         # Nova takes base_url, not url; url is Flux-only, so drop it here even
         # though the shared allow-list accepts ctor.url for either model.
         ctor = {k: v for k, v in plan.ctor.items() if k in _nova_ctor_allowed()}
-        _warn_dropped(
-            "ctor",
-            "stt.deepgram",
-            user_config.stt.model,
-            set(plan.ctor) - set(ctor),
-            "Flux-only constructor argument, Nova takes base_url",
-        )
+        _warn_dropped_nova_ctor(user_config.stt.model, set(plan.ctor) - set(ctor))
         return DeepgramSTTService(
             api_key=user_config.stt.api_key,
             settings=settings,
@@ -623,7 +727,7 @@ def create_stt_service(
             # Takes the host and derives the wss and https URLs itself. The
             # regional host is the only source: the tuning allow-list has no
             # base_url, and the Flux-only ctor.url was dropped above.
-            **{"base_url": deepgram_base_url, **ctor},
+            **_with_deepgram_privacy({"base_url": deepgram_base_url, **ctor}),
         )
     elif user_config.stt.provider == ServiceProviders.OPENAI.value:
         plan = tuning_for(tuning, "stt", ServiceProviders.OPENAI.value)
@@ -670,7 +774,9 @@ def create_stt_service(
     elif user_config.stt.provider == ServiceProviders.GOOGLE.value:
         plan = tuning_for(tuning, "stt", ServiceProviders.GOOGLE.value)
         language = getattr(user_config.stt, "language", None) or "en-US"
-        location = getattr(user_config.stt, "location", None) or "global"
+        location = _host_label(
+            getattr(user_config.stt, "location", None) or "global", "stt.location"
+        )
         credentials = getattr(user_config.stt, "credentials", None)
 
         settings_kwargs = {"model": user_config.stt.model}
@@ -753,7 +859,8 @@ def create_stt_service(
                 settings=settings,
                 should_interrupt=False,  # external turn strategies own interruption
                 sample_rate=audio_config.transport_in_sample_rate,
-                **plan.ctor,  # dograh's ctor allow-list has no "url" (SPECS)
+                # dograh's ctor allow-list has no "url" (SPECS)
+                **_with_deepgram_privacy(plan.ctor),
             )
 
         # The non-Flux Dograh service takes none of the stt.dograh knobs (its
@@ -968,7 +1075,9 @@ def create_stt_service(
 
         plan = tuning_for(tuning, "stt", ServiceProviders.AZURE_SPEECH.value)
         language_code = getattr(user_config.stt, "language", None) or "en-US"
-        region = getattr(user_config.stt, "region", None) or "eastus"
+        region = _host_label(
+            getattr(user_config.stt, "region", None) or "eastus", "stt.region"
+        )
         try:
             pipecat_language = PipecatLanguage(language_code)
         except ValueError:
@@ -1064,7 +1173,11 @@ def create_tts_service(
     logger.info(
         f"Creating TTS service: provider={user_config.tts.provider}, "
         f"model={user_config.tts.model}"
-        + (f", endpoint={deepgram_base_url}" if deepgram_base_url else "")
+        + (
+            f", endpoint={_endpoint_host(deepgram_base_url)}"
+            if deepgram_base_url
+            else ""
+        )
     )
 
     # Create function call filter to prevent TTS from speaking function call tags
@@ -1090,7 +1203,7 @@ def create_tts_service(
             ),
             text_filters=[xml_function_tag_filter],
             skip_aggregator_types=["recording_router", "recording"],
-            **silence,
+            **_with_deepgram_privacy(silence),
         )
     elif user_config.tts.provider == ServiceProviders.OPENAI.value:
         kwargs = {}
@@ -1118,7 +1231,9 @@ def create_tts_service(
         language = getattr(user_config.tts, "language", None) or "en-US"
         voice = getattr(user_config.tts, "voice", None) or "en-US-Chirp3-HD-Charon"
         speed = getattr(user_config.tts, "speed", None)
-        location = getattr(user_config.tts, "location", None) or None
+        location = _host_label(
+            getattr(user_config.tts, "location", None) or None, "tts.location"
+        )
         credentials = getattr(user_config.tts, "credentials", None)
 
         settings_kwargs = {
@@ -1408,7 +1523,9 @@ def create_tts_service(
             **silence,
         )
     elif user_config.tts.provider == ServiceProviders.AZURE_SPEECH.value:
-        region = getattr(user_config.tts, "region", None) or "eastus"
+        region = _host_label(
+            getattr(user_config.tts, "region", None) or "eastus", "tts.region"
+        )
         voice = getattr(user_config.tts, "voice", None) or "en-US-AriaNeural"
         language = getattr(user_config.tts, "language", None) or "en-US"
         speed = getattr(user_config.tts, "speed", None) or 1.0
@@ -1675,7 +1792,7 @@ def create_llm_service_from_provider(
         return AWSBedrockLLMService(
             aws_access_key=aws_access_key,
             aws_secret_key=aws_secret_key,
-            aws_region=aws_region,
+            aws_region=_aws_region(aws_region),
             settings=build_settings(AWSBedrockLLMSettings, {"model": model}, plan),
         )
     elif provider == ServiceProviders.SPEACHES.value:
@@ -1964,7 +2081,7 @@ def create_realtime_llm_service(
             secret_access_key=realtime_config.aws_secret_key,
             access_key_id=realtime_config.aws_access_key,
             session_token=realtime_config.aws_session_token or None,
-            region=realtime_config.aws_region,
+            region=_aws_region(realtime_config.aws_region),
             audio_config=NovaAudioConfig(
                 input_sample_rate=audio_config.transport_in_sample_rate,
                 output_sample_rate=audio_config.transport_out_sample_rate,

@@ -54,7 +54,7 @@ def test_nova_2_sonic_is_registered_as_a_realtime_provider():
     assert ServiceProviders.AWS_NOVA_SONIC.value in REALTIME_PROVIDERS
     assert config.model == "amazon.nova-2-sonic-v1:0"
     assert config.voice == "matthew"
-    assert config.aws_region == "us-east-1"
+    assert config.aws_region == "eu-north-1"
     assert config.temperature == 0.7
     assert config.max_tokens == 1024
     assert config.top_p == 0.9

@@ -108,12 +108,13 @@ def test_tts_receives_configured_endpoint_without_a_path():
             "flux-general-multi",
             "DeepgramFluxSTTService",
             "url",
-            "wss://api.deepgram.com/v2/listen",
+            "wss://api.eu.deepgram.com/v2/listen",
         ),
     ],
 )
 def test_unset_endpoint_falls_back_to_the_default_host(model, service, key, expected):
-    # Older stored configurations predate the field; they must keep working.
+    # Older stored configurations predate the field; they must keep working,
+    # and the default is the EU host (VOZ-N0-26).
     kwargs = _build_stt(_stt_config(model), service)
     assert kwargs[key] == expected
 

@@ -33,7 +33,7 @@ async def test_flux_thresholds_numerals_and_hints_reach_the_query(monkeypatch):
                     "min_confidence": 0.4,
                     "language_hints": ["en", "de"],
                 },
-                "ctor": {"mip_opt_out": True, "tag": ["xpand"]},
+                "ctor": {"tag": ["xpand"]},
             }
         }
     }
@@ -46,11 +46,7 @@ async def test_flux_thresholds_numerals_and_hints_reach_the_query(monkeypatch):
         and q["eot_threshold"] == ["0.8"]
         and q["eager_eot_threshold"] == ["0.6"]
     )
-    assert (
-        q["numerals"] == ["true"]
-        and q["mip_opt_out"] == ["true"]
-        and q["tag"] == ["xpand"]
-    )
+    assert q["numerals"] == ["true"] and q["tag"] == ["xpand"]
     assert q["language_hint"] == [
         "en",
         "de",
@@ -280,7 +276,7 @@ def test_nova_split_is_derived_from_the_specs_table(monkeypatch):
         "profanity_filter",
         "redact",
     }
-    assert service_factory._nova_ctor_allowed() == {"mip_opt_out", "tag"}
+    assert service_factory._nova_ctor_allowed() == {"tag"}
     # If the table changes, the split follows it.
     monkeypatch.setattr(
         service_factory,
@@ -300,7 +296,7 @@ def test_nova_split_is_derived_from_the_specs_table(monkeypatch):
         "redact",
         "eot_threshold",
     }
-    assert service_factory._nova_ctor_allowed() == {"mip_opt_out", "tag", "extra_kw"}
+    assert service_factory._nova_ctor_allowed() == {"tag", "extra_kw"}
 
 
 def test_non_flux_dograh_logs_every_knob_it_drops(warnings):
@@ -342,7 +338,7 @@ def _endpoint_lines(infos):
     return [i for i in infos if i.startswith("Creating STT service:")]
 
 
-def test_flux_logs_the_tuned_url_it_connects_to(infos):
+def test_flux_logs_the_host_of_the_tuned_url_it_connects_to(infos):
     create_stt_service(
         user_config_stt(**FLUX),
         audio_config(),
@@ -351,7 +347,7 @@ def test_flux_logs_the_tuned_url_it_connects_to(infos):
         },
     )
     (line,) = _endpoint_lines(infos)
-    assert line.endswith("endpoint=wss://proxy.example/v2/listen")
+    assert line.endswith("endpoint=proxy.example")
 
 
 def test_nova_logs_the_regional_endpoint_not_a_dropped_url(infos):
@@ -363,4 +359,4 @@ def test_nova_logs_the_regional_endpoint_not_a_dropped_url(infos):
         },
     )
     (line,) = _endpoint_lines(infos)
-    assert "proxy.example" not in line and "endpoint=https://" in line
+    assert "proxy.example" not in line and line.endswith("endpoint=api.eu.deepgram.com")

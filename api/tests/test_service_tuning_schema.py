@@ -49,7 +49,7 @@ def test_null_only_on_nullable_fields():
 
 
 def test_ctor_kwarg_must_be_allow_listed():
-    _validate({"stt": {"deepgram": {"ctor": {"mip_opt_out": True}}}})
+    _validate({"stt": {"deepgram": {"ctor": {"tag": ["xpand"]}}}})
     with pytest.raises(
         ValidationError, match="stt.deepgram.ctor.sample_rate: not allowed"
     ):

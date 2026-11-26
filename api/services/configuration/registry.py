@@ -64,6 +64,9 @@ from api.services.configuration.options import (
     SONIOX_STT_MODELS,
     SPEECHMATICS_STT_LANGUAGES,
 )
+from api.services.configuration.options.deepgram import (
+    deepgram_base_url_description,
+)
 from api.services.configuration.options.google import (
     GOOGLE_VERTEX_DEFAULT_LOCATION,
     GOOGLE_VERTEX_LOCATIONS,
@@ -900,8 +903,12 @@ class AWSNovaSonicRealtimeLLMConfiguration(BaseLLMConfiguration):
         description="Optional AWS session token for temporary IAM credentials.",
     )
     aws_region: str = Field(
-        default="us-east-1",
-        description="AWS region where Nova 2 Sonic is enabled for the account.",
+        default="eu-north-1",
+        description=(
+            "AWS region where Nova 2 Sonic is enabled for the account. The "
+            "region decides where the call audio is processed; the default "
+            "keeps it in the EU."
+        ),
         json_schema_extra={
             "examples": AWS_NOVA_SONIC_REGIONS,
             "allow_custom_input": True,
@@ -1177,12 +1184,7 @@ class DeepgramTTSConfiguration(BaseServiceConfiguration):
     )
     base_url: str = Field(
         default=DEEPGRAM_DEFAULT_BASE_URL,
-        description=(
-            "Deepgram API endpoint. This is what decides where your text is "
-            "processed: use https://api.eu.deepgram.com to keep processing "
-            "inside the EU, or https://api.au.deepgram.com for Australia. The "
-            "same API key works on every regional endpoint."
-        ),
+        description=deepgram_base_url_description("your text"),
         json_schema_extra={
             "examples": list(DEEPGRAM_BASE_URLS),
             "allow_custom_input": True,
@@ -1837,12 +1839,7 @@ class DeepgramSTTConfiguration(BaseSTTConfiguration):
 
     base_url: str = Field(
         default=DEEPGRAM_DEFAULT_BASE_URL,
-        description=(
-            "Deepgram API endpoint. This is what decides where call audio is "
-            "processed: use https://api.eu.deepgram.com to keep processing "
-            "inside the EU, or https://api.au.deepgram.com for Australia. The "
-            "same API key works on every regional endpoint."
-        ),
+        description=deepgram_base_url_description("call audio"),
         json_schema_extra={
             "examples": list(DEEPGRAM_BASE_URLS),
             "allow_custom_input": True,

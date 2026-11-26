@@ -158,6 +158,14 @@ DECLARED_DELTAS: dict[str, set[str]] = {
     # #10: Camb built through settings= instead of the deprecated kwargs; the
     # effective values are pinned by test_tts_long_tail.py's Camb control.
     "tts.camb": {"kwargs.voice_id", "kwargs.model", "kwargs.settings"},
+    # VOZ-N0-26: Deepgram defaults to its EU host and always opts out of the
+    # Model Improvement Program (Dograh Flux too: the opt-out only, its host is
+    # the MPS). The cases carry no base_url, so they take the factory's fallback.
+    "stt.deepgram/flux-en": {"kwargs.url", "kwargs.mip_opt_out"},
+    "stt.deepgram/flux-multi": {"kwargs.url", "kwargs.mip_opt_out"},
+    "stt.deepgram/nova": {"kwargs.base_url", "kwargs.mip_opt_out"},
+    "stt.dograh/flux": {"kwargs.mip_opt_out"},
+    "tts.deepgram": {"kwargs.base_url", "kwargs.mip_opt_out"},
 }
 # ``push_silence_after_stop`` is passed explicitly now (False untuned) where
 # the base left it to the constructor default, which is False
