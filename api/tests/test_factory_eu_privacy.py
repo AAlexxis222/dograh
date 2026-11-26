@@ -387,7 +387,8 @@ def test_a_malformed_stored_aws_region_fails_the_build(build, region):
 
 @pytest.mark.parametrize("build", [_nova_sonic, _bedrock])
 @pytest.mark.parametrize(
-    "region", [*AWS_NOVA_SONIC_REGIONS, "eu-central-1", "us-gov-west-1"]
+    "region",
+    [*AWS_NOVA_SONIC_REGIONS, "eu-central-1", "us-gov-west-1", "eusc-de-east-1"],
 )
 def test_a_real_aws_region_still_builds(build, region):
     # Regression: the check refuses shapes, not regions nobody listed.

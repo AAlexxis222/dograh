@@ -1,3 +1,4 @@
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from functools import wraps
@@ -331,6 +332,28 @@ def _validate_runtime_service_url(url: str, field_name: str) -> None:
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+# Partition prefixes are not always two letters: the European Sovereign Cloud
+# region is eusc-de-east-1.
+_AWS_REGION_NAME = re.compile(r"[a-z]+(-[a-z]+)+-[0-9]+")
+
+
+def _aws_region(region: str | None) -> str | None:
+    """A stored AWS region, refused unless it has the shape of a region name.
+
+    pipecat builds the endpoint host from the region (nova_sonic/llm.py:895,
+    ``bedrock-runtime.{region}.amazonaws.com``), so a free-form value such as
+    ``x@10.0.0.5:8443/`` would pick the host the server connects to. An unset
+    or empty value names no host and is passed through as before (Bedrock
+    resolves it from the environment).
+    """
+    if region and not _AWS_REGION_NAME.fullmatch(region):
+        raise HTTPException(
+            status_code=400,
+            detail=f"aws_region {region!r} is not an AWS region name",
+        )
+    return region
 
 
 _DEEPGRAM_MULTI_MODEL = "flux-general-multi"
@@ -1701,7 +1724,7 @@ def create_llm_service_from_provider(
         return AWSBedrockLLMService(
             aws_access_key=aws_access_key,
             aws_secret_key=aws_secret_key,
-            aws_region=aws_region,
+            aws_region=_aws_region(aws_region),
             settings=build_settings(AWSBedrockLLMSettings, {"model": model}, plan),
         )
     elif provider == ServiceProviders.SPEACHES.value:
@@ -1990,7 +2013,7 @@ def create_realtime_llm_service(
             secret_access_key=realtime_config.aws_secret_key,
             access_key_id=realtime_config.aws_access_key,
             session_token=realtime_config.aws_session_token or None,
-            region=realtime_config.aws_region,
+            region=_aws_region(realtime_config.aws_region),
             audio_config=NovaAudioConfig(
                 input_sample_rate=audio_config.transport_in_sample_rate,
                 output_sample_rate=audio_config.transport_out_sample_rate,
