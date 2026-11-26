@@ -286,3 +286,76 @@ def test_unsigned_request_values_cannot_forge_a_log_line(
     assert any("FORGED-LINE" in line for line in log_lines), "the value was not logged"
     for line in log_lines:
         assert "\nFORGED-LINE" not in line and "\n2026-11-22" not in line, line
+
+
+# RUL-r2-2: the same rule in routes/telephony.py. (path, form, the account match): each request reaches a line that
+# logs its values before any signature check.
+UNSIGNED_INBOUND_VALUE_LOGS = {
+    "run-direction": (
+        "/telephony/inbound/run",
+        {
+            "CallSid": FORGED,
+            "AccountSid": "AC123",
+            "Direction": FORGED,
+            "ToCountry": FORGED,
+        },
+        None,
+    ),
+    "run-no-route": (
+        "/telephony/inbound/run",
+        {"CallSid": FORGED, "AccountSid": FORGED, "Direction": "inbound", "To": CALLED},
+        None,
+    ),
+    "legacy-direction": (
+        f"/telephony/inbound/{WORKFLOW_ID}",
+        {"CallSid": FORGED, "Direction": FORGED},
+        None,
+    ),
+    "legacy-account": (
+        f"/telephony/inbound/{WORKFLOW_ID}",
+        {"CallSid": "CA-x", "AccountSid": FORGED, "Direction": "inbound", "To": CALLED},
+        None,
+    ),
+    "legacy-number": (
+        f"/telephony/inbound/{WORKFLOW_ID}",
+        {
+            "CallSid": "CA-x",
+            "AccountSid": "AC123",
+            "Direction": "inbound",
+            "To": CALLED,
+            "ToCountry": FORGED,
+            "FromCountry": FORGED,
+        },
+        (5, None),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(UNSIGNED_INBOUND_VALUE_LOGS))
+def test_unsigned_inbound_values_cannot_forge_a_log_line(
+    client, world, log_lines, case
+):
+    path, form, account_match = UNSIGNED_INBOUND_VALUE_LOGS[case]
+    world.db.get_workflow_by_id = AsyncMock(
+        return_value=SimpleNamespace(id=WORKFLOW_ID, organization_id=ORG_ID, user_id=1)
+    )
+    world.db.list_telephony_configurations_by_provider = AsyncMock(
+        return_value=[SimpleNamespace(id=5)]
+    )
+    world.db.find_active_phone_number_for_inbound = AsyncMock(return_value=None)
+    world.db.list_phone_numbers_for_config = AsyncMock(return_value=[])
+    with (
+        patch(
+            "api.routes.telephony._detect_provider",
+            new=AsyncMock(return_value=TwilioProvider),
+        ),
+        patch(
+            "api.services.telephony.factory.find_telephony_config_for_inbound",
+            new=AsyncMock(return_value=account_match),
+        ),
+    ):
+        client.post(path, data=form)
+
+    assert any("FORGED-LINE" in line for line in log_lines), "the value was not logged"
+    for line in log_lines:
+        assert "\nFORGED-LINE" not in line and "\n2026-11-22" not in line, line
