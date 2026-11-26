@@ -452,6 +452,15 @@ def _deepgram_base_url(service_config) -> str:
     return base_url.rstrip("/")
 
 
+def _endpoint_host(url: str) -> str | None:
+    """What a creation log line may say about an endpoint: its host.
+
+    A tuned ``ctor.url`` is a registered secret leaf and a stored base URL may
+    belong to a proxy, so the path, query and credentials can carry a token.
+    """
+    return urlsplit(url).hostname
+
+
 def _deepgram_websocket_url(base_url: str, path: str = "") -> str:
     """Rewrite a Deepgram base URL as the WebSocket URL a service expects.
 
@@ -532,7 +541,7 @@ def create_stt_service(
     logger.info(
         f"Creating STT service: provider={user_config.stt.provider}, "
         f"model={user_config.stt.model}"
-        + (f", endpoint={endpoint}" if endpoint else "")
+        + (f", endpoint={_endpoint_host(endpoint)}" if endpoint else "")
     )
 
     if is_deepgram:
@@ -1077,7 +1086,11 @@ def create_tts_service(
     logger.info(
         f"Creating TTS service: provider={user_config.tts.provider}, "
         f"model={user_config.tts.model}"
-        + (f", endpoint={deepgram_base_url}" if deepgram_base_url else "")
+        + (
+            f", endpoint={_endpoint_host(deepgram_base_url)}"
+            if deepgram_base_url
+            else ""
+        )
     )
 
     # Create function call filter to prevent TTS from speaking function call tags
