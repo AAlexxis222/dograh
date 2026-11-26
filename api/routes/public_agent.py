@@ -20,6 +20,7 @@ from api.services.call_concurrency import (
     call_concurrency,
 )
 from api.services.quota_service import authorize_workflow_run_start
+from api.services.security.redaction import mask_phone
 from api.services.telephony import ws_auth
 from api.services.telephony.carrier_policy import CarrierDisabledError
 from api.services.telephony.factory import get_telephony_provider_by_id
@@ -311,7 +312,7 @@ async def _execute_resolved_target(
         f"Created workflow run {workflow_run.id} for public agent "
         f"{target.identifier_type}={target.identifier_value} "
         f"(mode={'test' if use_draft else 'production'}) "
-        f"to phone number {request.phone_number}"
+        f"to phone number {mask_phone(request.phone_number)}"
     )
 
     # Check Dograh quota after the run exists so hosted v2 can mint and store
