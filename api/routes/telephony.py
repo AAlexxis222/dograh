@@ -362,7 +362,7 @@ async def _verify_organization_phone_number(
         logger.warning(
             f"Called number not registered to config "
             f"{telephony_configuration_id} (org={organization_id}, "
-            f"to_country={to_country}, from_country={from_country})"
+            f"to_country={to_country!r}, from_country={from_country!r})"
         )
         return None
 
@@ -611,7 +611,7 @@ async def _resolve_inbound_telephony_config(
         if not match:
             logger.warning(
                 f"Account validation failed for {provider_class.PROVIDER_NAME}: "
-                f"webhook account_id={account_id} (org {organization_id})"
+                f"webhook account_id={account_id!r} (org {organization_id})"
             )
             return TelephonyError.ACCOUNT_VALIDATION_FAILED, None
 
@@ -906,14 +906,14 @@ async def handle_inbound_run(request: Request):
         logger.info(
             f"/inbound/run normalized data — provider={normalized_data.provider} "
             f"account_id={normalized_data.account_id!r} "
-            f"direction={normalized_data.direction} "
-            f"call_id={normalized_data.call_id} "
-            f"to_country={normalized_data.to_country}"
+            f"direction={normalized_data.direction!r} "
+            f"call_id={normalized_data.call_id!r} "
+            f"to_country={normalized_data.to_country!r}"
         )
 
         if normalized_data.direction != "inbound":
             logger.warning(
-                f"Non-inbound call on /inbound/run: {normalized_data.direction}"
+                f"Non-inbound call on /inbound/run: {normalized_data.direction!r}"
             )
             return generic_hangup_response()
 
@@ -926,8 +926,8 @@ async def handle_inbound_run(request: Request):
             logger.warning(
                 f"/inbound/run: no inbound route matched "
                 f"provider={provider_class.PROVIDER_NAME} "
-                f"account_id={normalized_data.account_id} "
-                f"call_id={normalized_data.call_id}"
+                f"account_id={normalized_data.account_id!r} "
+                f"call_id={normalized_data.call_id!r}"
             )
             return provider_class.generate_validation_error_response(
                 TelephonyError.PHONE_NUMBER_NOT_CONFIGURED
@@ -1161,12 +1161,12 @@ async def handle_inbound_telephony(
 
         # Provider and call id only: the body and NormalizedInboundData carry names, numbers and SIP headers.
         logger.info(
-            f"Inbound call - provider={normalized_data.provider} call_id={normalized_data.call_id}"
+            f"Inbound call - provider={normalized_data.provider} call_id={normalized_data.call_id!r}"
         )
 
         # Validate inbound direction
         if normalized_data.direction != "inbound":
-            logger.warning(f"Non-inbound call received: {normalized_data.direction}")
+            logger.warning(f"Non-inbound call received: {normalized_data.direction!r}")
             return generic_hangup_response()
 
         (
