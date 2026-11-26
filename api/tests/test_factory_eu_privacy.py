@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from loguru import logger
 from pydantic import ValidationError
 
@@ -343,3 +344,51 @@ def test_creation_log_names_only_the_endpoint_host(infos, build, prefix):
     (line,) = [i for i in infos if i.startswith(prefix)]
     assert line.endswith("endpoint=proxy.example")
     assert "t0ken" not in line and "s3cr3t" not in line
+
+
+# --- a stored AWS region is a region name, never a piece of a host ------------
+
+
+def _nova_sonic(region):
+    user_config = SimpleNamespace(
+        realtime=AWSNovaSonicRealtimeLLMConfiguration(
+            aws_access_key="a", aws_secret_key="s", aws_region=region
+        )
+    )
+    with patch(
+        "api.services.pipecat.realtime.aws_nova_sonic.DograhAWSNovaSonicLLMService"
+    ) as mock:
+        create_realtime_llm_service(user_config, audio_config())
+    return mock
+
+
+def _bedrock(region):
+    with patch("api.services.pipecat.service_factory.AWSBedrockLLMService") as mock:
+        create_llm_service_from_provider(
+            provider="aws_bedrock",
+            model="m",
+            api_key=None,
+            aws_access_key="a",
+            aws_secret_key="s",
+            aws_region=region,
+        )
+    return mock
+
+
+@pytest.mark.parametrize("build", [_nova_sonic, _bedrock])
+@pytest.mark.parametrize("region", ["x@10.0.0.5:8443/", "evil.example.com/#"])
+def test_a_malformed_stored_aws_region_fails_the_build(build, region):
+    # Red at RUL-r1-3: pipecat interpolates the region into the endpoint host
+    # (nova_sonic/llm.py:895), so this value picks the host the server calls.
+    with pytest.raises(HTTPException) as exc_info:
+        build(region)
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.parametrize("build", [_nova_sonic, _bedrock])
+@pytest.mark.parametrize(
+    "region", [*AWS_NOVA_SONIC_REGIONS, "eu-central-1", "us-gov-west-1"]
+)
+def test_a_real_aws_region_still_builds(build, region):
+    # Regression: the check refuses shapes, not regions nobody listed.
+    build(region).assert_called_once()
