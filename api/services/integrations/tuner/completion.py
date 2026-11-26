@@ -6,9 +6,10 @@ from typing import Any
 
 from loguru import logger
 
-from api.constants import BACKEND_API_ENDPOINT, TUNER_BASE_URL
+from api.constants import TUNER_BASE_URL
 from api.services.integrations.base import IntegrationCompletionContext
 from api.services.integrations.registry import is_active
+from api.utils.artifacts import artifact_url
 
 from .client import TunerDeliveryConfig, post_call
 from .collector import TUNER_RECORDING_PLACEHOLDER
@@ -19,11 +20,13 @@ from .node import TunerNodeData
 def _build_recording_url(
     context: IntegrationCompletionContext,
 ) -> str | None:
-    workflow_run = context.workflow_run
-    if context.public_token:
-        base_url = f"{BACKEND_API_ENDPOINT}/api/v1/public/download/workflow/{context.public_token}"
-        return f"{base_url}/recording" if workflow_run.recording_url else None
-    return workflow_run.recording_url
+    # Without a token (links off or revoked, VOZ-N0-30) artifact_url is None: the internal storage URL never goes to
+    # a third party.
+    return (
+        artifact_url(context.public_token, "recording")
+        if context.workflow_run.recording_url
+        else None
+    )
 
 
 async def run_completion(

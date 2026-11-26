@@ -249,6 +249,7 @@ class OrganizationUsageClient(BaseDBClient):
                     "bot_recording_url": get_recording_storage_key(run.extra, "bot"),
                     "extra": run.extra,
                     "public_access_token": run.public_access_token,
+                    "public_access_expires_at": run.public_access_expires_at,
                     "phone_number": phone_number,
                     "caller_number": caller_number,
                     "called_number": called_number,
@@ -293,6 +294,7 @@ class OrganizationUsageClient(BaseDBClient):
                     WorkflowRunModel.cost_info,
                     WorkflowRunModel.usage_info,
                     WorkflowRunModel.public_access_token,
+                    WorkflowRunModel.public_access_expires_at,
                 )
                 .join(WorkflowModel, WorkflowRunModel.workflow_id == WorkflowModel.id)
                 .where(

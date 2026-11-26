@@ -20,6 +20,7 @@ from api.services.storage import (
     get_storage_for_backend,
     storage_fs,
 )
+from api.utils.recording_artifacts import RECORDINGS_KEY
 
 
 class TranscriptDownloadError(Exception):
@@ -118,7 +119,7 @@ async def upload_workflow_run_artifacts(
         await db_client.update_workflow_run(
             run_id=workflow_run_id,
             storage_backend=storage_backend.value,
-            extra={"recordings": recordings_metadata},
+            extra={RECORDINGS_KEY: recordings_metadata},
         )
 
     if transcript_text:

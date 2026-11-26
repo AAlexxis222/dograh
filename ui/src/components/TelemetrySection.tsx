@@ -13,7 +13,42 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { detailFromError } from "@/lib/apiError";
 import { useAuth } from "@/lib/auth";
+import { refusalHint } from "@/lib/knobRefusal";
+
+// A B0-28 refusal (not an operator, no target organization) says what to do in
+// its hint; any other backend error shows its own detail.
+function errorMessage(error: unknown, fallback: string): string {
+  return refusalHint(error) ?? detailFromError(error, fallback);
+}
+
+function TracesPublicToggle({
+  checked,
+  onCheckedChange,
+}: {
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="space-y-2 pt-2 border-t">
+      <div className="flex items-center space-x-2">
+        <Switch
+          id="langfuse-traces-public"
+          checked={checked}
+          onCheckedChange={onCheckedChange}
+        />
+        <Label htmlFor="langfuse-traces-public">Make traces publicly viewable</Label>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Off by default. When on, anyone holding a trace URL can open it without
+        logging in to Langfuse — including the full call transcript, prompts and
+        tool payloads. Turn it on only if you intend to share trace links outside
+        your Langfuse project.
+      </p>
+    </div>
+  );
+}
 
 export function TelemetrySection() {
   const { user, loading: authLoading } = useAuth();
@@ -64,7 +99,8 @@ export function TelemetrySection() {
         },
       });
       if (error) {
-        throw new Error("Failed to save");
+        toast.error(errorMessage(error, "Failed to save telemetry credentials"));
+        return;
       }
       toast.success("Telemetry credentials saved");
       await fetchCredentials();
@@ -78,7 +114,11 @@ export function TelemetrySection() {
   async function handleDelete() {
     setSaving(true);
     try {
-      await deleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDelete();
+      const { error } = await deleteLangfuseCredentialsApiV1OrganizationsLangfuseCredentialsDelete();
+      if (error) {
+        toast.error(errorMessage(error, "Failed to remove telemetry credentials"));
+        return;
+      }
       setCredentials({
         host: "",
         public_key: "",
@@ -149,24 +189,12 @@ export function TelemetrySection() {
           build links to your traces.
         </p>
       </div>
-      <div className="space-y-2 pt-2 border-t">
-        <div className="flex items-center space-x-2">
-          <Switch
-            id="langfuse-traces-public"
-            checked={credentials.traces_public ?? false}
-            onCheckedChange={(checked) =>
-              setCredentials({ ...credentials, traces_public: checked })
-            }
-          />
-          <Label htmlFor="langfuse-traces-public">Make traces publicly viewable</Label>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Off by default. When on, anyone holding a trace URL can open it without
-          logging in to Langfuse — including the full call transcript, prompts and
-          tool payloads. Turn it on only if you intend to share trace links outside
-          your Langfuse project.
-        </p>
-      </div>
+      <TracesPublicToggle
+        checked={credentials.traces_public ?? false}
+        onCheckedChange={(checked) =>
+          setCredentials({ ...credentials, traces_public: checked })
+        }
+      />
       <div className="flex gap-2">
         <Button type="submit" disabled={saving}>
           {saving ? "Saving..." : "Save"}

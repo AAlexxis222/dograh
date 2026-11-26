@@ -115,14 +115,22 @@ We provide seamless integration with Langfuse for tracing if you want to use you
 **Setup steps:**
 
 1. Sign up at [Langfuse](https://langfuse.com) and create API credentials
-2. In the Dograh UI, go to **Platform Settings** (`/settings`) and enter your Langfuse host, public key, and secret key
-3. Click **Save**
+2. Send the Langfuse host, public key, secret key and project ID to an XPAND operator
+3. The operator saves them for your organization with `POST /api/v1/organizations/<your organization id>/langfuse-credentials`
 
 Once enabled, traces will be available for every completed call in Dograh.
 
+<Note>
+Writing or removing an organization's Langfuse credentials is XPAND-operator only, on routes that name the organization in the path: `POST` and `DELETE /api/v1/organizations/{organization_id}/langfuse-credentials`, and `GET` on the same path to read them, masked. Anyone else gets `403` with `detail.code` `privacy_knob_forbidden`. An operator whose organization id is not an integer gets `422` (`privacy_target_organization_required`), and an id that names no organization gets `404` (`organization_not_found`).
+
+The `POST` and `DELETE` without an organization in the path (`/api/v1/organizations/langfuse-credentials`) never write: they answer `403` to anyone but an operator and `422` (`privacy_target_organization_required`) to an operator, with a hint naming the route above. An `organization_id` query parameter is not read. **Platform Settings** calls those routes, so it cannot save or remove these credentials: **Save** and **Remove** show that error's hint. Your organization's own users can still read its credentials, masked, with `GET /api/v1/organizations/langfuse-credentials`.
+
+A `DELETE` can answer `404` for three reasons: the organization does not exist (`detail.code` `organization_not_found`), it has no credentials to delete (`detail` is the string `No Langfuse credentials found`), or the server runs a version without these routes (`detail` is `Not Found`). Read `detail` before treating a `404` as "already deleted".
+</Note>
+
 ### Trace visibility
 
-Traces sent to your own Langfuse project are private by default — opening a trace link requires access to that project. **Make traces publicly viewable** in **Platform Settings** turns that off for your project only.
+Traces sent to your own Langfuse project are private by default, opening a trace link requires access to that project. The visibility is the `traces_public` field of the credentials an XPAND operator saves with `POST /api/v1/organizations/{organization_id}/langfuse-credentials`, and it applies to your project only. The **Make traces publicly viewable** toggle in **Platform Settings** cannot change it: saving from that screen is refused, as described above.
 
 <Warning>
 A public trace is readable by anyone holding its URL, with no Langfuse login, and it exposes the full call transcript, prompts, and tool payloads. Only enable it if you intend to share trace links outside your Langfuse project.

@@ -294,6 +294,9 @@ async def _handle_api_key_auth(api_key: str) -> UserModel:
     """
     Handle authentication via X-API-Key header.
     Returns the user who created the API key with the correct organization context.
+
+    An API key never carries superuser rights: a key an XPAND operator mints
+    while setting up a client organization ends up with that client.
     """
     # Validate the API key
     api_key_model = await db_client.validate_api_key(api_key)
@@ -310,8 +313,10 @@ async def _handle_api_key_auth(api_key: str) -> UserModel:
     if not user:
         raise HTTPException(status_code=401, detail="API key owner not found")
 
-    # Set the organization context to the API key's organization
+    # The user is detached from its (closed) session, so these overrides apply
+    # to this request only and are never written back.
     user.selected_organization_id = api_key_model.organization_id
+    user.is_superuser = False
 
     logger.debug(
         f"Authenticated via API key: {api_key_model.key_prefix}... "

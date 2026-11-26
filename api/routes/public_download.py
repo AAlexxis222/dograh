@@ -3,7 +3,8 @@
 These endpoints provide secure, token-based public access to workflow artifacts
 without requiring authentication. Tokens are generated on-demand during
 post-call processing for runs that execute integrations, QA, or campaign
-reporting.
+reporting. A link expires ``PUBLIC_LINK_TTL_H`` hours after it was minted, can be revoked, and is off inside a
+cell unless the organization turned it on (VOZ-N0-30).
 """
 
 from fastapi import APIRouter, HTTPException, Query
@@ -11,6 +12,8 @@ from fastapi.responses import RedirectResponse
 from loguru import logger
 
 from api.db import db_client
+from api.errors.knob_refusal import KnobRefusal
+from api.services import public_links
 from api.services.storage import get_storage_for_backend
 from api.utils.recording_artifacts import (
     get_recording_storage_backend,
@@ -18,6 +21,16 @@ from api.utils.recording_artifacts import (
 )
 
 router = APIRouter(prefix="/public/download")
+
+_WHERE = "GET /public/download/workflow/{token}/{artifact_type}"
+# Longest life of the storage URL a link redirects to; a link closer to its deadline gets less.
+_SIGNED_URL_MAX_S = 3600
+
+
+def _link_refused(code: str, reason: str, hint: str) -> HTTPException:
+    """The one 404 of a link that does not open, in the VOZ-AC-B0-28 shape (R3: KnobRefusal, no new error class)."""
+    detail = KnobRefusal(code=code, where=_WHERE, reason=reason, hint=hint).as_detail()
+    return HTTPException(status_code=404, detail=detail)
 
 
 @router.get("/workflow/{token}/{artifact_type}")
@@ -47,13 +60,36 @@ async def download_workflow_artifact(
 
     Raises:
         HTTPException 400: If artifact type is unsupported
-        HTTPException 404: If token is invalid or artifact not found
+        HTTPException 404: If token is invalid, expired or its links are off, or artifact not found
     """
     # 1. Lookup workflow run by token
     workflow_run = await db_client.get_workflow_run_by_public_token(token)
     if not workflow_run:
         logger.warning(f"Invalid public access token: {token[:8]}...")
-        raise HTTPException(status_code=404, detail="Invalid or expired token")
+        raise _link_refused(
+            "link_invalid",
+            "no public link matches this token (never issued, or revoked)",
+            "open the run in the app to see its current links; a revoked link is never issued again",
+        )
+
+    if not await db_client.public_links_enabled_for_run(workflow_run.id):
+        logger.warning(f"Public links are off: workflow_run_id={workflow_run.id}")
+        raise _link_refused(
+            "public_links_disabled",
+            "public download links are off for this organization",
+            "an operator turns them on with public_links_enabled: true in the organization's "
+            "workflow-configuration-defaults",
+        )
+
+    now = public_links.now()
+    if public_links.is_expired(workflow_run.public_access_expires_at, now):
+        logger.warning(f"Expired public link: workflow_run_id={workflow_run.id}")
+        raise _link_refused(
+            "link_expired",
+            "this public link has expired",
+            "links live PUBLIC_LINK_TTL_H hours from when they were issued; use the authenticated API for "
+            "the recording or transcript",
+        )
 
     # 2. Get file path based on artifact type
     artifact_storage_backend = None
@@ -95,11 +131,13 @@ async def download_workflow_artifact(
         logger.error(f"Invalid storage backend: {workflow_run.storage_backend}")
         raise HTTPException(status_code=500, detail="Storage configuration error")
 
-    # 4. Generate signed URL (1 hour expiration)
+    # 4. Generate a signed URL that does not outlive the link: whole seconds (S3's ExpiresIn), at most an hour, at
+    # least one. MinIO (development only) ignores the expiration and hands out a permanent URL.
+    seconds_left = int((workflow_run.public_access_expires_at - now).total_seconds())
     try:
         signed_url = await storage.aget_signed_url(
             file_path=file_path,
-            expiration=3600,  # 1 hour
+            expiration=max(1, min(_SIGNED_URL_MAX_S, seconds_left)),
             force_inline=inline,
         )
     except Exception as e:
