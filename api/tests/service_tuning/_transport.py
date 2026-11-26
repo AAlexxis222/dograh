@@ -17,6 +17,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlsplit
 
+from pipecat.processors.aggregators.llm_context import LLMContext
+
 from api.services.pipecat.audio_config import AudioConfig
 
 
@@ -183,6 +185,36 @@ def responses_payload(service) -> dict[str, Any]:
     return service._build_response_params(
         {"input": [{"role": "user", "content": "hi"}]}
     )
+
+
+def responses_tuning(**options):
+    return {"llm": {"openai": {"options": {"api": "responses", **options}}}}
+
+
+def _fake_transport(service, events=()):
+    """Replace the HTTP client: capture each request, stream ``events`` back."""
+    sent: list[dict] = []
+
+    async def create(**params):
+        sent.append(params)
+
+        async def stream():
+            for event in events:
+                yield event
+
+        return stream()
+
+    service._client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    service.push_frame = AsyncMock()
+    return sent
+
+
+async def one_responses_turn(service, events=()):
+    sent = _fake_transport(service, events)
+    await service._process_context(
+        LLMContext(messages=[{"role": "user", "content": "hola"}])
+    )
+    return sent[0]
 
 
 async def capture_openai_tts_request(service, text: str = "hi") -> dict[str, Any]:

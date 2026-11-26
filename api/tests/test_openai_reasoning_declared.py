@@ -6,7 +6,6 @@ sets it. The effort matrix (``openai_efforts``) declares every impact knob per
 today so the refactor exposes the behaviour instead of changing it.
 """
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -22,7 +21,6 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     FunctionCallsFromLLMInfoFrame,
 )
-from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import LLMService
 
@@ -30,7 +28,11 @@ from api.errors.knob_refusal import KnobRefusal
 from api.services.pipecat.openai_efforts import wire_params
 from api.services.pipecat.openai_responses import DograhOpenAIResponsesLLMService
 from api.services.pipecat.service_factory import create_llm_service_from_provider
-from api.tests.service_tuning._transport import chat_payload
+from api.tests.service_tuning._transport import (
+    chat_payload,
+    one_responses_turn,
+    responses_tuning,
+)
 
 _IMPACT_KNOBS = ("temperature", "reasoning_effort", "verbosity")
 _GPT5_TODAY = {"reasoning_effort": "minimal", "verbosity": "low"}
@@ -222,45 +224,15 @@ def test_chat_completions_declares_what_was_implicit(provider, model, tuning, ex
 # --- VOZ-AT-B1-14 on the wire: Responses through a fake transport ------------
 
 
-def _responses_tuning(**options):
-    return {"llm": {"openai": {"options": {"api": "responses", **options}}}}
-
-
-def _fake_transport(service, events=()):
-    """Replace the HTTP client: capture each request, stream ``events`` back."""
-    sent: list[dict] = []
-
-    async def create(**params):
-        sent.append(params)
-
-        async def stream():
-            for event in events:
-                yield event
-
-        return stream()
-
-    service._client = SimpleNamespace(responses=SimpleNamespace(create=create))
-    service.push_frame = AsyncMock()
-    return sent
-
-
-async def _one_turn(service, events=()):
-    sent = _fake_transport(service, events)
-    await service._process_context(
-        LLMContext(messages=[{"role": "user", "content": "hola"}])
-    )
-    return sent[0]
-
-
 @pytest.mark.parametrize(
     "model", ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "gpt-6.1-sol"]
 )
 async def test_responses_wire_declares_medium_and_never_none(model):
     llm = create_llm_service_from_provider(
-        provider="openai", model=model, api_key="k", tuning=_responses_tuning()
+        provider="openai", model=model, api_key="k", tuning=responses_tuning()
     )
     assert isinstance(llm, DograhOpenAIResponsesLLMService)
-    sent = await _one_turn(llm)
+    sent = await one_responses_turn(llm)
     assert sent["reasoning"] == {"effort": "medium"}
     assert "temperature" not in sent and sent["store"] is False
 
@@ -270,9 +242,9 @@ async def test_responses_wire_carries_a_requested_none_with_temperature():
         provider="openai",
         model="gpt-6-luna",
         api_key="k",
-        tuning=_responses_tuning(reasoning={"effort": "none"}),
+        tuning=responses_tuning(reasoning={"effort": "none"}),
     )
-    sent = await _one_turn(llm)
+    sent = await one_responses_turn(llm)
     assert sent["reasoning"] == {"effort": "none"} and sent["temperature"] == 0.1
 
 
@@ -281,11 +253,11 @@ async def test_responses_wire_carries_summary_and_verbosity():
         provider="openai",
         model="gpt-6-luna",
         api_key="k",
-        tuning=_responses_tuning(
+        tuning=responses_tuning(
             reasoning={"effort": "high", "summary": "concise"}, verbosity="low"
         ),
     )
-    sent = await _one_turn(llm)
+    sent = await one_responses_turn(llm)
     assert sent["reasoning"] == {"effort": "high", "summary": "concise"}
     assert sent["text"] == {"verbosity": "low"}
 
@@ -307,7 +279,9 @@ def _responses_llm(effort, **settings):
 
 
 async def test_responses_wire_takes_the_cap_and_an_explicit_temperature_with_none():
-    sent = await _one_turn(_responses_llm("none", temperature=0.3, max_tokens=400))
+    sent = await one_responses_turn(
+        _responses_llm("none", temperature=0.3, max_tokens=400)
+    )
     assert sent["temperature"] == 0.3 and sent["max_output_tokens"] == 400
 
 
@@ -337,7 +311,7 @@ def test_responses_takes_top_p_only_with_effort_none():
 
 
 async def test_responses_sends_top_p_with_effort_none():
-    assert (await _one_turn(_responses_llm("none", top_p=0.9)))["top_p"] == 0.9
+    assert (await one_responses_turn(_responses_llm("none", top_p=0.9)))["top_p"] == 0.9
 
 
 @pytest.mark.parametrize(
@@ -407,7 +381,7 @@ def test_the_responses_gate_stops_stored_workflows_at_run_start(monkeypatch):
             provider="openai",
             model="gpt-6-luna",
             api_key="k",
-            tuning=_responses_tuning(),
+            tuning=responses_tuning(),
         )
     detail = info.value.detail
     assert info.value.status_code == 422 and detail["code"] == "build_gate"
@@ -420,7 +394,7 @@ def test_the_responses_gate_stops_stored_workflows_at_run_start(monkeypatch):
     [
         (
             "gpt-6-astra",
-            _responses_tuning(reasoning={"effort": "none"}),
+            responses_tuning(reasoning={"effort": "none"}),
             400,
             "knob_out_of_range",
         ),
@@ -466,7 +440,7 @@ def test_the_responses_gate_stops_stored_workflows_at_run_start(monkeypatch):
             400,
             "knob_not_supported",
         ),
-        ("gpt-7-nova", _responses_tuning(), 400, "api_not_supported"),
+        ("gpt-7-nova", responses_tuning(), 400, "api_not_supported"),
     ],
 )
 def test_each_refusal_code_leaves_with_one_status(model, tuning, status, code):
@@ -484,7 +458,7 @@ def test_factory_names_the_out_of_range_effort():
             provider="openai",
             model="gpt-6-astra",
             api_key="k",
-            tuning=_responses_tuning(reasoning={"effort": "none"}),
+            tuning=responses_tuning(reasoning={"effort": "none"}),
         )
     detail = info.value.detail
     assert info.value.status_code == 400 and detail["code"] == "knob_out_of_range"
@@ -498,7 +472,7 @@ async def test_unconfigured_reasoning_is_declared_not_disabled(model):
     llm = DograhOpenAIResponsesLLMService(
         api_key="k", settings=DograhOpenAIResponsesLLMService.Settings(model=model)
     )
-    sent = await _one_turn(llm)
+    sent = await one_responses_turn(llm)
     assert sent["reasoning"] == {"effort": "medium"}
 
 
@@ -507,7 +481,7 @@ async def test_a_model_that_does_not_reason_gets_no_reasoning():
         api_key="k",
         settings=DograhOpenAIResponsesLLMService.Settings(model="gpt-4.1"),
     )
-    assert "reasoning" not in await _one_turn(llm)
+    assert "reasoning" not in await one_responses_turn(llm)
 
 
 # --- node-transition deferral, ported from the chat service ------------------
@@ -554,7 +528,9 @@ def _names(run):
 async def test_transition_during_a_spoken_response_waits_for_it_to_end():
     llm = _service()
     with patch.object(LLMService, "run_function_calls", new_callable=AsyncMock) as run:
-        await _one_turn(llm, [_text("Le paso con ventas."), *_call("transition", "1")])
+        await one_responses_turn(
+            llm, [_text("Le paso con ventas."), *_call("transition", "1")]
+        )
         run.assert_not_awaited()
         await llm.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
         assert _names(run) == [["transition"]]
@@ -563,16 +539,16 @@ async def test_transition_during_a_spoken_response_waits_for_it_to_end():
 async def test_transition_without_speech_and_other_tools_run_at_once():
     llm = _service()
     with patch.object(LLMService, "run_function_calls", new_callable=AsyncMock) as run:
-        await _one_turn(llm, [_text(" ... "), *_call("transition", "1")])
-        await _one_turn(llm, [_text("Un momento."), *_call("lookup", "2")])
+        await one_responses_turn(llm, [_text(" ... "), *_call("transition", "1")])
+        await one_responses_turn(llm, [_text("Un momento."), *_call("lookup", "2")])
         assert _names(run) == [["transition"], ["lookup"]]
 
 
 async def test_a_new_response_discards_a_transition_never_released():
     llm = _service()
     with patch.object(LLMService, "run_function_calls", new_callable=AsyncMock) as run:
-        await _one_turn(llm, [_text("Le paso."), *_call("transition", "1")])
-        await _one_turn(llm, [_text("Perdone, repito.")])
+        await one_responses_turn(llm, [_text("Le paso."), *_call("transition", "1")])
+        await one_responses_turn(llm, [_text("Perdone, repito.")])
         await llm.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
         run.assert_not_awaited()
 
@@ -581,14 +557,18 @@ async def test_a_speculative_transition_runs_at_once_to_stay_cancellable():
     llm = _service()
     llm._speculation_gate.begin_speculation(True)
     with patch.object(LLMService, "run_function_calls", new_callable=AsyncMock) as run:
-        await _one_turn(llm, [_text("Le paso con ventas."), *_call("transition", "1")])
+        await one_responses_turn(
+            llm, [_text("Le paso con ventas."), *_call("transition", "1")]
+        )
         assert _names(run) == [["transition"]]
 
 
 async def test_a_deferred_transition_is_announced_to_the_llm_span():
     llm = _service()
     with patch.object(LLMService, "run_function_calls", new_callable=AsyncMock):
-        await _one_turn(llm, [_text("Le paso con ventas."), *_call("transition", "1")])
+        await one_responses_turn(
+            llm, [_text("Le paso con ventas."), *_call("transition", "1")]
+        )
     announced = [
         (
             [fc.function_name for fc in call.args[0].function_calls],

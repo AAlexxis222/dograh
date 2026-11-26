@@ -34,10 +34,11 @@ from api.tests.service_tuning._transport import (
     audio_config,
     capture_nova_connect,
     capture_ws_connect,
+    one_responses_turn,
     query_params,
+    responses_tuning,
     user_config_stt,
 )
-from api.tests.test_openai_reasoning_declared import _one_turn, _responses_tuning
 
 EU = "https://api.eu.deepgram.com"
 EU_WS = "wss://api.eu.deepgram.com"
@@ -281,6 +282,6 @@ async def test_openai_responses_wire_sends_store_false():
         provider="openai",
         model="gpt-6-luna",
         api_key="k",
-        tuning=_responses_tuning(),
+        tuning=responses_tuning(),
     )
-    assert (await _one_turn(llm))["store"] is False
+    assert (await one_responses_turn(llm))["store"] is False
