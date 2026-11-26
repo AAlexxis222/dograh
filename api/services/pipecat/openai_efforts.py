@@ -19,6 +19,8 @@ from dataclasses import dataclass, field, replace
 from fnmatch import fnmatchcase
 from typing import Any, Literal
 
+from api.errors.knob_refusal import KnobRefusal
+
 Api = Literal["chat_completions", "responses"]
 # When a knob may travel: always, only next to ``effort: "none"``, or never.
 Rule = Literal["any", "only_with_effort_none", "never"]
@@ -27,33 +29,6 @@ _BOTH_APIS: frozenset[str] = frozenset({"chat_completions", "responses"})
 _GPT5_TODAY = {"reasoning_effort": "minimal", "verbosity": "low"}
 _DECLARED_MEDIUM = {"reasoning_effort": "medium"}
 _EFFORT = "llm.openai.options.reasoning.effort"
-
-
-class KnobRefusal(ValueError):
-    """A knob the selected model, API or build cannot take (B0-28 shape).
-
-    ``context`` carries the extra fields a code needs (``gate`` and
-    ``source`` for ``build_gate``, VOZ-AC-B1-18).
-    """
-
-    def __init__(
-        self, *, code: str, where: str, reason: str, hint: str, **context: str
-    ):
-        super().__init__(f"{where}: {reason}; {hint}")
-        self.code = code
-        self.where = where
-        self.reason = reason
-        self.hint = hint
-        self.context = context
-
-    def as_detail(self) -> dict[str, str]:
-        return {
-            "code": self.code,
-            "where": self.where,
-            "reason": self.reason,
-            "hint": self.hint,
-            **self.context,
-        }
 
 
 @dataclass(frozen=True)

@@ -419,7 +419,6 @@ HOPPER_MODELS = [
 ]
 
 GROQ_MODELS = [
-    "llama-3.3-70b-versatile",
     "openai/gpt-oss-120b",
 ]
 OPENROUTER_MODELS = [
@@ -549,7 +548,7 @@ class GroqLLMService(BaseLLMConfiguration):
     model_config = GROQ_PROVIDER_MODEL_CONFIG
     provider: Literal[ServiceProviders.GROQ] = ServiceProviders.GROQ
     model: str = Field(
-        default="llama-3.3-70b-versatile",
+        default="openai/gpt-oss-120b",
         description="Groq-hosted model identifier.",
         json_schema_extra={"examples": GROQ_MODELS, "allow_custom_input": True},
     )
@@ -2131,7 +2130,7 @@ class SonioxSTTConfiguration(BaseSTTConfiguration):
     model_config = SONIOX_PROVIDER_MODEL_CONFIG
     provider: Literal[ServiceProviders.SONIOX] = ServiceProviders.SONIOX
     model: str = Field(
-        default="stt-rt-v5",
+        default="stt-rt-v6",
         description="Soniox real-time STT model.",
         json_schema_extra={"examples": SONIOX_STT_MODELS, "allow_custom_input": True},
     )

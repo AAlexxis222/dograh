@@ -7,21 +7,20 @@ it once per build: ``build_openai_llm`` for the OpenAI and Atlas Cloud wires,
 ``openai_chat_inputs`` for the wires that only speak chat/completions to
 OpenAI models (OpenRouter, Azure, Dograh).
 
-Every refusal is a ``KnobRefusal`` (B0-28 shape); ``_HTTP_STATUS`` is the one
-place that maps its code to the run-start status.
+Every refusal is a ``KnobRefusal`` (B0-28 shape); ``api.errors.knob_refusal``
+maps its code to the run-start status.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import replace
-from functools import wraps
-from typing import Any, TypeVar
+from typing import Any
 
 from fastapi import HTTPException
 
+from api.errors.knob_refusal import KnobRefusal, http_refusals
 from api.services.configuration.registry import ServiceProviders
 from api.services.pipecat import service_tuning_specs
 from api.services.pipecat.openai_efforts import (
-    KnobRefusal,
     reasons,
     refuse_tools_by_chat,
     row_for,
@@ -49,33 +48,10 @@ OPENAI_CHAT_WIRES = frozenset(
         ServiceProviders.DOGRAH.value,
     }
 )
-# Knob refusals keep the 400 the factory always used at run start; a build
-# gate is the 422 VOZ-AC-B1-18 names.
-_HTTP_STATUS = {
-    "knob_out_of_range": 400,
-    "knob_not_supported": 400,
-    "api_not_supported": 400,
-    "build_gate": 422,
-}
 _API_LABELS = {"chat_completions": "chat/completions", "responses": "the Responses API"}
 # Declared on ``OpenAILLMSettings`` but never read by the Responses service
 # (responses/llm.py:378-390 sends only temperature, top_p and the cap).
 _RESPONSES_UNREAD = frozenset({"frequency_penalty", "presence_penalty", "seed"})
-
-_T = TypeVar("_T")
-
-
-def _http_refusals(build: Callable[..., _T]) -> Callable[..., _T]:
-    @wraps(build)
-    def wrapper(*args, **kwargs) -> _T:
-        try:
-            return build(*args, **kwargs)
-        except KnobRefusal as e:
-            raise HTTPException(
-                status_code=_HTTP_STATUS[e.code], detail=e.as_detail()
-            ) from e
-
-    return wrapper
 
 
 def _api(plan: TuningPlan) -> str:
@@ -208,7 +184,7 @@ def _temperature_of(wire: Mapping[str, Any]) -> dict[str, Any]:
     return {"temperature": wire["temperature"]} if "temperature" in wire else {}
 
 
-@_http_refusals
+@http_refusals
 def openai_chat_inputs(model: str, plan: TuningPlan) -> tuple[TuningPlan, dict]:
     """The translated plan and the base settings for an OpenAI-model wire
     that builds its own chat/completions service (``OPENAI_CHAT_WIRES``)."""
@@ -228,7 +204,7 @@ def _responses_llm(api_key, model: str, wire: dict, plan: TuningPlan, kwargs: di
     return DograhOpenAIResponsesLLMService(api_key=api_key, settings=settings, **kwargs)
 
 
-@_http_refusals
+@http_refusals
 def build_openai_llm(
     provider: str, model: str, api_key, plan: TuningPlan, kwargs: dict
 ):

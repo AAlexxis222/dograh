@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import reprlib
 import types
 import typing
 from collections.abc import Callable
@@ -31,6 +32,7 @@ from google.genai.types import ProactivityConfig, SafetySetting, ThinkingConfig
 from loguru import logger
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from api.errors.knob_refusal import KnobRefusal
 from pipecat.services.assemblyai.stt import (
     U3_PRO_MODEL_PREFIXES,
     AssemblyAISTTService,
@@ -163,6 +165,18 @@ class TuningSpec:
     provider model whose ``Literal`` pipecat widens with ``| str`` for forward
     compatibility (openai/realtime/events.py:182), so a typo would be a
     provider-side 400 mid-call rather than a 422 at the PUT.
+    """
+    settings_checks: dict[str, Callable[[Any], Any]] = dataclasses.field(
+        default_factory=dict
+    )
+    """Per-setting refusal and translation, keyed by name.
+
+    Each check takes the stored value and returns what the provider is sent,
+    or raises ``KnobRefusal`` (the named 422 at the PUT).
+    ``validate_service_tuning`` calls it once the value passed its type
+    checks. The build never refuses on it: a document stored before the check
+    existed reaches the factory unvalidated, so the factory's wrapper
+    translates with the same check and drops (and logs) what it refuses.
     """
     settings_models: dict[str, Any] = dataclasses.field(default_factory=dict)
     """The provider object a setting is built into, for settings whose value
@@ -733,6 +747,7 @@ def _realtime_row(
     types: dict[str, type | tuple[type, ...]],
     choices: dict[str, frozenset[str]] | None = None,
     models: dict[str, Any] | None = None,
+    checks: dict[str, Callable[[Any], Any]] | None = None,
 ) -> TuningSpec:
     return TuningSpec(
         "realtime",
@@ -742,6 +757,7 @@ def _realtime_row(
         settings_types=types,
         settings_choices=choices or {},
         settings_models=models or {},
+        settings_checks=checks or {},
     )
 
 
@@ -751,12 +767,65 @@ SPECS[("realtime", "openai_realtime")] = _realtime_row(
 SPECS[("realtime", "azure_realtime")] = _realtime_row(
     "azure_realtime", _OPENAI_REALTIME_TYPES, _OPENAI_REALTIME_CHOICES
 )
+# Spanish deployments only (VOZ-AC-B1-39): the value is what xAI's transcriber
+# gets as ``language_hint`` (xai/realtime/events.py:119). A bare ``es`` is
+# widened to ``es-ES``, anything outside the keys is refused.
+_GROK_LANGUAGE_HINT_WIRE_VALUES = {"es": "es-ES", "es-ES": "es-ES", "es-MX": "es-MX"}
+_GROK_LANGUAGE_HINT_PATH = "realtime.grok_realtime.settings.language_hint"
+
+
+def grok_language_hint(value: str) -> str:
+    """The ``language_hint`` xAI receives for the stored ``value``.
+
+    The PUT check (the row's ``settings_checks``, run by
+    ``validate_service_tuning``); the build goes through
+    ``grok_language_hint_at_build``, which translates with this same function.
+    """
+    try:
+        return _GROK_LANGUAGE_HINT_WIRE_VALUES[value]
+    except KeyError:
+        raise KnobRefusal(
+            code="knob_out_of_range",
+            where=_GROK_LANGUAGE_HINT_PATH,
+            reason=f"xAI realtime takes a Spanish language hint, not {value!r}",
+            hint=f"set {_GROK_LANGUAGE_HINT_PATH} to one of "
+            f"{'|'.join(_GROK_LANGUAGE_HINT_WIRE_VALUES)} (es is sent as es-ES) "
+            "or remove it",
+        ) from None
+
+
+def grok_language_hint_at_build(value: Any) -> str | None:
+    """What the build sends for a stored ``value``: its translation, or ``None``.
+
+    Before this check existed the PUT took any string, and a run is built from
+    its stored or frozen document without re-validation, so a value outside
+    the set (or not a string at all) is dropped rather than refused: the
+    session gets the hint an untuned run gets (``None``, not sent) and the
+    drop is logged, the call goes on.
+    """
+    if isinstance(value, str):
+        try:
+            return grok_language_hint(value)
+        except KnobRefusal:
+            pass
+    logger.warning(
+        f"service_tuning: {_GROK_LANGUAGE_HINT_PATH} dropped: stored value "
+        f"{reprlib.repr(value)} is not one of "
+        f"{'|'.join(_GROK_LANGUAGE_HINT_WIRE_VALUES)}; the session is built "
+        "without a language hint"
+    )
+    return None
+
+
 # Grok's session carries neither speed, reasoning nor an output token cap
 # (xai/realtime/events.py:218-243); the transcription language hint is the
 # only knob it has that the registry doesn't already own.
 SPECS[("realtime", "grok_realtime")] = _realtime_row(
-    "grok_realtime", {"language_hint": str}
+    "grok_realtime",
+    {"language_hint": str},
+    checks={"language_hint": grok_language_hint},
 )
+
 SPECS[("realtime", "google_realtime")] = _realtime_row(
     "google_realtime", _GEMINI_REALTIME_TYPES, models=_GEMINI_REALTIME_MODELS
 )
@@ -1347,8 +1416,48 @@ def _validate_openai_stt(tuning: dict[str, Any]) -> list[str]:
     ]
 
 
-def validate_service_tuning(document: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
+def _setting_error(
+    kind: str,
+    provider: str,
+    spec: TuningSpec,
+    nullable: frozenset[str],
+    name: str,
+    value: Any,
+) -> str | KnobRefusal | None:
+    """The error for one ``settings`` entry of a provider, or ``None``.
+
+    A ``KnobRefusal`` from the row's ``settings_checks`` is returned, not
+    raised, so validation goes on: the schema turns it into the named 422.
+    """
+    path = f"{kind}.{provider}.settings.{name}"
+    # A name in the allow-list wins even when it is also a REGISTRY_OWNED
+    # identity field elsewhere (e.g. tts.openai exposes "voice" as a tunable
+    # setting, B6).
+    if name in spec.settings_allowed:
+        error = _settings_value_error(spec, nullable, path, name, value)
+        if error is None:
+            error = _provider_turn_error(kind, provider, "settings", name, value)
+        if error:
+            return error
+        check = spec.settings_checks.get(name)
+        if check is not None:
+            try:
+                check(value)
+            except KnobRefusal as refusal:
+                return refusal
+        return None
+    if name in REGISTRY_OWNED:
+        return f"{path}: owned by the model configuration"
+    return f"{path}: unknown setting"
+
+
+def validate_service_tuning(document: dict[str, Any]) -> list[str | KnobRefusal]:
+    """Every error of ``document``, in document order; empty when valid.
+
+    An error is a message, or the ``KnobRefusal`` of a ``settings_checks``
+    entry, which the caller reports as that knob's named error.
+    """
+    errors: list[str | KnobRefusal] = []
     for kind in KINDS:
         providers = document.get(kind) or {}
         for provider, tuning in providers.items():
@@ -1359,22 +1468,9 @@ def validate_service_tuning(document: dict[str, Any]) -> list[str]:
             tuning = tuning or {}
             nullable = spec.nullable()
             for name, value in (tuning.get("settings") or {}).items():
-                path = f"{kind}.{provider}.settings.{name}"
-                # A name in the allow-list wins even when it is also a
-                # REGISTRY_OWNED identity field elsewhere (e.g. tts.openai
-                # exposes "voice" as a tunable setting, B6).
-                if name in spec.settings_allowed:
-                    error = _settings_value_error(spec, nullable, path, name, value)
-                    if error is None:
-                        error = _provider_turn_error(
-                            kind, provider, "settings", name, value
-                        )
-                    if error:
-                        errors.append(error)
-                elif name in REGISTRY_OWNED:
-                    errors.append(f"{path}: owned by the model configuration")
-                else:
-                    errors.append(f"{path}: unknown setting")
+                error = _setting_error(kind, provider, spec, nullable, name, value)
+                if error:
+                    errors.append(error)
             for name, value in (tuning.get("ctor") or {}).items():
                 path = f"{kind}.{provider}.ctor.{name}"
                 if name not in spec.ctor_allowed:

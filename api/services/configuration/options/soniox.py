@@ -1,4 +1,5 @@
-SONIOX_STT_MODELS = ("stt-rt-v5",)
+# stt-rt-v5 is no longer offered (shutdown in deprecations.yaml); saved configs that hold it still load.
+SONIOX_STT_MODELS = ("stt-rt-v6",)
 
 SONIOX_STT_LANGUAGES = (
     "multi",
