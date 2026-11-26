@@ -7,11 +7,29 @@
 # Regional hosts accept the same API keys as the US one.
 # https://developers.deepgram.com/reference/custom-endpoints
 DEEPGRAM_DEFAULT_BASE_URL = "https://api.eu.deepgram.com"
-DEEPGRAM_BASE_URLS = (
-    DEEPGRAM_DEFAULT_BASE_URL,
-    "https://api.deepgram.com",
-    "https://api.au.deepgram.com",
-)
+# Where each regional host processes data, in the words the endpoint field uses.
+_DEEPGRAM_REGIONS = {
+    DEEPGRAM_DEFAULT_BASE_URL: "the EU",
+    "https://api.deepgram.com": "the US",
+    "https://api.au.deepgram.com": "Australia",
+}
+DEEPGRAM_BASE_URLS = tuple(_DEEPGRAM_REGIONS)
+
+
+def deepgram_base_url_description(subject: str) -> str:
+    """Describe a Deepgram ``base_url`` field from the hosts above."""
+    others = " or ".join(
+        f"{url} for {region}"
+        for url, region in _DEEPGRAM_REGIONS.items()
+        if url != DEEPGRAM_DEFAULT_BASE_URL
+    )
+    return (
+        f"Deepgram API endpoint. This is what decides where {subject} is "
+        f"processed: the default, {DEEPGRAM_DEFAULT_BASE_URL}, keeps "
+        f"processing inside {_DEEPGRAM_REGIONS[DEEPGRAM_DEFAULT_BASE_URL]}; "
+        f"use {others}. The same API key works on every regional endpoint."
+    )
+
 
 DEEPGRAM_FLUX_MODELS = ("flux-general-en", "flux-general-multi")
 DEEPGRAM_FLUX_MULTILINGUAL_LANGUAGES = (
