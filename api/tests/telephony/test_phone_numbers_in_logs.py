@@ -7,11 +7,13 @@ no redactor at all, so the line itself must mask.
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
 from loguru import logger
 
+from api.db.models import OrganizationModel, TelephonyPhoneNumberModel
 from api.routes.public_agent import (
     ResolvedAgentTarget,
     TriggerCallRequest,
@@ -28,6 +30,7 @@ from api.services.telephony.providers.vobiz.provider import VobizProvider
 from api.services.telephony.providers.vonage.provider import VonageProvider
 from api.services.workflow.tools import transfer_resolver
 from api.services.workflow.tools.transfer_resolver import resolve_transfer_config
+from api.utils.telephony_address import normalize_telephony_address
 
 # No "+" and not a Spanish shape: the sink redactor leaves both whole.
 OTHER_PARTY = "14155552671"
@@ -447,4 +450,43 @@ async def test_public_agent_dial_masks_the_callee(log_lines):
 
     # No behaviour change in the number the run carries: only the log line is masked.
     assert prepare.call_args.kwargs["initial_context"]["called_number"] == OTHER_PARTY
+    _assert_masked(log_lines, "2671")
+
+
+@pytest.mark.asyncio
+async def test_inbound_route_lookup_masks_the_called_number(
+    log_lines, async_session, db_session
+):
+    # RUL-r2-3: the real lookup against the test database, a hit and a miss, with a number stored without "+".
+    organization = OrganizationModel(provider_id=f"mask-route-{uuid4()}")
+    async_session.add(organization)
+    await async_session.flush()
+    account_sid = f"AC{uuid4().hex}"
+    config = await db_session.create_telephony_configuration(
+        organization.id,
+        "cfg",
+        "twilio",
+        {"account_sid": account_sid, "auth_token": "t"},
+    )
+    phone = TelephonyPhoneNumberModel(
+        organization_id=organization.id,
+        telephony_configuration_id=config.id,
+        address=OTHER_PARTY,
+        address_normalized=normalize_telephony_address(OTHER_PARTY).canonical,
+        address_type="phone",
+        is_active=True,
+    )
+    async_session.add(phone)
+    await async_session.flush()
+
+    match = await db_session.find_inbound_route_by_account(
+        provider="twilio", account_id=account_sid, to_number=OTHER_PARTY
+    )
+    miss = await db_session.find_inbound_route_by_account(
+        provider="twilio", account_id=f"AC{uuid4().hex}", to_number=OTHER_PARTY
+    )
+
+    # No behaviour change in the lookup: only the log lines are masked.
+    assert (match[0].id, match[1].id) == (config.id, phone.id)
+    assert miss is None
     _assert_masked(log_lines, "2671")
