@@ -453,11 +453,14 @@ def _tts_provider_ctor(plan) -> dict:
 
 
 # Deepgram's Model Improvement Program may train on the audio and text a call
-# sends. Caller audio can carry health data, so every Deepgram request opts
-# out. It is a policy rather than a default an operator can pick, so it is
-# fixed here and the tuning allow-list does not offer it: a tuned ``false``
-# would undo it. This helper merges it last, so a stale stored value cannot win
-# or collide with it; every Deepgram construction site goes through it.
+# sends. Caller audio can carry health data, so Deepgram STT (Nova and Flux)
+# and Deepgram TTS opt out, and Dograh Flux sends the same flag to the Dograh
+# MPS in front of Deepgram. The non-Flux Dograh STT and Dograh TTS cannot:
+# their protocol has no field for it. It is a policy rather than a default an
+# operator can pick, so it is fixed here and the tuning allow-list does not
+# offer it: a tuned ``false`` would undo it. This helper merges it last, so a
+# stale stored value cannot win or collide with it; each of those four
+# construction sites goes through it.
 def _with_deepgram_privacy(ctor: Mapping[str, Any]) -> dict[str, Any]:
     return {**ctor, "mip_opt_out": True}
 
@@ -675,12 +678,21 @@ def create_stt_service(
         # Nova takes base_url, not url; url is Flux-only, so drop it here even
         # though the shared allow-list accepts ctor.url for either model.
         ctor = {k: v for k, v in plan.ctor.items() if k in _nova_ctor_allowed()}
+        dropped = set(plan.ctor) - set(ctor)
         _warn_dropped(
             "ctor",
             "stt.deepgram",
             user_config.stt.model,
-            set(plan.ctor) - set(ctor),
+            dropped - {"mip_opt_out"},
             "Flux-only constructor argument, Nova takes base_url",
+        )
+        # A stale stored value: the run does not re-validate its tuning.
+        _warn_dropped(
+            "ctor",
+            "stt.deepgram",
+            user_config.stt.model,
+            dropped & {"mip_opt_out"},
+            "fixed platform policy, the opt-out is always sent",
         )
         return DeepgramSTTService(
             api_key=user_config.stt.api_key,

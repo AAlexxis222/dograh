@@ -41,6 +41,9 @@ up to three dictionaries:
 | `ctor` | Allow-listed constructor arguments, which are not settings at all | `stt.deepgram.ctor.tag` |
 | `options` | Switches that are neither, such as which OpenAI API to speak | `llm.openai.options.api` |
 
+A `stt.deepgram.ctor.tag` list is sent one tag per element on Flux models and as a single string
+on Nova models.
+
 "Merged over the defaults" is key by key: a tuned setting replaces the value the run would have
 built for that key, it does not combine with it. The one place this matters is vocabulary
 biasing. The run builds the STT service with the workflow's keyword dictionary already in the
@@ -112,10 +115,12 @@ selects it, so a knob belonging to the other one is a `422` at save time rather 
 Camb exposes `user_instructions` (read on `mars-instruct` only) and the request `ctor.timeout`;
 Speaches TTS speaks OpenAI's audio API and takes its `instructions` and `speed`.
 
-## Defaults never change
+## Untuned defaults
 
-Adding this section changed no default. A workflow with no `service_tuning` builds exactly the
-services it built before, with the same values on the wire:
+Adding tuning changed no default by itself. A workflow with no `service_tuning` builds the services
+it built before, with the same values on the wire, except for the untuned defaults the privacy
+change under [Behaviour changes](#behaviour-changes) moved on purpose: the Deepgram host, the
+Deepgram training opt-out and the Amazon Nova Sonic region. The other untuned values are:
 
 | Provider | Setting | Value |
 | --- | --- | --- |
@@ -286,8 +291,9 @@ speed and volume in the model configuration rather than merging into it.
 
 ## Behaviour changes
 
-Nine changes ride along with this section, because a knob cannot be exposed on a path that never
-worked:
+Nine changes ride along with this section. Eight of them came with a knob, because a knob cannot
+be exposed on a path that never worked; the Deepgram and Nova Sonic one moves untuned defaults for
+privacy, with no knob involved:
 
 - **OpenAI TTS now uses the configured voice.** It previously ignored the model configuration's
   voice and always spoke with the OpenAI default. A stored voice that is not an OpenAI voice name
@@ -308,12 +314,16 @@ worked:
   deprecated, which is what lets `user_instructions` reach it. The voice, model, language and
   timeout an untuned workflow ends up with are the same as before.
 - **Deepgram is EU-hosted and opted out of model training by default.** The Deepgram endpoint
-  defaults to `https://api.eu.deepgram.com` (it was the US host) for STT, Flux and TTS, so call
-  audio is processed in the EU unless an operator picks another endpoint. Every Deepgram request,
-  Dograh Flux included, now sends `mip_opt_out=true`, which keeps the audio out of Deepgram's
-  Model Improvement Program; it is fixed, so `stt.deepgram.ctor.mip_opt_out` and
-  `stt.dograh.ctor.mip_opt_out` are no longer accepted. Amazon Nova Sonic's default region is
-  `eu-north-1` (it was `us-east-1`).
+  defaults to `https://api.eu.deepgram.com` (it was the US host) for STT, Flux and TTS, and Amazon
+  Nova Sonic's default region is `eu-north-1` (it was `us-east-1`). The new defaults apply to
+  configurations saved from this change on: a configuration saved before it stored the old host or
+  region and keeps it until someone saves it again with the new value. Deepgram STT (Nova and
+  Flux) and Deepgram TTS now send `mip_opt_out=true`, which keeps the audio out of Deepgram's Model
+  Improvement Program, and Dograh Flux sends the same flag to the Dograh MPS in front of Deepgram.
+  The non-Flux Dograh STT and Dograh TTS cannot send it: their protocol has no field for it. The
+  opt-out is fixed, so `stt.deepgram.ctor.mip_opt_out` and `stt.dograh.ctor.mip_opt_out` are no
+  longer accepted, and a Deepgram URL whose query carries its own `mip_opt_out` fails the call
+  build.
 - **xAI realtime `language_hint` is a Spanish value.** Only `es`, `es-ES` and `es-MX` are accepted
   when the workflow is saved (any other value is a 422 `knob_out_of_range`), and `es` is sent to
   xAI as `es-ES`. An untuned workflow sends no hint, as before. A value saved before this change
