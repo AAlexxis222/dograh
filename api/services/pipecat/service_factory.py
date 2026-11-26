@@ -363,6 +363,26 @@ def _aws_region(region: str | None) -> str | None:
     return region
 
 
+_HOST_LABEL = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
+
+
+def _host_label(value: str | None, field_name: str) -> str | None:
+    """A stored region or location that ends up inside an endpoint host.
+
+    pipecat builds the Google STT and TTS hosts from the location
+    (google/stt.py:702, google/tts.py:937) and google-genai the Vertex one
+    (``https://{location}-aiplatform.googleapis.com``), so only a bare label of
+    lowercase letters, digits and single hyphens may get there. An unset value
+    names no host and is passed through as before.
+    """
+    if value and not _HOST_LABEL.fullmatch(value):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} {value!r} is not a region or location name",
+        )
+    return value
+
+
 _DEEPGRAM_MULTI_MODEL = "flux-general-multi"
 
 
@@ -542,7 +562,7 @@ def _google_vertex_location(location: str | None, service: str) -> str:
     if resolved:
         # The resolved value is reported by the caller, on the same line as the
         # service being created - one decision, one line.
-        return resolved
+        return _host_label(resolved, f"Google Vertex {service} location")
 
     # Unset is the one case where nobody picked the endpoint, and the default
     # carries no residency commitment, so it gets a line of its own rather than
@@ -749,7 +769,9 @@ def create_stt_service(
     elif user_config.stt.provider == ServiceProviders.GOOGLE.value:
         plan = tuning_for(tuning, "stt", ServiceProviders.GOOGLE.value)
         language = getattr(user_config.stt, "language", None) or "en-US"
-        location = getattr(user_config.stt, "location", None) or "global"
+        location = _host_label(
+            getattr(user_config.stt, "location", None) or "global", "stt.location"
+        )
         credentials = getattr(user_config.stt, "credentials", None)
 
         settings_kwargs = {"model": user_config.stt.model}
@@ -1202,7 +1224,9 @@ def create_tts_service(
         language = getattr(user_config.tts, "language", None) or "en-US"
         voice = getattr(user_config.tts, "voice", None) or "en-US-Chirp3-HD-Charon"
         speed = getattr(user_config.tts, "speed", None)
-        location = getattr(user_config.tts, "location", None) or None
+        location = _host_label(
+            getattr(user_config.tts, "location", None) or None, "tts.location"
+        )
         credentials = getattr(user_config.tts, "credentials", None)
 
         settings_kwargs = {
