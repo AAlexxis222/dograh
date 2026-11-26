@@ -3,7 +3,14 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from functools import wraps
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlencode, urlparse, urlsplit, urlunparse, urlunsplit
+from urllib.parse import (
+    parse_qsl,
+    urlencode,
+    urlparse,
+    urlsplit,
+    urlunparse,
+    urlunsplit,
+)
 
 import aiohttp
 from fastapi import HTTPException
@@ -455,6 +462,22 @@ def _with_deepgram_privacy(ctor: Mapping[str, Any]) -> dict[str, Any]:
     return {**ctor, "mip_opt_out": True}
 
 
+def _validate_deepgram_url(url: str, field_name: str) -> None:
+    """The runtime URL check, and the URL may not carry its own ``mip_opt_out``.
+
+    pipecat appends its query after the given URL (deepgram/flux/stt.py:299),
+    so a ``mip_opt_out`` already in it goes on the wire before the fixed
+    ``true``. Other query parameters stay: a proxy URL may carry its own token.
+    """
+    _validate_runtime_service_url(url, field_name)
+    query = parse_qsl(urlsplit(url).query, keep_blank_values=True)
+    if any(name.lower() == "mip_opt_out" for name, _ in query):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} may not set mip_opt_out; the opt-out is fixed",
+        )
+
+
 def _deepgram_base_url(service_config) -> str:
     """Resolve the Deepgram endpoint for an STT or TTS config section.
 
@@ -471,7 +494,7 @@ def _deepgram_base_url(service_config) -> str:
     # TLS rather than reject a value that is obviously well intentioned.
     if "://" not in base_url:
         base_url = f"https://{base_url}"
-    _validate_runtime_service_url(base_url, "base_url")
+    _validate_deepgram_url(base_url, "base_url")
     return base_url.rstrip("/")
 
 
@@ -606,7 +629,7 @@ def create_stt_service(
                     _as_language(h) for h in settings.language_hints
                 ]
             if "url" in plan.ctor:
-                _validate_runtime_service_url(plan.ctor["url"], "stt.deepgram.ctor.url")
+                _validate_deepgram_url(plan.ctor["url"], "stt.deepgram.ctor.url")
 
             return DeepgramFluxSTTService(
                 api_key=user_config.stt.api_key,
