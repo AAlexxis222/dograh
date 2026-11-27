@@ -11,7 +11,9 @@ from api.services.managed_model_services import get_mps_correlation_id
 from api.services.pipecat.service_factory import (
     create_llm_service_from_provider,
     create_llm_service_with_model_override,
+    prewarm_config_service_urls,
 )
+from api.services.security.egress_guard import prewarm_service_urls
 from api.services.workflow.dto import QANodeData
 
 QA_USAGE_CONTEXT = "qa_analysis"
@@ -42,6 +44,7 @@ async def create_qa_llm_service(
             kwargs["endpoint"] = qa_data.qa_endpoint or ""
         # Custom OpenAI-compatible endpoints are supported only when QA reuses
         # the workflow LLM; the QA-specific endpoint field is Azure-only.
+        await prewarm_service_urls([url for url in kwargs.values() if url])
         llm = create_llm_service_from_provider(
             provider,
             model,
@@ -68,6 +71,7 @@ async def create_qa_llm_service(
         qa_data.qa_model if qa_data.qa_model and qa_data.qa_model != "default" else None
     )
     model = model_override or user_configuration.llm.model
+    await prewarm_config_service_urls(user_configuration)
     llm = create_llm_service_with_model_override(
         user_configuration,
         model_override,

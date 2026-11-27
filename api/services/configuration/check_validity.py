@@ -18,7 +18,12 @@ from api.services.configuration.registry import (
     ServiceProviders,
 )
 from api.services.mps_service_key_client import mps_service_key_client
-from api.services.security.egress_guard import check_service_url
+from api.services.security.egress_guard import (
+    SERVICE_URL_FIELDS,
+    check_service_url,
+    prewarm_service_urls,
+    service_config_urls,
+)
 
 AuthContext = TypedDict(
     "AuthContext",
@@ -103,6 +108,16 @@ class UserConfigurationValidator:
         }
         status_list = []
 
+        # The URL checks below are synchronous: resolve the hosts of the sections they validate off the event loop.
+        validated_sections = (
+            [configuration.llm, configuration.realtime]
+            if configuration.is_realtime
+            else [configuration.llm, configuration.stt, configuration.tts]
+        )
+        await prewarm_service_urls(
+            service_config_urls(*validated_sections, configuration.embeddings)
+        )
+
         status_list.extend(self._validate_service(configuration.llm, "llm"))
         if configuration.is_realtime:
             status_list.extend(
@@ -139,7 +154,7 @@ class UserConfigurationValidator:
 
         provider = service_config.provider
 
-        for url_field in ("base_url", "endpoint"):
+        for url_field in SERVICE_URL_FIELDS:
             url = getattr(service_config, url_field, None)
             if url:
                 try:

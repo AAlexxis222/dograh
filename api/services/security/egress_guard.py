@@ -5,12 +5,18 @@ the host off the event loop and returns an ``EgressTarget`` whose client is read
 address, redirects off, no env settings. Every refusal is a ``ToolUrlBlocked``, in both modes. Callers only choose
 the wording (field, hint) and map the refusal to their own result shape.
 ``check_service_url()`` is the synchronous entry point for the service URLs a tenant configures (model providers,
-embeddings, STT/TTS); it also admits ws and wss.
+embeddings, STT/TTS); it also admits ws and wss. Its lookups go through a short-lived cache that an async caller fills
+off the event loop with ``await prewarm_service_urls(...)`` before it builds the services.
 """
 
 import asyncio
+import contextlib
 import ipaddress
 import socket
+import threading
+import time
+from collections import OrderedDict
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,6 +44,14 @@ _SERVICE_HINT = (
 )
 _TOOL_SCHEMES = ("http", "https")
 _SERVICE_SCHEMES = ("http", "https", "ws", "wss")
+# The fields of a service config section that hold a URL the tenant set.
+SERVICE_URL_FIELDS = ("base_url", "endpoint")
+# How long a service host's DNS answer is reused, and how many hosts are kept.
+_RESOLUTION_TTL_SECONDS = 60.0
+_RESOLUTION_CACHE_SIZE = 256
+
+# What a lookup answered: the addresses, or None when the name could not be resolved.
+Resolution = tuple[str, ...] | None
 
 
 class ToolUrlBlocked(ValueError):
@@ -86,9 +100,69 @@ def _ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | No
         return None
 
 
+def _resolve(ascii_host: str, port: int) -> Resolution:
+    """Every address the name maps to, or None when it cannot be resolved. Blocking."""
+    try:
+        infos = socket.getaddrinfo(ascii_host, port, type=socket.SOCK_STREAM)
+    # UnicodeError: a label the IDNA codec refuses (too long, empty) fails before any lookup.
+    except (socket.gaierror, UnicodeError):
+        return None
+    return tuple(str(info[4][0]) for info in infos)
+
+
+class _ResolutionCache:
+    """What DNS answered for a (host, port), reused for a short TTL, LRU-bounded, thread-safe.
+
+    It lets the synchronous service URL check read an answer a thread fetched off the event loop. A failure is kept
+    too, so the check that follows a prewarm refuses it again without a second lookup on the loop. It stores answers,
+    never verdicts: every address is judged again on each check, and an expired entry is looked up again.
+    """
+
+    def __init__(
+        self,
+        ttl: float,
+        size: int,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self._ttl = ttl
+        self._size = size
+        self._clock = clock
+        self._entries: OrderedDict[tuple[str, int], tuple[float, Resolution]] = (
+            OrderedDict()
+        )
+        self._lock = threading.Lock()
+
+    def resolve(self, ascii_host: str, port: int) -> Resolution:
+        key = (ascii_host, port)
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is not None and entry[0] > self._clock():
+                self._entries.move_to_end(key)
+                return entry[1]
+        # Outside the lock: lookups of different hosts run in parallel.
+        resolution = _resolve(ascii_host, port)
+        with self._lock:
+            self._entries[key] = (self._clock() + self._ttl, resolution)
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._size:
+                self._entries.popitem(last=False)
+        return resolution
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+
+_service_resolutions = _ResolutionCache(_RESOLUTION_TTL_SECONDS, _RESOLUTION_CACHE_SIZE)
+
+
 def _url_addresses(
-    url: str | None, field: str, hint: str, schemes: tuple[str, ...]
-) -> tuple[str, list[str]]:
+    url: str | None,
+    field: str,
+    hint: str,
+    schemes: tuple[str, ...],
+    resolve: Callable[[str, int], Resolution],
+) -> tuple[str, tuple[str, ...]]:
     """Parse the URL the way the request will, and return its host with every address that host maps to."""
 
     def blocked(host: str, reason: str) -> ToolUrlBlocked:
@@ -115,14 +189,12 @@ def _url_addresses(
     if host in _INTERNAL_HOSTNAMES:
         raise blocked(host, "the host is an internal service name")
     if _ip_literal(host):
-        return host, [host]
+        return host, (host,)
     port = parsed.port or (443 if parsed.scheme in ("https", "wss") else 80)
-    try:
-        infos = socket.getaddrinfo(ascii_host, port, type=socket.SOCK_STREAM)
-    # UnicodeError: a label the IDNA codec refuses (too long, empty) fails before any lookup.
-    except (socket.gaierror, UnicodeError):
-        raise blocked(host, "the host name could not be resolved") from None
-    return host, [str(info[4][0]) for info in infos]
+    addresses = resolve(ascii_host, port)
+    if addresses is None:
+        raise blocked(host, "the host name could not be resolved")
+    return host, addresses
 
 
 def _check_url(
@@ -132,6 +204,7 @@ def _check_url(
     hint: str,
     legacy_check: bool,
     schemes: tuple[str, ...],
+    resolve: Callable[[str, int], Resolution] = _resolve,
 ) -> str | None:
     """The guard core shared by tool and service URLs; return the address the request must connect to, or None
     to connect as usual. Blocking: it resolves the host name.
@@ -150,7 +223,7 @@ def _check_url(
                     "(not checked)", str(e), field=field, hint=hint, enforced=False
                 ) from e
         return None
-    host, addresses = _url_addresses(url, field, hint, schemes)
+    host, addresses = _url_addresses(url, field, hint, schemes, resolve)
     if not addresses:
         raise ToolUrlBlocked(
             host, "the host name has no address", field=field, hint=hint
@@ -272,10 +345,11 @@ def _egress_target(url: str, address: str | None) -> EgressTarget:
 
 
 def check_service_url(url: str | None, *, field: str) -> EgressTarget:
-    """Guard a service URL (model providers, embeddings, STT/TTS endpoints) a tenant configured. Blocking.
+    """Guard a service URL (model providers, embeddings, STT/TTS endpoints) a tenant configured.
 
-    Same rules as ``check_tool_url`` with ws and wss admitted, for the providers that connect by websocket.
-    Guard off: the DEPLOYMENT_MODE check runs and the target is empty.
+    Same rules as ``check_tool_url`` with ws and wss admitted, for the providers that connect by websocket. Blocking
+    unless the host's answer is cached (``prewarm_service_urls``). Guard off: the DEPLOYMENT_MODE check runs and the
+    target is empty.
     """
     address = _check_url(
         url,
@@ -283,8 +357,37 @@ def check_service_url(url: str | None, *, field: str) -> EgressTarget:
         hint=_SERVICE_HINT,
         legacy_check=True,
         schemes=_SERVICE_SCHEMES,
+        resolve=_service_resolutions.resolve,
     )
     return _egress_target(url, address)
+
+
+def service_config_urls(*service_configs: Any) -> list[str]:
+    """The URLs (``SERVICE_URL_FIELDS``) the tenant set in these config sections; a None section is skipped."""
+    return [
+        url
+        for config in service_configs
+        if config is not None
+        for field in SERVICE_URL_FIELDS
+        if isinstance(url := getattr(config, field, None), str) and url
+    ]
+
+
+def _prewarm_one(url: str) -> None:
+    # A refused URL is not this step's to report: the synchronous check that follows refuses it from the cache.
+    with contextlib.suppress(ToolUrlBlocked):
+        check_service_url(url, field="url")
+
+
+async def prewarm_service_urls(urls: Iterable[str]) -> None:
+    """Resolve the hosts of these service URLs off the event loop, so the synchronous ``check_service_url`` calls
+    that follow read the answers from the cache. Every async caller awaits it before it builds services. Guard off:
+    nothing to resolve."""
+    if not url_guard_enforced():
+        return
+    await asyncio.gather(
+        *(asyncio.to_thread(_prewarm_one, url) for url in dict.fromkeys(urls))
+    )
 
 
 async def guard_egress(

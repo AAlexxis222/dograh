@@ -77,6 +77,7 @@ from api.services.pipecat.service_factory import (
     create_realtime_llm_service,
     create_stt_service,
     create_tts_service,
+    prewarm_config_service_urls,
     stt_uses_external_turns,
 )
 from api.services.pipecat.service_tuning import (
@@ -792,12 +793,14 @@ async def _run_pipeline_impl(
             get_effective_ai_model_configuration_for_workflow,
         )
 
-        user_config = await get_effective_ai_model_configuration_for_workflow(
-            organization_id=workflow.organization_id,
-            workflow_configurations=run_configs,
+        user_config = await prewarm_config_service_urls(
+            await get_effective_ai_model_configuration_for_workflow(
+                organization_id=workflow.organization_id,
+                workflow_configurations=run_configs,
+            )
         )
     else:
-        user_config = resolved_user_config
+        user_config = await prewarm_config_service_urls(resolved_user_config)
 
     workflow_graph = WorkflowGraph(
         ReactFlowDTO.model_validate(run_workflow_json),

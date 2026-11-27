@@ -11,6 +11,7 @@ from typing import Optional
 from loguru import logger
 
 from api.db.db_client import DBClient
+from api.services.security.egress_guard import prewarm_service_urls
 
 from .azure_openai_service import AzureOpenAIEmbeddingService
 from .base import BaseEmbeddingService
@@ -77,6 +78,8 @@ async def build_embedding_service(
     from api.services.configuration.registry import ServiceProviders
 
     model_id = model or DEFAULT_EMBEDDING_MODEL
+    # The service constructors check their URL synchronously; resolve its host off the event loop first.
+    await prewarm_service_urls([url for url in (base_url, endpoint) if url])
 
     if provider == ServiceProviders.AZURE.value and endpoint:
         return AzureOpenAIEmbeddingService(

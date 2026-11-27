@@ -32,6 +32,7 @@ from api.services.pipecat.recording_router_processor import RecordingRouterProce
 from api.services.pipecat.service_factory import (
     create_llm_service,
     create_tts_service,
+    prewarm_config_service_urls,
 )
 from api.services.pipecat.service_tuning import llm_tuning_applies
 from api.services.workflow.agent_runtime import AgentRuntime, new_visit_id
@@ -180,6 +181,7 @@ class AgentRuntimeFactory:
         )
 
         service_tuning = run_configs.get("service_tuning")
+        await prewarm_config_service_urls(user_config)
         llm = create_llm_service(
             user_config,
             correlation_id=self._mps_correlation_id,

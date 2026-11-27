@@ -79,7 +79,12 @@ from api.services.pipecat.service_tuning_specs import (
     grok_language_hint_at_build,
 )
 from api.services.pipecat.tts_cache.runtime import get_speech_cache
-from api.services.security.egress_guard import EgressTarget, check_service_url
+from api.services.security.egress_guard import (
+    EgressTarget,
+    check_service_url,
+    prewarm_service_urls,
+    service_config_urls,
+)
 from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAISTTSettings
 from pipecat.services.aws.llm import AWSBedrockLLMService, AWSBedrockLLMSettings
 from pipecat.services.azure.llm import AzureLLMService, AzureLLMSettings
@@ -336,6 +341,25 @@ def _validate_runtime_service_url(url: str, field_name: str) -> EgressTarget:
         return check_service_url(url, field=field_name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+async def prewarm_config_service_urls(user_config):
+    """Resolve, off the event loop, the hosts of the service URLs this configuration sets, and return it.
+
+    The create_*_service functions are synchronous and check every URL they build with; awaited before them, this
+    lets that check read the host's answer from the guard's cache instead of a blocking lookup on the loop the live
+    calls share. A section the configuration lacks is skipped. Returning the configuration lets a caller resolve it
+    where it obtains it.
+    """
+    await prewarm_service_urls(
+        service_config_urls(
+            *(
+                getattr(user_config, section, None)
+                for section in ("llm", "stt", "tts", "realtime")
+            )
+        )
+    )
+    return user_config
 
 
 # Partition prefixes are not always two letters: the European Sovereign Cloud

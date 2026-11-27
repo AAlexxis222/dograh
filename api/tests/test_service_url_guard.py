@@ -21,6 +21,7 @@ from api.services.configuration.registry import (
 from api.services.gen_ai.embedding.azure_openai_service import AzureOpenAIEmbeddingService
 from api.services.gen_ai.embedding.openai_service import OpenAIEmbeddingService
 from api.services.pipecat.service_factory import create_llm_service_from_provider
+from api.services.security import egress_guard
 from api.services.security.egress_guard import (
     EgressTarget,
     ToolUrlBlocked,
@@ -230,3 +231,79 @@ def test_validator_key_check_is_pinned_to_the_validated_address(enforced, monkey
     # red today: the SDK resolves the name again and follows the 302 to 169.254.169.254
     assert [request.url.host for request in wire.requests] == [PUBLIC_IP]
     assert len(result) == 1  # the unfollowed redirect is an error, not a valid key
+
+
+# --- the resolution cache: answers, never verdicts ---
+
+
+class _Resolver:
+    """A DNS that answers what the test sets, counting lookups; None makes the lookup fail."""
+
+    def __init__(self, monkeypatch, address):
+        self.address = address
+        self.lookups = 0
+        monkeypatch.setattr("socket.getaddrinfo", self)
+
+    def __call__(self, host, port, *a, **k):
+        self.lookups += 1
+        if self.address is None:
+            raise socket.gaierror(socket.EAI_AGAIN, "temporary failure")
+        return [(socket.AF_INET, 1, 6, "", (self.address, port))]
+
+
+def _clock(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(egress_guard._service_resolutions, "_clock", lambda: now[0])
+    return now
+
+
+def test_a_host_that_turns_internal_is_refused_once_its_entry_expires(
+    enforced, monkeypatch
+):
+    now = _clock(monkeypatch)
+    dns = _Resolver(monkeypatch, PUBLIC_IP)
+    check_service_url("https://llm.example.com/v1", field="base_url")
+    dns.address = "10.0.0.10"
+    now[0] += egress_guard._RESOLUTION_TTL_SECONDS - 1
+    check_service_url("https://llm.example.com/v1", field="base_url")  # cached answer
+    assert dns.lookups == 1
+    now[0] += 2
+    with pytest.raises(ToolUrlBlocked, match="internal address"):
+        check_service_url("https://llm.example.com/v1", field="base_url")
+    assert dns.lookups == 2
+
+
+def test_a_failed_lookup_is_cached_and_refused_again(enforced, monkeypatch):
+    _clock(monkeypatch)
+    dns = _Resolver(monkeypatch, None)
+    for _ in range(2):
+        with pytest.raises(ToolUrlBlocked, match="could not be resolved"):
+            check_service_url("https://llm.example.com/v1", field="base_url")
+    assert dns.lookups == 1
+
+
+def test_the_cache_keeps_at_most_its_bound(enforced, monkeypatch):
+    _Resolver(monkeypatch, PUBLIC_IP)
+    for i in range(egress_guard._RESOLUTION_CACHE_SIZE + 1):
+        check_service_url(f"https://h{i}.example.com", field="base_url")
+    entries = egress_guard._service_resolutions._entries
+    assert len(entries) == egress_guard._RESOLUTION_CACHE_SIZE
+    assert ("h0.example.com", 443) not in entries  # the least recently used went
+
+
+async def test_prewarm_swallows_a_refusal_and_the_check_reports_it(
+    enforced, monkeypatch
+):
+    dns = _Resolver(monkeypatch, "10.0.0.10")
+    await egress_guard.prewarm_service_urls(["https://llm.example.com/v1"])
+    with pytest.raises(ToolUrlBlocked, match="internal address"):
+        check_service_url("https://llm.example.com/v1", field="base_url")
+    assert dns.lookups == 1
+
+
+async def test_prewarm_with_the_guard_off_resolves_nothing(monkeypatch):
+    monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
+    dns = _Resolver(monkeypatch, PUBLIC_IP)
+    await egress_guard.prewarm_service_urls(["https://llm.example.com/v1"])
+    assert dns.lookups == 0
+    assert egress_guard._service_resolutions._entries == {}
