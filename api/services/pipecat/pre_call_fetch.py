@@ -30,6 +30,31 @@ _URL_HINT = (
 )
 
 
+def _log_config_failure(
+    code: str,
+    internal_message: str,
+    external_message: str,
+    *,
+    organization_id: int,
+    workflow_id: int,
+) -> None:
+    """Log a pre-call fetch failure the tenant's configuration caused (user-owned, not retryable)."""
+    log_failure(
+        DograhFailure(
+            source=ErrorSource.INTEGRATION,
+            type=ErrorType.CONFIG_ERROR,
+            code=code,
+            internal_message=internal_message,
+            external_message=external_message,
+            provider="pre-call-fetch",
+            error_owner="user",
+            retryable=False,
+        ),
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+    )
+
+
 def _extract_initial_context(response_data: Dict[str, Any]) -> Dict[str, Any]:
     """Pull the context variables out of a pre-call fetch response.
 
@@ -93,17 +118,10 @@ async def execute_pre_call_fetch(
             if credential:
                 headers.update(build_auth_header(credential))
             else:
-                log_failure(
-                    DograhFailure(
-                        source=ErrorSource.INTEGRATION,
-                        type=ErrorType.CONFIG_ERROR,
-                        code="pre-call-fetch-credential-not-found",
-                        internal_message="Pre-call fetch credential was not found",
-                        external_message="The credential configured for pre-call fetch no longer exists.",
-                        provider="pre-call-fetch",
-                        error_owner="user",
-                        retryable=False,
-                    ),
+                _log_config_failure(
+                    "pre-call-fetch-credential-not-found",
+                    "Pre-call fetch credential was not found",
+                    "The credential configured for pre-call fetch no longer exists.",
                     organization_id=organization_id,
                     workflow_id=workflow_id,
                 )
@@ -139,17 +157,10 @@ async def execute_pre_call_fetch(
 
             if response.is_success:
                 if not isinstance(response_data, dict):
-                    log_failure(
-                        DograhFailure(
-                            source=ErrorSource.INTEGRATION,
-                            type=ErrorType.CONFIG_ERROR,
-                            code="pre-call-fetch-invalid-response",
-                            internal_message="Pre-call fetch response was not a JSON object",
-                            external_message="The pre-call fetch endpoint returned an invalid response.",
-                            provider="pre-call-fetch",
-                            error_owner="user",
-                            retryable=False,
-                        ),
+                    _log_config_failure(
+                        "pre-call-fetch-invalid-response",
+                        "Pre-call fetch response was not a JSON object",
+                        "The pre-call fetch endpoint returned an invalid response.",
                         organization_id=organization_id,
                         workflow_id=workflow_id,
                     )
@@ -181,17 +192,10 @@ async def execute_pre_call_fetch(
                 return {}
 
     except ToolUrlBlocked as e:
-        log_failure(
-            DograhFailure(
-                source=ErrorSource.INTEGRATION,
-                type=ErrorType.CONFIG_ERROR,
-                code="pre-call-fetch-url-blocked",
-                internal_message=str(e),
-                external_message=f"The pre-call fetch URL was refused: {e.reason}. {e.hint}",
-                provider="pre-call-fetch",
-                error_owner="user",
-                retryable=False,
-            ),
+        _log_config_failure(
+            "pre-call-fetch-url-blocked",
+            str(e),
+            f"The pre-call fetch URL was refused: {e.reason}. {e.hint}",
             organization_id=organization_id,
             workflow_id=workflow_id,
         )
