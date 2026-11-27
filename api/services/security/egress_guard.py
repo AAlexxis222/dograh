@@ -48,6 +48,9 @@ _SERVICE_SCHEMES = ("http", "https", "ws", "wss")
 SERVICE_URL_FIELDS = ("base_url", "endpoint")
 # How long a service host's DNS answer is reused, and how many hosts are kept.
 _RESOLUTION_TTL_SECONDS = 60.0
+# A failure is kept only long enough to cover the burst of checks that follows a prewarm, so a resolver hiccup
+# does not refuse a host for a full minute.
+_FAILED_RESOLUTION_TTL_SECONDS = 5.0
 _RESOLUTION_CACHE_SIZE = 256
 
 # A failed lookup may be a resolver hiccup: the refusal says so instead of reading like a bad configuration.
@@ -119,17 +122,19 @@ class _ResolutionCache:
     """What DNS answered for a (host, port), reused for a short TTL, LRU-bounded, thread-safe.
 
     It lets the synchronous service URL check read an answer a thread fetched off the event loop. A failure is kept
-    too, so the check that follows a prewarm refuses it again without a second lookup on the loop. It stores answers,
+    too, for a shorter TTL, so the check that follows a prewarm refuses it again without a second lookup on the loop. It stores answers,
     never verdicts: every address is judged again on each check, and an expired entry is looked up again.
     """
 
     def __init__(
         self,
         ttl: float,
+        failure_ttl: float,
         size: int,
         clock: Callable[[], float] = time.monotonic,
     ):
         self._ttl = ttl
+        self._failure_ttl = failure_ttl
         self._size = size
         self._clock = clock
         self._entries: OrderedDict[tuple[str, int], tuple[float, Resolution]] = (
@@ -147,7 +152,8 @@ class _ResolutionCache:
         # Outside the lock: lookups of different hosts run in parallel.
         resolution = _resolve(ascii_host, port)
         with self._lock:
-            self._entries[key] = (self._clock() + self._ttl, resolution)
+            ttl = self._failure_ttl if resolution is None else self._ttl
+            self._entries[key] = (self._clock() + ttl, resolution)
             self._entries.move_to_end(key)
             while len(self._entries) > self._size:
                 self._entries.popitem(last=False)
@@ -158,7 +164,9 @@ class _ResolutionCache:
             self._entries.clear()
 
 
-_service_resolutions = _ResolutionCache(_RESOLUTION_TTL_SECONDS, _RESOLUTION_CACHE_SIZE)
+_service_resolutions = _ResolutionCache(
+    _RESOLUTION_TTL_SECONDS, _FAILED_RESOLUTION_TTL_SECONDS, _RESOLUTION_CACHE_SIZE
+)
 
 
 def _url_addresses(
