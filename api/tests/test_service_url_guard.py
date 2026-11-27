@@ -356,3 +356,25 @@ def test_a_blank_service_url_has_no_host(enforced):
     with pytest.raises(ToolUrlBlocked) as e:
         check_service_url("   ", field="base_url")
     assert e.value.reason == "the URL has no host"
+
+
+def test_a_failure_entry_expires_after_5_s_while_a_success_is_still_served(
+    enforced, monkeypatch
+):
+    now = _clock(monkeypatch)
+    dns = _Resolver(monkeypatch, PUBLIC_IP)
+    check_service_url("https://ok.example.com", field="base_url")
+    dns.address = None
+    with pytest.raises(ToolUrlBlocked):
+        check_service_url("https://flaky.example.com", field="base_url")
+    now[0] += 4
+    with pytest.raises(ToolUrlBlocked):  # a burst within 5 s does not look up again
+        check_service_url("https://flaky.example.com", field="base_url")
+    assert dns.lookups == 2
+    dns.address = PUBLIC_IP
+    now[0] += 2  # 6 s after the failure: the failure expired, the success did not
+    check_service_url("https://flaky.example.com", field="base_url")
+    check_service_url("https://ok.example.com", field="base_url")
+    assert (
+        dns.lookups == 3
+    )  # red today: failures live 60 s, the flaky host stays refused
