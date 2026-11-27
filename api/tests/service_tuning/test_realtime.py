@@ -25,6 +25,7 @@ from api.services.pipecat.service_factory import (
     create_stt_service,
 )
 from api.services.pipecat.service_tuning_specs import SPECS
+from api.services.security.egress_guard import EgressTarget
 from api.tests.service_tuning._transport import audio_config, user_config_stt
 
 
@@ -347,11 +348,11 @@ def test_openai_realtime_stt_rejects_a_base_url_that_is_not_openai_shaped():
 
 
 def test_openai_realtime_stt_derived_url_goes_through_the_egress_guard(monkeypatch):
-    monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "saas")
     seen = []
+    # The factory's own seam: independent of the guard's mode (URL_GUARD_ENFORCE, DEPLOYMENT_MODE).
     monkeypatch.setattr(
-        "api.services.security.egress_guard.validate_user_configured_service_url",
-        lambda url, *, field_name: seen.append(url),
+        "api.services.pipecat.service_factory.check_service_url",
+        lambda url, *, field: seen.append(url) or EgressTarget(),
     )
     _openai_realtime_stt("https://proxy.example/v1")
     assert "wss://proxy.example/v1/realtime" in seen
