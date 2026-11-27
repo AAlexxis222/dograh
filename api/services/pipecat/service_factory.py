@@ -79,7 +79,7 @@ from api.services.pipecat.service_tuning_specs import (
     grok_language_hint_at_build,
 )
 from api.services.pipecat.tts_cache.runtime import get_speech_cache
-from api.utils.url_security import validate_user_configured_service_url
+from api.services.security.egress_guard import EgressTarget, check_service_url
 from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAISTTSettings
 from pipecat.services.aws.llm import AWSBedrockLLMService, AWSBedrockLLMSettings
 from pipecat.services.azure.llm import AzureLLMService, AzureLLMSettings
@@ -331,12 +331,9 @@ class DograhGoogleVertexLLMService(GoogleVertexLLMService):
     adapter_class = DograhGeminiJSONSchemaAdapter
 
 
-def _validate_runtime_service_url(url: str, field_name: str) -> None:
+def _validate_runtime_service_url(url: str, field_name: str) -> EgressTarget:
     try:
-        validate_user_configured_service_url(
-            url,
-            field_name=field_name,
-        )
+        return check_service_url(url, field=field_name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 

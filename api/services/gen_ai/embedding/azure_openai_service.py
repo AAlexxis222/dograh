@@ -11,7 +11,7 @@ from loguru import logger
 from openai import AsyncAzureOpenAI
 
 from api.db.db_client import DBClient
-from api.utils.url_security import validate_user_configured_service_url
+from api.services.security.egress_guard import check_service_url
 
 from .base import BaseEmbeddingService
 
@@ -55,7 +55,7 @@ class AzureOpenAIEmbeddingService(BaseEmbeddingService):
 
         self._configured = bool(api_key and endpoint)
         if self._configured:
-            validate_user_configured_service_url(endpoint, field_name="endpoint")
+            check_service_url(endpoint, field="endpoint")
             self.client = AsyncAzureOpenAI(
                 api_key=api_key,
                 azure_endpoint=endpoint,

@@ -30,6 +30,12 @@ _DEFAULT_HINT = (
     "point it at a public http(s) endpoint: private, loopback, link-local and internal "
     "service addresses are not reachable"
 )
+_SERVICE_HINT = (
+    "point it at a public http(s) or ws(s) endpoint: private, loopback, link-local and internal "
+    "service addresses are not reachable"
+)
+_TOOL_SCHEMES = ("http", "https")
+_SERVICE_SCHEMES = ("http", "https", "ws", "wss")
 
 
 class ToolUrlBlocked(ValueError):
@@ -78,12 +84,16 @@ def _ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | No
         return None
 
 
-def _tool_url_addresses(url: str, field: str, hint: str) -> tuple[str, list[str]]:
+def _tool_url_addresses(
+    url: str | None, field: str, hint: str, schemes: tuple[str, ...]
+) -> tuple[str, list[str]]:
     """Parse the URL the way the request will, and return its host with every address that host maps to."""
 
     def blocked(host: str, reason: str) -> ToolUrlBlocked:
         return ToolUrlBlocked(host, reason, field=field, hint=hint)
 
+    if not url:
+        raise blocked("(none)", "the URL has no host")
     try:
         parsed = httpx.URL(url)
         # httpx decodes punycode when the host is read: an invalid A-label raises IDNAError (a UnicodeError) here.
@@ -93,9 +103,10 @@ def _tool_url_addresses(url: str, field: str, hint: str) -> tuple[str, list[str]
         ascii_host = parsed.raw_host.decode("ascii").rstrip(".")
     except (httpx.InvalidURL, UnicodeError):
         raise blocked("(unparseable)", "the URL cannot be parsed") from None
-    if parsed.scheme not in ("http", "https"):
+    if parsed.scheme not in schemes:
         raise blocked(
-            host or "(none)", f"scheme '{parsed.scheme}' is not http or https"
+            host or "(none)",
+            f"scheme '{parsed.scheme}' is not one of {', '.join(schemes)}",
         )
     if not host:
         raise blocked("(none)", "the URL has no host (expected http(s)://host/...)")
@@ -103,7 +114,7 @@ def _tool_url_addresses(url: str, field: str, hint: str) -> tuple[str, list[str]
         raise blocked(host, "the host is an internal service name")
     if _ip_literal(host):
         return host, [host]
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    port = parsed.port or (443 if parsed.scheme in ("https", "wss") else 80)
     try:
         infos = socket.getaddrinfo(ascii_host, port, type=socket.SOCK_STREAM)
     # UnicodeError: a label the IDNA codec refuses (too long, empty) fails before any lookup.
@@ -113,11 +124,12 @@ def _tool_url_addresses(url: str, field: str, hint: str) -> tuple[str, list[str]
 
 
 def check_tool_url(
-    url: str,
+    url: str | None,
     *,
     field: str = "url",
     hint: str = _DEFAULT_HINT,
     legacy_check: bool = True,
+    schemes: tuple[str, ...] = _TOOL_SCHEMES,
 ) -> str | None:
     """Guard a URL; return the address the request must connect to, or None to connect as usual. Blocking: it
     resolves the host name (guard_egress runs it off the event loop).
@@ -136,7 +148,7 @@ def check_tool_url(
                     "(not checked)", str(e), field=field, hint=hint, enforced=False
                 ) from e
         return None
-    host, addresses = _tool_url_addresses(url, field, hint)
+    host, addresses = _tool_url_addresses(url, field, hint, schemes)
     if not addresses:
         raise ToolUrlBlocked(
             host, "the host name has no address", field=field, hint=hint
@@ -236,6 +248,25 @@ class EgressTarget:
         )
 
 
+def _egress_target(url: str, address: str | None) -> EgressTarget:
+    """The target for a checked URL: no address (guard off) is the empty target."""
+    if address is None:
+        return EgressTarget()
+    return EgressTarget(httpx.URL(url).raw_host.decode("ascii"), address)
+
+
+def check_service_url(url: str | None, *, field: str) -> EgressTarget:
+    """Guard a service URL (model providers, embeddings, STT/TTS endpoints) a tenant configured. Blocking.
+
+    Same rules as ``check_tool_url`` with ws and wss admitted, for the providers that connect by websocket.
+    Guard off: the DEPLOYMENT_MODE check runs and the target is empty.
+    """
+    address = check_tool_url(
+        url, field=field, hint=_SERVICE_HINT, schemes=_SERVICE_SCHEMES
+    )
+    return _egress_target(url, address)
+
+
 async def guard_egress(
     url: str, *, field: str, hint: str, legacy_check: bool = True
 ) -> EgressTarget:
@@ -243,6 +274,4 @@ async def guard_egress(
     address = await asyncio.to_thread(
         check_tool_url, url, field=field, hint=hint, legacy_check=legacy_check
     )
-    if address is None:
-        return EgressTarget()
-    return EgressTarget(httpx.URL(url).raw_host.decode("ascii"), address)
+    return _egress_target(url, address)

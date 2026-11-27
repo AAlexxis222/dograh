@@ -18,7 +18,7 @@ from api.services.configuration.registry import (
     ServiceProviders,
 )
 from api.services.mps_service_key_client import mps_service_key_client
-from api.utils.url_security import validate_user_configured_service_url
+from api.services.security.egress_guard import check_service_url
 
 AuthContext = TypedDict(
     "AuthContext",
@@ -143,10 +143,7 @@ class UserConfigurationValidator:
             url = getattr(service_config, url_field, None)
             if url:
                 try:
-                    validate_user_configured_service_url(
-                        url,
-                        field_name=url_field,
-                    )
+                    check_service_url(url, field=url_field)
                 except ValueError as e:
                     return [{"model": service_name, "message": str(e)}]
 

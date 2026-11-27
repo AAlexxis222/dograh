@@ -11,7 +11,7 @@ from loguru import logger
 from openai import AsyncOpenAI
 
 from api.db.db_client import DBClient
-from api.utils.url_security import validate_user_configured_service_url
+from api.services.security.egress_guard import check_service_url
 
 from .base import BaseEmbeddingService
 
@@ -56,10 +56,7 @@ class OpenAIEmbeddingService(BaseEmbeddingService):
         if self._api_key_configured:
             client_kwargs = {"api_key": api_key}
             if base_url:
-                validate_user_configured_service_url(
-                    base_url,
-                    field_name="base_url",
-                )
+                check_service_url(base_url, field="base_url")
                 client_kwargs["base_url"] = base_url
             if default_headers:
                 client_kwargs["default_headers"] = default_headers

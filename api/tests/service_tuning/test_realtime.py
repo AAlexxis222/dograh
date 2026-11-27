@@ -350,7 +350,7 @@ def test_openai_realtime_stt_derived_url_goes_through_the_egress_guard(monkeypat
     monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "saas")
     seen = []
     monkeypatch.setattr(
-        "api.services.pipecat.service_factory.validate_user_configured_service_url",
+        "api.services.security.egress_guard.validate_user_configured_service_url",
         lambda url, *, field_name: seen.append(url),
     )
     _openai_realtime_stt("https://proxy.example/v1")
