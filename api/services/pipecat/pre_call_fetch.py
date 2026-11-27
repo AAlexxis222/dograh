@@ -19,10 +19,15 @@ from api.errors.failure import (
     log_failure,
     redact_failure_message,
 )
+from api.services.security.egress_guard import ToolUrlBlocked, guard_egress
 from api.services.workflow.initial_context import merge_external_initial_context
 from api.utils.credential_auth import build_auth_header
 
 PRE_CALL_FETCH_TIMEOUT_SECONDS = 10
+_URL_HINT = (
+    "point the pre-call fetch URL at a public http(s) endpoint: private, loopback, "
+    "link-local and internal service addresses are not reachable"
+)
 
 
 def _extract_initial_context(response_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -117,7 +122,14 @@ async def execute_pre_call_fetch(
     logger.info(f"Pre-call fetch: POST {redact_failure_message(url)}")
 
     try:
-        async with httpx.AsyncClient(timeout=PRE_CALL_FETCH_TIMEOUT_SECONDS) as client:
+        # The tenant sets this URL: the guard decides where the request may go (this path never had the
+        # DEPLOYMENT_MODE check, so with the guard off it connects as before).
+        target = await guard_egress(
+            url, field="pre_call_fetch_url", hint=_URL_HINT, legacy_check=False
+        )
+        async with target.httpx_client(
+            timeout=PRE_CALL_FETCH_TIMEOUT_SECONDS
+        ) as client:
             response = await client.post(url, headers=headers, json=payload)
 
             try:
@@ -168,6 +180,22 @@ async def execute_pre_call_fetch(
                 )
                 return {}
 
+    except ToolUrlBlocked as e:
+        log_failure(
+            DograhFailure(
+                source=ErrorSource.INTEGRATION,
+                type=ErrorType.CONFIG_ERROR,
+                code="pre-call-fetch-url-blocked",
+                internal_message=str(e),
+                external_message=f"The pre-call fetch URL was refused: {e.reason}. {e.hint}",
+                provider="pre-call-fetch",
+                error_owner="user",
+                retryable=False,
+            ),
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+        )
+        return {}
     except httpx.TimeoutException as e:
         log_failure(
             classify_exception(

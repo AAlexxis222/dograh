@@ -813,10 +813,39 @@ async def _pre_call_fetch(monkeypatch, url):
 async def test_pre_call_fetch_to_an_internal_target_never_leaves_the_platform(
     enforced, monkeypatch
 ):
-    wire = Wire(lambda request: httpx.Response(200, json={"initial_context": {"leak": "x"}}))
+    wire = Wire(
+        lambda request: httpx.Response(200, json={"initial_context": {"leak": "x"}})
+    )
     wire.patch(monkeypatch)
     result, failures = await _pre_call_fetch(monkeypatch, IMDS)
     assert wire.requests == []  # red today: the POST reaches 169.254.169.254
     assert result == {}  # the call goes on without the fetched context
     (failure,) = failures
-    assert failure.error_owner == "user" and "tool_url_blocked" in failure.internal_message
+    assert (
+        failure.error_owner == "user" and "tool_url_blocked" in failure.internal_message
+    )
+
+
+async def test_pre_call_fetch_to_a_public_host_is_pinned_to_the_validated_ip(
+    enforced, monkeypatch
+):
+    wire = Wire(lambda request: httpx.Response(200, json={"initial_context": {"a": 1}}))
+    wire.patch(monkeypatch)
+    result, failures = await _pre_call_fetch(monkeypatch, "https://crm.example.com/ctx")
+    assert result == {"a": 1} and failures == []
+    (request,) = wire.requests
+    assert request.url.host == PUBLIC_IP
+    assert request.headers["host"] == "crm.example.com"
+
+
+async def test_pre_call_fetch_flag_off_sends_the_request_as_today(monkeypatch):
+    monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
+    wire = Wire()
+    wire.patch(monkeypatch)
+    result, failures = await _pre_call_fetch(monkeypatch, IMDS)
+    assert result == {} and failures == []
+    (request,) = wire.requests
+    assert str(request.url) == IMDS
+    # The client today's code built: timeout 10, redirects off (httpx's default), no pinned transport.
+    (kw,) = wire.clients
+    assert kw == {"follow_redirects": False, "timeout": 10}
