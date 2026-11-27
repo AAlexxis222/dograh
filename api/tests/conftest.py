@@ -8,6 +8,7 @@ the root api/conftest.py. This module provides lightweight, non-DB fixtures:
 """
 
 import asyncio
+import socket
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 from unittest.mock import AsyncMock, Mock, patch
@@ -741,3 +742,28 @@ async def fake_redis_clock(redis_client):
     await clock.advance(0)
     yield clock
     await redis_client.delete(clock.key)
+
+
+# --- egress URL guard (test_tool_url_guard.py, test_service_url_guard.py opt in) ---
+
+# The address every name resolves to under public_dns; the guard tests assert on the same literal.
+EGRESS_PUBLIC_IP = "93.184.216.34"
+
+
+@pytest.fixture
+def public_dns(monkeypatch):
+    """No real DNS: every name resolves to one public address unless the test says otherwise."""
+    monkeypatch.setattr(
+        "socket.getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, 1, 6, "", (EGRESS_PUBLIC_IP, 443))],
+    )
+
+
+@pytest.fixture
+def enforced(monkeypatch):
+    """The cell's setting: URL_GUARD_ENFORCE=true with DEPLOYMENT_MODE=oss.
+
+    DEPLOYMENT_MODE is patched where url_security reads it (api.constants binds it at import), not set in the env.
+    """
+    monkeypatch.setenv("URL_GUARD_ENFORCE", "true")
+    monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "oss")

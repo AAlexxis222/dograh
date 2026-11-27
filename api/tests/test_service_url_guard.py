@@ -19,22 +19,10 @@ from api.services.security.egress_guard import (
     check_tool_url,
 )
 
-PUBLIC_IP = "93.184.216.34"
+PUBLIC_IP = "93.184.216.34"  # what conftest's public_dns resolves every name to
 KEY = token_hex(12)  # generated per run
 
-
-@pytest.fixture(autouse=True)
-def public_dns(monkeypatch):
-    monkeypatch.setattr(
-        "socket.getaddrinfo",
-        lambda *a, **k: [(socket.AF_INET, 1, 6, "", (PUBLIC_IP, 443))],
-    )
-
-
-@pytest.fixture
-def enforced(monkeypatch):
-    monkeypatch.setenv("URL_GUARD_ENFORCE", "true")
-    monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "oss")  # the cell's mode
+pytestmark = pytest.mark.usefixtures("public_dns")
 
 
 @pytest.mark.parametrize(

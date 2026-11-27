@@ -23,7 +23,7 @@ from api.services.workflow.tools.transfer_resolver import (
 )
 
 REAL_GETADDRINFO = socket.getaddrinfo
-PUBLIC_IP = "93.184.216.34"
+PUBLIC_IP = "93.184.216.34"  # what conftest's public_dns resolves every name to
 PUBLIC_IPV6 = "2606:4700::1111"
 IMDS = "http://169.254.169.254/latest/meta-data/"
 # An invalid A-label: httpx parses the URL and raises IDNAError only when the host is read.
@@ -37,16 +37,7 @@ def _addrinfo(*ips):
     ]
 
 
-@pytest.fixture(autouse=True)
-def public_dns(monkeypatch):
-    """No real DNS: every name resolves to a public address unless the test says otherwise."""
-    monkeypatch.setattr("socket.getaddrinfo", lambda *a, **k: _addrinfo(PUBLIC_IP))
-
-
-@pytest.fixture
-def enforced(monkeypatch):
-    monkeypatch.setenv("URL_GUARD_ENFORCE", "true")
-    monkeypatch.setenv("DEPLOYMENT_MODE", "oss")
+pytestmark = pytest.mark.usefixtures("public_dns")
 
 
 def _tool(url, method="GET"):
@@ -99,9 +90,7 @@ class Wire:
         "http://localhost/",
     ],
 )
-def test_blocked_when_enforced_even_in_oss_mode(monkeypatch, url):
-    monkeypatch.setenv("URL_GUARD_ENFORCE", "true")
-    monkeypatch.setenv("DEPLOYMENT_MODE", "oss")
+def test_blocked_when_enforced_even_in_oss_mode(enforced, url):
     with pytest.raises(ToolUrlBlocked) as e:
         check_tool_url(url)
     assert e.value.code == "tool_url_blocked" and e.value.hint
