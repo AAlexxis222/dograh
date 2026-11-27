@@ -307,3 +307,30 @@ async def test_prewarm_with_the_guard_off_resolves_nothing(monkeypatch):
     await egress_guard.prewarm_service_urls(["https://llm.example.com/v1"])
     assert dns.lookups == 0
     assert egress_guard._service_resolutions._entries == {}
+
+
+# --- the guard judges the URL the client will use (review r1, bf601ab39259, aa5d2aac9673) ---
+
+
+@pytest.mark.parametrize(
+    "url, host",
+    [
+        ("api.eu.deepgram.com", "api.eu.deepgram.com"),  # Deepgram's documented regional switch
+        ("api.eu.residency.elevenlabs.io", "api.eu.residency.elevenlabs.io"),
+        (" https://api.elevenlabs.io ", "api.elevenlabs.io"),
+    ],
+)
+def test_a_bare_or_padded_service_host_is_checked_as_https(enforced, url, host):
+    assert check_service_url(url, field="base_url") == EgressTarget(host, PUBLIC_IP)
+
+
+@pytest.mark.parametrize("url", ["redis", "10.0.0.10", " localhost:11434 "])
+def test_a_bare_internal_host_is_still_refused(enforced, url):
+    with pytest.raises(ToolUrlBlocked):
+        check_service_url(url, field="base_url")
+
+
+def test_a_blank_service_url_has_no_host(enforced):
+    with pytest.raises(ToolUrlBlocked) as e:
+        check_service_url("   ", field="base_url")
+    assert e.value.reason == "the URL has no host"

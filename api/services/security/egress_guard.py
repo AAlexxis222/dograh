@@ -385,8 +385,10 @@ def check_service_url(url: str | None, *, field: str) -> EgressTarget:
 
     Same rules as ``check_tool_url`` with ws and wss admitted, for the providers that connect by websocket. Blocking
     unless the host's answer is cached (``prewarm_service_urls``). Guard off: the DEPLOYMENT_MODE check runs and the
-    target is empty.
+    target is empty. Enforced, a bare host or a padded value is judged as the client will use it (``_as_client_url``).
     """
+    if url_guard_enforced():
+        url = _as_client_url(url)
     address = _check_url(
         url,
         field=field,
@@ -396,6 +398,15 @@ def check_service_url(url: str | None, *, field: str) -> EgressTarget:
         resolve=_service_resolutions.resolve,
     )
     return _egress_target(url, address)
+
+
+def _as_client_url(url: str | None) -> str:
+    """The URL a service client connects to: surrounding blanks dropped and, with no scheme, https assumed (what
+    the factory's Deepgram and ElevenLabs normalisers do), so the validator and the factory judge the same URL."""
+    url = (url or "").strip()
+    if url and "://" not in url:
+        return f"https://{url}"
+    return url
 
 
 def service_config_urls(*service_configs: Any) -> list[str]:
