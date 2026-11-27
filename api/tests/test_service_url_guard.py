@@ -18,7 +18,9 @@ from api.services.configuration.registry import (
     SpeachesSTTConfiguration,
     SpeachesTTSConfiguration,
 )
-from api.services.gen_ai.embedding.azure_openai_service import AzureOpenAIEmbeddingService
+from api.services.gen_ai.embedding.azure_openai_service import (
+    AzureOpenAIEmbeddingService,
+)
 from api.services.gen_ai.embedding.openai_service import OpenAIEmbeddingService
 from api.services.pipecat.service_factory import create_llm_service_from_provider
 from api.services.security import egress_guard
@@ -48,7 +50,9 @@ pytestmark = pytest.mark.usefixtures("public_dns")
     ],
 )
 def test_factory_refuses_internal_base_url_in_a_cell(enforced, url):
-    with pytest.raises(HTTPException) as e:  # red today: DID NOT RAISE (oss returns early)
+    with pytest.raises(
+        HTTPException
+    ) as e:  # red today: DID NOT RAISE (oss returns early)
         create_llm_service_from_provider(
             provider=ServiceProviders.OPENAI.value,
             model="gpt-4.1",
@@ -62,11 +66,15 @@ def test_validator_refuses_internal_url_in_a_cell(enforced):
     result = UserConfigurationValidator()._validate_service(
         SpeachesLLMConfiguration(), "llm"
     )
-    assert len(result) == 1 and "tool_url_blocked" in result[0]["message"]  # red today: result == []
+    assert (
+        len(result) == 1 and "tool_url_blocked" in result[0]["message"]
+    )  # red today: result == []
 
 
 def test_embeddings_refuse_internal_url_in_a_cell(enforced):
-    with pytest.raises(ValueError, match="tool_url_blocked"):  # red today: DID NOT RAISE
+    with pytest.raises(
+        ValueError, match="tool_url_blocked"
+    ):  # red today: DID NOT RAISE
         OpenAIEmbeddingService(
             db_client=SimpleNamespace(), api_key=KEY, base_url="http://10.0.0.10/v1"
         )
@@ -87,7 +95,9 @@ def test_azure_embeddings_keep_internal_endpoint_with_guard_off_in_oss(monkeypat
     )
 
 
-def test_control_flag_off_oss_keeps_local_urls(monkeypatch):  # regression (today's OSS behaviour)
+def test_control_flag_off_oss_keeps_local_urls(
+    monkeypatch,
+):  # regression (today's OSS behaviour)
     monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
     monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "oss")
     create_llm_service_from_provider(
@@ -120,7 +130,9 @@ def test_check_service_url_refuses_empty(enforced, url):
 @pytest.mark.parametrize(
     "url, port", [("wss://el.example.com/x", 443), ("ws://el.example.com/x", 80)]
 )
-def test_check_service_url_default_port_follows_the_scheme(enforced, monkeypatch, url, port):
+def test_check_service_url_default_port_follows_the_scheme(
+    enforced, monkeypatch, url, port
+):
     seen = []
 
     def fake_getaddrinfo(host, requested_port, *a, **k):
@@ -135,7 +147,10 @@ def test_check_service_url_default_port_follows_the_scheme(enforced, monkeypatch
 def test_check_service_url_guard_off_returns_empty_target(monkeypatch):
     monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
     monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "oss")
-    assert check_service_url("http://localhost:11434/v1", field="base_url") == EgressTarget()
+    assert (
+        check_service_url("http://localhost:11434/v1", field="base_url")
+        == EgressTarget()
+    )
 
 
 def test_tool_urls_still_refuse_ws(enforced):
@@ -319,7 +334,10 @@ async def test_prewarm_with_the_guard_off_resolves_nothing(monkeypatch):
 @pytest.mark.parametrize(
     "url, host",
     [
-        ("api.eu.deepgram.com", "api.eu.deepgram.com"),  # Deepgram's documented regional switch
+        (
+            "api.eu.deepgram.com",
+            "api.eu.deepgram.com",
+        ),  # Deepgram's documented regional switch
         ("api.eu.residency.elevenlabs.io", "api.eu.residency.elevenlabs.io"),
         (" https://api.elevenlabs.io ", "api.elevenlabs.io"),
     ],
