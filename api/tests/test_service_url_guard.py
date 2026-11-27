@@ -1,6 +1,7 @@
 """VOZ-N0-41: service URLs honour URL_GUARD_ENFORCE (VOZ-AC-B5-91, VOZ-AC-B0-30)."""
 
 import socket
+import threading
 from secrets import token_hex
 from types import SimpleNamespace
 
@@ -8,7 +9,13 @@ import pytest
 from fastapi import HTTPException
 
 from api.services.configuration.check_validity import UserConfigurationValidator
-from api.services.configuration.registry import SpeachesLLMConfiguration, ServiceProviders
+from api.services.configuration.registry import (
+    OpenAILLMService,
+    ServiceProviders,
+    SpeachesLLMConfiguration,
+    SpeachesSTTConfiguration,
+    SpeachesTTSConfiguration,
+)
 from api.services.gen_ai.embedding.azure_openai_service import AzureOpenAIEmbeddingService
 from api.services.gen_ai.embedding.openai_service import OpenAIEmbeddingService
 from api.services.pipecat.service_factory import create_llm_service_from_provider
@@ -130,3 +137,57 @@ def test_check_service_url_guard_off_returns_empty_target(monkeypatch):
 def test_tool_urls_still_refuse_ws(enforced):
     with pytest.raises(ToolUrlBlocked):
         check_tool_url("wss://example.com")
+
+
+# --- no DNS lookup on the event loop (live calls share it) ---
+
+
+def _lookup_threads(monkeypatch) -> list[int]:
+    """Record the thread of every DNS lookup; every name resolves to the public address."""
+    threads = []
+
+    def fake_getaddrinfo(host, port, *a, **k):
+        threads.append(threading.get_ident())
+        return [(socket.AF_INET, 1, 6, "", (PUBLIC_IP, port))]
+
+    monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
+    return threads
+
+
+async def test_validator_resolves_no_service_host_on_the_event_loop(
+    enforced, monkeypatch
+):
+    threads = _lookup_threads(monkeypatch)
+    configuration = SimpleNamespace(
+        llm=SpeachesLLMConfiguration(base_url="https://llm.example.com/v1"),
+        stt=SpeachesSTTConfiguration(base_url="https://stt.example.com/v1"),
+        tts=SpeachesTTSConfiguration(base_url="https://tts.example.com/v1"),
+        embeddings=None,
+        realtime=None,
+        is_realtime=False,
+    )
+    await UserConfigurationValidator().validate(configuration)
+    assert threads  # the hosts were checked
+    assert threading.get_ident() not in threads  # red today: all three on the loop
+
+
+async def test_factory_build_after_the_prewarm_resolves_nothing_on_the_event_loop(
+    enforced, monkeypatch
+):
+    from api.services.pipecat.service_factory import (
+        create_llm_service,
+        prewarm_config_service_urls,
+    )
+
+    threads = _lookup_threads(monkeypatch)
+    user_config = SimpleNamespace(
+        llm=OpenAILLMService(api_key=KEY, base_url="https://llm.example.com/v1"),
+        stt=None,
+        tts=None,
+        realtime=None,
+    )
+    await prewarm_config_service_urls(user_config)
+    create_llm_service(user_config)
+    assert threads
+    assert threading.get_ident() not in threads
+
