@@ -277,8 +277,12 @@ def test_a_failed_lookup_is_cached_and_refused_again(enforced, monkeypatch):
     _clock(monkeypatch)
     dns = _Resolver(monkeypatch, None)
     for _ in range(2):
-        with pytest.raises(ToolUrlBlocked, match="could not be resolved"):
+        with pytest.raises(ToolUrlBlocked) as e:
             check_service_url("https://llm.example.com/v1", field="base_url")
+        # The refusal says a resolver failure may be temporary (review r1, 98e6b3bd0ccb).
+        assert e.value.reason == (
+            "the host name could not be resolved (DNS failure; retry if the host is correct)"
+        )
     assert dns.lookups == 1
 
 

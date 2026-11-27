@@ -228,7 +228,9 @@ async def test_a_host_the_resolver_cannot_encode_is_blocked_in_the_b0_28_shape(
     result = await execute_http_tool(_tool(f"http://{host}/"), {})
     assert wire.requests == []
     assert result["code"] == "tool_url_blocked"
-    assert result["reason"] == "the host name could not be resolved"
+    assert result["reason"] == (
+        "the host name could not be resolved (DNS failure; retry if the host is correct)"
+    )
     assert result["hint"]
 
 

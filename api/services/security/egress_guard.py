@@ -50,6 +50,11 @@ SERVICE_URL_FIELDS = ("base_url", "endpoint")
 _RESOLUTION_TTL_SECONDS = 60.0
 _RESOLUTION_CACHE_SIZE = 256
 
+# A failed lookup may be a resolver hiccup: the refusal says so instead of reading like a bad configuration.
+_UNRESOLVED = (
+    "the host name could not be resolved (DNS failure; retry if the host is correct)"
+)
+
 # What a lookup answered: the addresses, or None when the name could not be resolved.
 Resolution = tuple[str, ...] | None
 
@@ -193,7 +198,7 @@ def _url_addresses(
     port = parsed.port or (443 if parsed.scheme in ("https", "wss") else 80)
     addresses = resolve(ascii_host, port)
     if addresses is None:
-        raise blocked(host, "the host name could not be resolved")
+        raise blocked(host, _UNRESOLVED)
     return host, addresses
 
 
