@@ -1,9 +1,11 @@
 """Egress URL guard (VOZ-AC-B5-91 layer 2): a request to a tenant-configured URL never reaches IMDS or the internal network.
 
-One entry point, ``guard_egress()``: it takes the mode decision (``URL_GUARD_ENFORCE``, egress_flag.py), resolves
+Two entry points. ``guard_egress()`` (async, for tool URLs): it takes the mode decision (``URL_GUARD_ENFORCE``, egress_flag.py), resolves
 the host off the event loop and returns an ``EgressTarget`` whose client is ready to use: pinned to the validated
 address, redirects off, no env settings. Every refusal is a ``ToolUrlBlocked``, in both modes. Callers only choose
 the wording (field, hint) and map the refusal to their own result shape.
+``check_service_url()`` is the synchronous entry point for the service URLs a tenant configures (model providers,
+embeddings, STT/TTS); it also admits ws and wss.
 """
 
 import asyncio
@@ -36,6 +38,10 @@ _SERVICE_HINT = (
 )
 _TOOL_SCHEMES = ("http", "https")
 _SERVICE_SCHEMES = ("http", "https", "ws", "wss")
+_EXPECTED_FORM = {  # the form shown in the no-host reason; the tool text is pinned by test_tool_url_guard.py
+    _TOOL_SCHEMES: "http(s)://host/...",
+    _SERVICE_SCHEMES: "http(s)://host/... or ws(s)://host/...",
+}
 
 
 class ToolUrlBlocked(ValueError):
@@ -109,7 +115,9 @@ def _tool_url_addresses(
             f"scheme '{parsed.scheme}' is not one of {', '.join(schemes)}",
         )
     if not host:
-        raise blocked("(none)", "the URL has no host (expected http(s)://host/...)")
+        raise blocked(
+            "(none)", f"the URL has no host (expected {_EXPECTED_FORM[schemes]})"
+        )
     if host in _INTERNAL_HOSTNAMES:
         raise blocked(host, "the host is an internal service name")
     if _ip_literal(host):
