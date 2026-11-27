@@ -10,6 +10,7 @@ import httpx2
 import pytest
 from loguru import logger
 
+from api.services.pipecat.pre_call_fetch import execute_pre_call_fetch
 from api.services.security.egress_guard import (
     EgressTarget,
     ToolUrlBlocked,
@@ -788,3 +789,34 @@ async def test_an_idn_host_resolves_and_pins_with_the_name_httpx_sends(
     assert request.url.host == PUBLIC_IP
     assert request.headers["host"] == "xn--strae-oqa.de"
     assert request.extensions["sni_hostname"] == "xn--strae-oqa.de"
+
+
+# --- the pre-call fetch URL is a tenant URL like a tool's (review r1, 79279a670226) ---
+
+
+async def _pre_call_fetch(monkeypatch, url):
+    failures = []
+    monkeypatch.setattr(
+        "api.services.pipecat.pre_call_fetch.log_failure",
+        lambda failure, **_context: failures.append(failure),
+    )
+    result = await execute_pre_call_fetch(
+        url=url,
+        credential_uuid=None,
+        call_context_vars={},
+        workflow_id=7,
+        organization_id=42,
+    )
+    return result, failures
+
+
+async def test_pre_call_fetch_to_an_internal_target_never_leaves_the_platform(
+    enforced, monkeypatch
+):
+    wire = Wire(lambda request: httpx.Response(200, json={"initial_context": {"leak": "x"}}))
+    wire.patch(monkeypatch)
+    result, failures = await _pre_call_fetch(monkeypatch, IMDS)
+    assert wire.requests == []  # red today: the POST reaches 169.254.169.254
+    assert result == {}  # the call goes on without the fetched context
+    (failure,) = failures
+    assert failure.error_owner == "user" and "tool_url_blocked" in failure.internal_message
