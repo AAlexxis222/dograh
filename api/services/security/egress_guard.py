@@ -86,7 +86,7 @@ def _ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | No
         return None
 
 
-def _tool_url_addresses(
+def _url_addresses(
     url: str | None, field: str, hint: str, schemes: tuple[str, ...]
 ) -> tuple[str, list[str]]:
     """Parse the URL the way the request will, and return its host with every address that host maps to."""
@@ -125,21 +125,21 @@ def _tool_url_addresses(
     return host, [str(info[4][0]) for info in infos]
 
 
-def check_tool_url(
+def _check_url(
     url: str | None,
     *,
-    field: str = "url",
-    hint: str = _DEFAULT_HINT,
-    legacy_check: bool = True,
-    schemes: tuple[str, ...] = _TOOL_SCHEMES,
+    field: str,
+    hint: str,
+    legacy_check: bool,
+    schemes: tuple[str, ...],
 ) -> str | None:
-    """Guard a URL; return the address the request must connect to, or None to connect as usual. Blocking: it
-    resolves the host name (guard_egress runs it off the event loop).
+    """The guard core shared by tool and service URLs; return the address the request must connect to, or None
+    to connect as usual. Blocking: it resolves the host name.
 
-    URL_GUARD_ENFORCE=true enforces whatever DEPLOYMENT_MODE says: every address the host maps to must be public
-    (one bad record blocks), and the returned one is the address to connect to, so the request does not resolve
-    the name again. Guard off: the pre-existing DEPLOYMENT_MODE check runs, unchanged, when ``legacy_check`` (a path
-    that never had it, MCP, passes False and gets no check).
+    URL_GUARD_ENFORCE=true enforces whatever DEPLOYMENT_MODE says: the scheme must be one of ``schemes``, every
+    address the host maps to must be public (one bad record blocks), and the returned one is the address to
+    connect to, so the request does not resolve the name again. Guard off: the pre-existing DEPLOYMENT_MODE check
+    runs, unchanged, when ``legacy_check`` (a path that never had it, MCP, passes False and gets no check).
     """
     if not url_guard_enforced():
         if legacy_check:
@@ -150,7 +150,7 @@ def check_tool_url(
                     "(not checked)", str(e), field=field, hint=hint, enforced=False
                 ) from e
         return None
-    host, addresses = _tool_url_addresses(url, field, hint, schemes)
+    host, addresses = _url_addresses(url, field, hint, schemes)
     if not addresses:
         raise ToolUrlBlocked(
             host, "the host name has no address", field=field, hint=hint
@@ -166,6 +166,20 @@ def check_tool_url(
                 hint=hint,
             )
     return addresses[0]
+
+
+def check_tool_url(
+    url: str | None,
+    *,
+    field: str = "url",
+    hint: str = _DEFAULT_HINT,
+    legacy_check: bool = True,
+) -> str | None:
+    """Guard a tool URL (custom tools, transfer resolver, MCP): http and https only. See ``_check_url``; guard_egress
+    runs it off the event loop."""
+    return _check_url(
+        url, field=field, hint=hint, legacy_check=legacy_check, schemes=_TOOL_SCHEMES
+    )
 
 
 class _PinnedTransportBase:
@@ -263,8 +277,12 @@ def check_service_url(url: str | None, *, field: str) -> EgressTarget:
     Same rules as ``check_tool_url`` with ws and wss admitted, for the providers that connect by websocket.
     Guard off: the DEPLOYMENT_MODE check runs and the target is empty.
     """
-    address = check_tool_url(
-        url, field=field, hint=_SERVICE_HINT, schemes=_SERVICE_SCHEMES
+    address = _check_url(
+        url,
+        field=field,
+        hint=_SERVICE_HINT,
+        legacy_check=True,
+        schemes=_SERVICE_SCHEMES,
     )
     return _egress_target(url, address)
 
