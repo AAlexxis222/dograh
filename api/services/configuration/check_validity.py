@@ -1,4 +1,4 @@
-from typing import Optional, TypedDict
+from typing import Any, Optional, TypedDict
 
 import httpx
 import openai
@@ -20,6 +20,7 @@ from api.services.configuration.registry import (
 from api.services.mps_service_key_client import mps_service_key_client
 from api.services.security.egress_guard import (
     SERVICE_URL_FIELDS,
+    EgressTarget,
     check_service_url,
     prewarm_service_urls,
     service_config_urls,
@@ -154,11 +155,13 @@ class UserConfigurationValidator:
 
         provider = service_config.provider
 
+        # Where each checked URL may connect: the key check below uses the same address.
+        targets: dict[str, EgressTarget] = {}
         for url_field in SERVICE_URL_FIELDS:
             url = getattr(service_config, url_field, None)
             if url:
                 try:
-                    check_service_url(url, field=url_field)
+                    targets[url_field] = check_service_url(url, field=url_field)
                 except ValueError as e:
                     return [{"model": service_name, "message": str(e)}]
 
@@ -239,7 +242,9 @@ class UserConfigurationValidator:
         api_key = service_config.api_key
 
         try:
-            if not self._check_api_key(provider, api_key, service_config):
+            if not self._check_api_key(
+                provider, api_key, service_config, targets.get("base_url")
+            ):
                 return [
                     {
                         "model": service_name,
@@ -259,8 +264,13 @@ class UserConfigurationValidator:
         provider: str,
         api_key: str,
         service_config: Optional[ServiceConfig] = None,
+        target: Optional[EgressTarget] = None,
     ) -> bool:
-        """Check if an API key for a provider is valid."""
+        """Check if an API key for a provider is valid.
+
+        ``target`` is where the guard let the config's base_url connect; the validators that connect to that URL
+        use it, so the check reaches the address the guard validated.
+        """
         validator = self._validator_map.get(provider)
         if not validator:
             return False
@@ -271,19 +281,26 @@ class UserConfigurationValidator:
             ServiceProviders.HOPPER.value,
             ServiceProviders.OPENAI_REALTIME.value,
         ):
-            return validator(provider, api_key, service_config)
+            return validator(provider, api_key, service_config, target)
         return validator(provider, api_key)
 
     def _check_openai_api_key(
-        self, model: str, api_key: str, service_config: Optional[ServiceConfig] = None
+        self,
+        model: str,
+        api_key: str,
+        service_config: Optional[ServiceConfig] = None,
+        target: Optional[EgressTarget] = None,
     ) -> bool:
         provider_name = _OPENAI_COMPATIBLE_PROVIDER_NAMES.get(model, "OpenAI")
-        client_kwargs: dict[str, str] = {"api_key": api_key}
+        client_kwargs: dict[str, Any] = {"api_key": api_key}
         base_url = (
             getattr(service_config, "base_url", None) if service_config else None
         ) or _OPENAI_COMPATIBLE_PROVIDER_BASE_URLS.get(model)
         if base_url:
             client_kwargs["base_url"] = base_url
+        if target is not None and target.address is not None:
+            # Pinned, redirects off: the SDK neither resolves the name again nor follows a 3xx elsewhere.
+            client_kwargs["http_client"] = target.httpx_sync_client()
         client = openai.OpenAI(**client_kwargs)
         try:
             client.models.list()

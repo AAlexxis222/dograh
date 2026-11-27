@@ -255,8 +255,8 @@ def check_tool_url(
     )
 
 
-class _PinnedTransportBase:
-    """The transport of a guarded client: every request goes to the one validated address.
+class _Pinning:
+    """What a guarded client's transport does to each request: send it to the one validated address.
 
     The Host header stays as the client built it (the host name) and, for a name host, SNI and the certificate
     check stay on it. A request for any other host is refused, so no redirect can take the client elsewhere. No
@@ -270,9 +270,8 @@ class _PinnedTransportBase:
     def __init__(self, host: str, address: str):
         self._host = host  # ASCII, as the request URL carries it
         self._address = address
-        self._inner = self._http.AsyncHTTPTransport(trust_env=False)
 
-    async def handle_async_request(self, request: Any) -> Any:
+    def _pin(self, request: Any) -> Any:
         host = request.url.raw_host.decode("ascii")
         if host != self._host:
             raise self._http.ConnectError(
@@ -282,14 +281,24 @@ class _PinnedTransportBase:
         if not _ip_literal(self._host):
             extensions["sni_hostname"] = self._host
         # A new request object: the client keeps the original (host name URL) to judge redirects against.
-        pinned = self._http.Request(
+        return self._http.Request(
             request.method,
             request.url.copy_with(host=self._address),
             headers=request.headers,
             stream=request.stream,
             extensions=extensions,
         )
-        return await self._inner.handle_async_request(pinned)
+
+
+class _PinnedTransportBase(_Pinning):
+    """The async transport of a guarded client (see ``_Pinning``)."""
+
+    def __init__(self, host: str, address: str):
+        super().__init__(host, address)
+        self._inner = self._http.AsyncHTTPTransport(trust_env=False)
+
+    async def handle_async_request(self, request: Any) -> Any:
+        return await self._inner.handle_async_request(self._pin(request))
 
     async def aclose(self) -> None:
         await self._inner.aclose()
@@ -301,6 +310,22 @@ class _PinnedHttpxTransport(_PinnedTransportBase, httpx.AsyncBaseTransport):
 
 class _PinnedHttpx2Transport(_PinnedTransportBase, httpx2.AsyncBaseTransport):
     _http = httpx2
+
+
+class _PinnedSyncHttpxTransport(_Pinning, httpx.BaseTransport):
+    """The synchronous twin, for SDK clients a synchronous caller builds (the configuration validator)."""
+
+    _http = httpx
+
+    def __init__(self, host: str, address: str):
+        super().__init__(host, address)
+        self._inner = httpx.HTTPTransport(trust_env=False)
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        return self._inner.handle_request(self._pin(request))
+
+    def close(self) -> None:
+        self._inner.close()
 
 
 @dataclass(frozen=True)
@@ -321,6 +346,17 @@ class EgressTarget:
             follow_redirects=False,
             trust_env=False,
             transport=_PinnedHttpxTransport(self.host, self.address),
+            **kwargs,
+        )
+
+    def httpx_sync_client(self, **kwargs: Any) -> httpx.Client:
+        """The synchronous httpx client, same rules: redirects off, pinned when the target has an address."""
+        if self.address is None:
+            return httpx.Client(follow_redirects=False, **kwargs)
+        return httpx.Client(
+            follow_redirects=False,
+            trust_env=False,
+            transport=_PinnedSyncHttpxTransport(self.host, self.address),
             **kwargs,
         )
 
