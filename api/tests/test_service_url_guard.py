@@ -5,6 +5,8 @@ import threading
 from secrets import token_hex
 from types import SimpleNamespace
 
+import httpx
+import httpx2
 import pytest
 from fastapi import HTTPException
 
@@ -27,6 +29,7 @@ from api.services.security.egress_guard import (
 )
 
 PUBLIC_IP = "93.184.216.34"  # what conftest's public_dns resolves every name to
+IMDS = "http://169.254.169.254/latest/meta-data/"
 KEY = token_hex(12)  # generated per run
 
 pytestmark = pytest.mark.usefixtures("public_dns")
@@ -191,3 +194,39 @@ async def test_factory_build_after_the_prewarm_resolves_nothing_on_the_event_loo
     assert threads
     assert threading.get_ident() not in threads
 
+
+# --- the validator's key check connects where the guard looked ---
+
+
+class SyncWire:
+    """Stands in for the network under every synchronous client, of both httpx lines (the openai SDK builds its
+    default client on httpx2): records the requests put on the wire and answers each with one fixed response."""
+
+    def __init__(self, status: int, headers: dict[str, str]):
+        self.requests = []
+        self._status = status
+        self._headers = headers
+
+    def patch(self, monkeypatch):
+        for line in (httpx, httpx2):
+
+            def handle(request, line=line):
+                self.requests.append(request)
+                return line.Response(self._status, headers=self._headers)
+
+            mock = line.MockTransport(handle)
+            for target in ("HTTPTransport", "_client.HTTPTransport"):
+                monkeypatch.setattr(
+                    f"{line.__name__}.{target}", lambda mock=mock, **kw: mock
+                )
+
+
+def test_validator_key_check_is_pinned_to_the_validated_address(enforced, monkeypatch):
+    # The public base_url answers with a redirect to the metadata endpoint.
+    wire = SyncWire(302, {"location": IMDS})
+    wire.patch(monkeypatch)
+    config = OpenAILLMService(api_key=KEY, base_url="https://llm.example.com/v1")
+    result = UserConfigurationValidator()._validate_service(config, "llm")
+    # red today: the SDK resolves the name again and follows the 302 to 169.254.169.254
+    assert [request.url.host for request in wire.requests] == [PUBLIC_IP]
+    assert len(result) == 1  # the unfollowed redirect is an error, not a valid key
