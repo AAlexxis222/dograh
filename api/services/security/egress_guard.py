@@ -38,10 +38,6 @@ _SERVICE_HINT = (
 )
 _TOOL_SCHEMES = ("http", "https")
 _SERVICE_SCHEMES = ("http", "https", "ws", "wss")
-_EXPECTED_FORM = {  # the form shown in the no-host reason; the tool text is pinned by test_tool_url_guard.py
-    _TOOL_SCHEMES: "http(s)://host/...",
-    _SERVICE_SCHEMES: "http(s)://host/... or ws(s)://host/...",
-}
 
 
 class ToolUrlBlocked(ValueError):
@@ -115,9 +111,7 @@ def _tool_url_addresses(
             f"scheme '{parsed.scheme}' is not one of {', '.join(schemes)}",
         )
     if not host:
-        raise blocked(
-            "(none)", f"the URL has no host (expected {_EXPECTED_FORM[schemes]})"
-        )
+        raise blocked("(none)", "the URL has no host")
     if host in _INTERNAL_HOSTNAMES:
         raise blocked(host, "the host is an internal service name")
     if _ip_literal(host):
