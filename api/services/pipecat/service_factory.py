@@ -32,7 +32,6 @@ from api.services.configuration.client_urls import (
     service_client_url,
 )
 from api.services.configuration.options import (
-    DEEPGRAM_DEFAULT_BASE_URL,
     DEEPGRAM_FLUX_MODELS,
     GOOGLE_VERTEX_DEFAULT_LOCATION,
 )
@@ -520,11 +519,11 @@ def _deepgram_base_url(service_config) -> str:
     jurisdiction processes the audio, so this is the single place the value is
     normalised and checked. Everything downstream builds on the result.
     """
-    base_url = (getattr(service_config, "base_url", None) or "").strip()
-    if not base_url:
-        return DEEPGRAM_DEFAULT_BASE_URL
-    # A bare host gets https (deepgram_client_url); the check judges that URL.
-    base_url = deepgram_client_url(base_url)
+    stored = getattr(service_config, "base_url", None) or ""
+    # Blank is the default host, a bare host gets https (deepgram_client_url); the check judges that URL.
+    base_url = deepgram_client_url(stored)
+    if not stored.strip():
+        return base_url  # the default host: nobody configured it, nothing to check
     _validate_deepgram_url(base_url, "base_url")
     return base_url
 
