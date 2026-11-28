@@ -277,6 +277,26 @@ def test_validator_key_check_is_pinned_to_the_validated_address(enforced, monkey
     assert len(result) == 1  # the unfollowed redirect is an error, not a valid key
 
 
+@pytest.mark.parametrize("guard", ["enforced", "off"])
+def test_validator_key_check_waits_10_s_at_most_and_does_not_retry(
+    monkeypatch, request, guard
+):
+    # Review r2 (71e822e75122): the check runs inside the async validate(), so a tenant URL that never answers
+    # held the worker's loop for the SDK's 600 s read timeout, three times.
+    if guard == "enforced":
+        request.getfixturevalue("enforced")
+    else:
+        monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
+        monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "oss")
+    wire = SyncWire(500, {})
+    wire.patch(monkeypatch)
+    config = OpenAILLMService(api_key=KEY, base_url="https://llm.example.com/v1")
+    result = UserConfigurationValidator()._validate_service(config, "llm")
+    assert len(result) == 1
+    (sent,) = wire.requests  # red today: two retries follow the 500
+    assert sent.extensions["timeout"]["read"] == 10.0  # red today: 600
+
+
 # --- the resolution cache: answers, never verdicts ---
 
 
