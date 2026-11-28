@@ -46,6 +46,7 @@ from api.services.security.egress_guard import (
     check_service_url,
     check_tool_url,
 )
+from pipecat.services.huggingface.llm import HuggingFaceLLMService
 
 PUBLIC_IP = "93.184.216.34"  # what conftest's public_dns resolves every name to
 IMDS = "http://169.254.169.254/latest/meta-data/"
@@ -294,6 +295,35 @@ async def test_a_dripping_tenant_server_holds_neither_the_loop_nor_the_save(
     (llm,) = [status for status in e.value.args[0] if status["model"] == "llm"]
     assert "did not answer" in llm["message"]
 
+
+async def test_an_async_build_with_a_cold_host_does_not_hold_the_event_loop(
+    enforced, monkeypatch
+):
+    # Review r3 (1cedb2e1c0d4, 4e8385aab6c4, 6a4402c01244): a host that no list of the configuration's URLs names,
+    # here the HuggingFace default the factory supplies, met by a service build an async caller runs on the loop.
+    from api.services.workflow.qa.llm_config import create_qa_llm_service
+
+    def slow_getaddrinfo(host, port, *a, **k):
+        time.sleep(1.0)
+        return [(socket.AF_INET, 1, 6, "", (PUBLIC_IP, port))]
+
+    monkeypatch.setattr("socket.getaddrinfo", slow_getaddrinfo)
+    qa = SimpleNamespace(
+        qa_use_workflow_llm=False,
+        qa_provider=ServiceProviders.HUGGINGFACE.value,
+        qa_model="meta-llama/Llama-3.1-8B-Instruct",
+        qa_api_key=f"hf_{KEY}",
+        qa_endpoint=None,
+    )
+    async with _LoopWatch() as watch:
+        try:
+            outcome = await create_qa_llm_service(qa, None)
+        except HTTPException as e:
+            outcome = e
+    # red today: the loop waits 1 s for the lookup, then the build is refused
+    assert watch.longest < 0.2, f"the event loop was held {watch.longest:.2f} s"
+    llm, _ = outcome
+    assert isinstance(llm, HuggingFaceLLMService)
 
 
 async def test_factory_build_after_the_prewarm_resolves_nothing_on_the_event_loop(
