@@ -20,6 +20,16 @@ from api.services.pipecat.service_factory import (
 )
 
 
+class _AsyncClient:
+    """What the key check uses of openai.AsyncOpenAI besides ``models``: it closes the client with ``async with``."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return None
+
+
 def test_hopper_llm_configuration_defaults_and_registry():
     config = HopperLLMConfiguration(api_key="sk_hopper_test")
 
@@ -74,15 +84,15 @@ def test_hopper_api_key_validation_lists_models_at_hopper_endpoint(monkeypatch):
     captured = {}
 
     class FakeModels:
-        def list(self):
+        async def list(self):
             return []
 
-    class FakeOpenAI:
+    class FakeOpenAI(_AsyncClient):
         def __init__(self, **kwargs):
             captured.update(kwargs)
             self.models = FakeModels()
 
-    monkeypatch.setattr(check_validity.openai, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(check_validity.openai, "AsyncOpenAI", FakeOpenAI)
 
     config = HopperLLMConfiguration(api_key="sk_hopper_test")
     is_valid = UserConfigurationValidator()._check_api_key(
@@ -103,14 +113,14 @@ def test_hopper_api_key_validation_reports_hopper_error(monkeypatch):
         pass
 
     class FakeModels:
-        def list(self):
+        async def list(self):
             raise FakeAuthenticationError
 
-    class FakeOpenAI:
+    class FakeOpenAI(_AsyncClient):
         def __init__(self, **kwargs):
             self.models = FakeModels()
 
-    monkeypatch.setattr(check_validity.openai, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(check_validity.openai, "AsyncOpenAI", FakeOpenAI)
     monkeypatch.setattr(
         check_validity.openai, "AuthenticationError", FakeAuthenticationError
     )

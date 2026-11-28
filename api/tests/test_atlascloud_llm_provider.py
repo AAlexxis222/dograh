@@ -14,6 +14,16 @@ from api.services.configuration.registry import (
 from api.services.pipecat.service_factory import create_llm_service_from_provider
 
 
+class _AsyncClient:
+    """What the key check uses of openai.AsyncOpenAI besides ``models``: it closes the client with ``async with``."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return None
+
+
 def test_atlascloud_llm_configuration_defaults():
     config = AtlasCloudLLMService(api_key="atlas-key")
 
@@ -41,16 +51,16 @@ def test_atlascloud_api_key_validation_uses_atlascloud_base_url(monkeypatch):
     captured = {}
 
     class FakeModels:
-        def list(self):
+        async def list(self):
             return []
 
-    class FakeOpenAI:
+    class FakeOpenAI(_AsyncClient):
         def __init__(self, **kwargs):
             captured.update(kwargs)
             self.models = FakeModels()
 
     monkeypatch.setattr(
-        "api.services.configuration.check_validity.openai.OpenAI", FakeOpenAI
+        "api.services.configuration.check_validity.openai.AsyncOpenAI", FakeOpenAI
     )
 
     config = AtlasCloudLLMService(api_key="atlas-key")
@@ -75,14 +85,14 @@ def test_atlascloud_api_key_validation_uses_atlascloud_error_message(monkeypatch
         pass
 
     class FakeModels:
-        def list(self):
+        async def list(self):
             raise FakeAuthenticationError
 
-    class FakeOpenAI:
+    class FakeOpenAI(_AsyncClient):
         def __init__(self, **kwargs):
             self.models = FakeModels()
 
-    monkeypatch.setattr(check_validity.openai, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(check_validity.openai, "AsyncOpenAI", FakeOpenAI)
     monkeypatch.setattr(
         check_validity.openai, "AuthenticationError", FakeAuthenticationError
     )

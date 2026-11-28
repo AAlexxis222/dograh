@@ -415,22 +415,6 @@ class _PinnedHttpx2Transport(_PinnedTransportBase, httpx2.AsyncBaseTransport):
     _http = httpx2
 
 
-class _PinnedSyncHttpxTransport(_Pinning, httpx.BaseTransport):
-    """The synchronous twin, for SDK clients a synchronous caller builds (the configuration validator)."""
-
-    _http = httpx
-
-    def __init__(self, host: str, address: str):
-        super().__init__(host, address)
-        self._inner = httpx.HTTPTransport(trust_env=False)
-
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        return self._inner.handle_request(self._pin(request))
-
-    def close(self) -> None:
-        self._inner.close()
-
-
 @dataclass(frozen=True)
 class EgressTarget:
     """Where a guarded request goes: the URL's ASCII host and the validated address the client is pinned to.
@@ -449,17 +433,6 @@ class EgressTarget:
             follow_redirects=False,
             trust_env=False,
             transport=_PinnedHttpxTransport(self.host, self.address),
-            **kwargs,
-        )
-
-    def httpx_sync_client(self, **kwargs: Any) -> httpx.Client:
-        """The synchronous httpx client, same rules: redirects off, pinned when the target has an address."""
-        if self.address is None:
-            return httpx.Client(follow_redirects=False, **kwargs)
-        return httpx.Client(
-            follow_redirects=False,
-            trust_env=False,
-            transport=_PinnedSyncHttpxTransport(self.host, self.address),
             **kwargs,
         )
 

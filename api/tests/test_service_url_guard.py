@@ -16,6 +16,7 @@ import httpx2
 import pytest
 from fastapi import HTTPException
 from loguru import logger
+from pipecat.services.huggingface.llm import HuggingFaceLLMService
 
 from api.services.configuration.check_validity import UserConfigurationValidator
 from api.services.configuration.registry import (
@@ -46,7 +47,6 @@ from api.services.security.egress_guard import (
     check_service_url,
     check_tool_url,
 )
-from pipecat.services.huggingface.llm import HuggingFaceLLMService
 
 PUBLIC_IP = "93.184.216.34"  # what conftest's public_dns resolves every name to
 IMDS = "http://169.254.169.254/latest/meta-data/"
@@ -205,7 +205,8 @@ async def test_validator_resolves_no_service_host_on_the_event_loop(
     )
     await UserConfigurationValidator().validate(configuration)
     assert threads  # the hosts were checked
-    assert threading.get_ident() not in threads  # red today: all three on the loop
+    # validate() runs every check on a worker thread (review r3, RUL-r3-5): none on the loop
+    assert threading.get_ident() not in threads
 
 
 class _LoopWatch:
@@ -294,6 +295,27 @@ async def test_a_dripping_tenant_server_holds_neither_the_loop_nor_the_save(
     assert elapsed < 2.5  # red without the request deadline: the check reads for 5 s
     (llm,) = [status for status in e.value.args[0] if status["model"] == "llm"]
     assert "did not answer" in llm["message"]
+
+
+async def test_a_validation_that_outlasts_its_deadline_is_refused(monkeypatch):
+    monkeypatch.setattr(
+        "api.services.configuration.check_validity._VALIDATION_DEADLINE_SECONDS", 0.2
+    )
+    gate = threading.Event()
+    monkeypatch.setattr(
+        UserConfigurationValidator,
+        "_validate_configuration",
+        lambda self, configuration: gate.wait(5) and [],
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(ValueError) as e:
+            await UserConfigurationValidator().validate(SimpleNamespace())
+    finally:
+        gate.set()
+    assert time.monotonic() - started < 1.5
+    ((status,),) = e.value.args
+    assert status["model"] == "all" and "did not finish within" in status["message"]
 
 
 async def test_an_async_build_with_a_cold_host_does_not_hold_the_event_loop(
@@ -400,9 +422,9 @@ async def test_a_service_built_on_the_loop_without_the_prewarm_is_logged(
 # --- the validator's key check connects where the guard looked ---
 
 
-class SyncWire:
-    """Stands in for the network under every synchronous client, of both httpx lines (the openai SDK builds its
-    default client on httpx2): records the requests put on the wire and answers each with one fixed response."""
+class AsyncWire:
+    """Stands in for the network under every async client, of both httpx lines (the openai SDK builds its default
+    client on httpx2): records the requests put on the wire and answers each with one fixed response."""
 
     def __init__(self, status: int, headers: dict[str, str]):
         self.requests = []
@@ -417,7 +439,7 @@ class SyncWire:
                 return line.Response(self._status, headers=self._headers)
 
             mock = line.MockTransport(handle)
-            for target in ("HTTPTransport", "_client.HTTPTransport"):
+            for target in ("AsyncHTTPTransport", "_client.AsyncHTTPTransport"):
                 monkeypatch.setattr(
                     f"{line.__name__}.{target}", lambda mock=mock, **kw: mock
                 )
@@ -425,7 +447,7 @@ class SyncWire:
 
 def test_validator_key_check_is_pinned_to_the_validated_address(enforced, monkeypatch):
     # The public base_url answers with a redirect to the metadata endpoint.
-    wire = SyncWire(302, {"location": IMDS})
+    wire = AsyncWire(302, {"location": IMDS})
     wire.patch(monkeypatch)
     config = OpenAILLMService(api_key=KEY, base_url="https://llm.example.com/v1")
     result = UserConfigurationValidator()._validate_service(config, "llm")
@@ -445,7 +467,7 @@ def test_validator_key_check_waits_10_s_at_most_and_does_not_retry(
     else:
         monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
         monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "oss")
-    wire = SyncWire(500, {})
+    wire = AsyncWire(500, {})
     wire.patch(monkeypatch)
     config = OpenAILLMService(api_key=KEY, base_url="https://llm.example.com/v1")
     result = UserConfigurationValidator()._validate_service(config, "llm")

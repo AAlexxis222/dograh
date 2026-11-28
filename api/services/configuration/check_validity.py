@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, Optional, TypedDict
 
 import httpx
@@ -14,7 +15,6 @@ from api.schemas.ai_model_configuration import (
 )
 from api.services.configuration.client_urls import (
     SERVICE_URL_FIELDS,
-    config_client_urls,
     service_client_url,
 )
 from api.services.configuration.registry import (
@@ -23,11 +23,7 @@ from api.services.configuration.registry import (
     ServiceProviders,
 )
 from api.services.mps_service_key_client import mps_service_key_client
-from api.services.security.egress_guard import (
-    EgressTarget,
-    check_service_url,
-    prewarm_service_urls,
-)
+from api.services.security.egress_guard import EgressTarget, check_service_url
 
 AuthContext = TypedDict(
     "AuthContext",
@@ -56,6 +52,8 @@ _OPENAI_COMPATIBLE_PROVIDER_BASE_URLS = {
 
 # The bound of a key check that connects to a URL the tenant set (the same as the fixed-host checks below).
 _KEY_CHECK_TIMEOUT_SECONDS = 10.0
+# The bound of a whole validation: at most four sections (llm, stt, tts or realtime, embeddings), one bounded check each.
+_VALIDATION_DEADLINE_SECONDS = 4 * _KEY_CHECK_TIMEOUT_SECONDS
 
 
 class UserConfigurationValidator:
@@ -113,24 +111,36 @@ class UserConfigurationValidator:
             "organization_id": organization_id,
             "created_by": created_by,
         }
-        status_list = []
-
-        # The URL checks below are synchronous: resolve the hosts of the sections they validate off the event loop.
-        validated_sections = (
-            {"llm": configuration.llm, "realtime": configuration.realtime}
-            if configuration.is_realtime
-            else {
-                "llm": configuration.llm,
-                "stt": configuration.stt,
-                "tts": configuration.tts,
-            }
-        )
-        await prewarm_service_urls(
-            config_client_urls(
-                {**validated_sections, "embeddings": configuration.embeddings}
+        # The checks are synchronous network work (DNS, provider key checks): they run off the event loop the
+        # api's requests share, and the request has a total deadline.
+        try:
+            status_list = await asyncio.wait_for(
+                asyncio.to_thread(self._validate_configuration, configuration),
+                _VALIDATION_DEADLINE_SECONDS,
             )
-        )
+        except TimeoutError:
+            raise ValueError(
+                [
+                    {
+                        "model": "all",
+                        "message": (
+                            f"Validation did not finish within {_VALIDATION_DEADLINE_SECONDS:.0f} s: "
+                            "a provider did not answer in time. Try again."
+                        ),
+                    }
+                ]
+            ) from None
 
+        if status_list:
+            raise ValueError(status_list)
+
+        return {"status": [{"model": "all", "message": "ok"}]}
+
+    def _validate_configuration(
+        self, configuration: EffectiveAIModelConfiguration
+    ) -> list[APIKeyStatus]:
+        """The error statuses of every section the configuration uses. Blocking: it connects to the providers."""
+        status_list: list[APIKeyStatus] = []
         status_list.extend(self._validate_service(configuration.llm, "llm"))
         if configuration.is_realtime:
             status_list.extend(
@@ -147,11 +157,7 @@ class UserConfigurationValidator:
                 configuration.embeddings, "embeddings", required=False
             )
         )
-
-        if status_list:
-            raise ValueError(status_list)
-
-        return {"status": [{"model": "all", "message": "ok"}]}
+        return status_list
 
     def _validate_service(
         self,
@@ -307,9 +313,22 @@ class UserConfigurationValidator:
         service_config: Optional[ServiceConfig] = None,
         target: Optional[EgressTarget] = None,
     ) -> bool:
+        # It runs on validate()'s worker thread, against a URL the tenant may set. asyncio.run refuses to start on
+        # an event loop, and the async client can be cut off: see _list_openai_models.
+        return asyncio.run(
+            self._list_openai_models(model, api_key, service_config, target)
+        )
+
+    async def _list_openai_models(
+        self,
+        model: str,
+        api_key: str,
+        service_config: Optional[ServiceConfig],
+        target: Optional[EgressTarget],
+    ) -> bool:
+        """One attempt with a deadline on the whole request: the SDK's timeout bounds each read, so a server that
+        drips its answer would hold it; the deadline cancels the request and closes its connection."""
         provider_name = _OPENAI_COMPATIBLE_PROVIDER_NAMES.get(model, "OpenAI")
-        # It runs on the event loop of the async validate() the routes await, against a URL the tenant may set:
-        # one bounded attempt instead of the SDK's 600 s read timeout and two retries.
         client_kwargs: dict[str, Any] = {
             "api_key": api_key,
             "timeout": _KEY_CHECK_TIMEOUT_SECONDS,
@@ -322,11 +341,23 @@ class UserConfigurationValidator:
             client_kwargs["base_url"] = base_url
         if target is not None and target.address is not None:
             # Pinned, redirects off: the SDK neither resolves the name again nor follows a 3xx elsewhere.
-            client_kwargs["http_client"] = target.httpx_sync_client()
-        client = openai.OpenAI(**client_kwargs)
+            client_kwargs["http_client"] = target.httpx_client()
+        client = openai.AsyncOpenAI(**client_kwargs)
         try:
-            client.models.list()
+            async with client, asyncio.timeout(_KEY_CHECK_TIMEOUT_SECONDS):
+                await client.models.list()
             return True
+        except TimeoutError:
+            if base_url:
+                raise ValueError(
+                    f"The OpenAI-compatible API at {base_url} did not answer within "
+                    f"{_KEY_CHECK_TIMEOUT_SECONDS:.0f} s. Please verify that the base_url is "
+                    "correct and reachable, and try again."
+                )
+            raise ValueError(
+                f"The OpenAI API did not answer within {_KEY_CHECK_TIMEOUT_SECONDS:.0f} s. "
+                "Please try again later."
+            )
         except openai.AuthenticationError:
             if base_url and "openai.com" not in base_url:
                 raise ValueError(
