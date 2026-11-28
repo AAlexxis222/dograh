@@ -347,8 +347,8 @@ async def prewarm_config_service_urls(user_config):
     """Resolve, off the event loop, the hosts of the service URLs this configuration sets, and return it.
 
     The create_*_service functions are synchronous and check every URL they build with; awaited before them, this
-    lets that check read the host's answer from the guard's cache instead of a blocking lookup on the loop the live
-    calls share. A section the configuration lacks is skipped. Returning the configuration lets a caller resolve it
+    lets that check read the host's answer from the guard's cache instead of waiting (bounded, logged) for a lookup
+    on the loop the live calls share. A section the configuration lacks is skipped. Returning the configuration lets a caller resolve it
     where it obtains it.
     """
     await prewarm_service_urls(
