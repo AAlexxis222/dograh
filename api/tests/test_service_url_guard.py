@@ -406,6 +406,15 @@ def test_a_bare_or_padded_service_host_is_checked_as_https(enforced, url, host):
     assert check_service_url(url, field="base_url") == EgressTarget(host, PUBLIC_IP)
 
 
+def test_a_bare_host_is_refused_at_save_when_the_client_takes_it_as_is(enforced):
+    # Review r2 (9f7d8d355b63): Speaches hands the raw base_url to its client, which needs a scheme.
+    result = UserConfigurationValidator()._validate_service(
+        SpeachesSTTConfiguration(base_url="speaches.example.com/v1"), "stt"
+    )
+    (status,) = result  # red today: saved, and STT fails once the call is answered
+    assert "scheme '' is not one of http, https, ws, wss" in status["message"]
+
+
 @pytest.mark.parametrize("url", ["redis", "10.0.0.10", " localhost:11434 "])
 def test_a_bare_internal_host_is_still_refused(enforced, url):
     with pytest.raises(EgressBlocked):
