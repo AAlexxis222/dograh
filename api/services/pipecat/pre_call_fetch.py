@@ -19,7 +19,7 @@ from api.errors.failure import (
     log_failure,
     redact_failure_message,
 )
-from api.services.security.egress_guard import ToolUrlBlocked, guard_egress
+from api.services.security.egress_guard import EgressBlocked, guard_egress
 from api.services.workflow.initial_context import merge_external_initial_context
 from api.utils.credential_auth import build_auth_header
 
@@ -191,7 +191,7 @@ async def execute_pre_call_fetch(
                 )
                 return {}
 
-    except ToolUrlBlocked as e:
+    except EgressBlocked as e:
         _log_config_failure(
             "pre-call-fetch-url-blocked",
             str(e),

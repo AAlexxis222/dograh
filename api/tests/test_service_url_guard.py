@@ -25,8 +25,8 @@ from api.services.gen_ai.embedding.openai_service import OpenAIEmbeddingService
 from api.services.pipecat.service_factory import create_llm_service_from_provider
 from api.services.security import egress_guard
 from api.services.security.egress_guard import (
+    EgressBlocked,
     EgressTarget,
-    ToolUrlBlocked,
     check_service_url,
     check_tool_url,
 )
@@ -115,14 +115,14 @@ def test_check_service_url_accepts_ws_and_wss(enforced, url):
 
 
 def test_check_service_url_refuses_other_schemes(enforced):
-    with pytest.raises(ToolUrlBlocked) as e:
+    with pytest.raises(EgressBlocked) as e:
         check_service_url("ftp://example.com", field="base_url")
     assert e.value.reason == "scheme 'ftp' is not one of http, https, ws, wss"
 
 
 @pytest.mark.parametrize("url", [None, ""])
 def test_check_service_url_refuses_empty(enforced, url):
-    with pytest.raises(ToolUrlBlocked) as e:
+    with pytest.raises(EgressBlocked) as e:
         check_service_url(url, field="base_url")
     assert e.value.reason == "the URL has no host"
 
@@ -154,7 +154,7 @@ def test_check_service_url_guard_off_returns_empty_target(monkeypatch):
 
 
 def test_tool_urls_still_refuse_ws(enforced):
-    with pytest.raises(ToolUrlBlocked):
+    with pytest.raises(EgressBlocked):
         check_tool_url("wss://example.com")
 
 
@@ -283,7 +283,7 @@ def test_a_host_that_turns_internal_is_refused_once_its_entry_expires(
     check_service_url("https://llm.example.com/v1", field="base_url")  # cached answer
     assert dns.lookups == 1
     now[0] += 2
-    with pytest.raises(ToolUrlBlocked, match="internal address"):
+    with pytest.raises(EgressBlocked, match="internal address"):
         check_service_url("https://llm.example.com/v1", field="base_url")
     assert dns.lookups == 2
 
@@ -292,7 +292,7 @@ def test_a_failed_lookup_is_cached_and_refused_again(enforced, monkeypatch):
     _clock(monkeypatch)
     dns = _Resolver(monkeypatch, None)
     for _ in range(2):
-        with pytest.raises(ToolUrlBlocked) as e:
+        with pytest.raises(EgressBlocked) as e:
             check_service_url("https://llm.example.com/v1", field="base_url")
         # The refusal says a resolver failure may be temporary (review r1, 98e6b3bd0ccb).
         assert e.value.reason == (
@@ -315,7 +315,7 @@ async def test_prewarm_swallows_a_refusal_and_the_check_reports_it(
 ):
     dns = _Resolver(monkeypatch, "10.0.0.10")
     await egress_guard.prewarm_service_urls(["https://llm.example.com/v1"])
-    with pytest.raises(ToolUrlBlocked, match="internal address"):
+    with pytest.raises(EgressBlocked, match="internal address"):
         check_service_url("https://llm.example.com/v1", field="base_url")
     assert dns.lookups == 1
 
@@ -348,12 +348,12 @@ def test_a_bare_or_padded_service_host_is_checked_as_https(enforced, url, host):
 
 @pytest.mark.parametrize("url", ["redis", "10.0.0.10", " localhost:11434 "])
 def test_a_bare_internal_host_is_still_refused(enforced, url):
-    with pytest.raises(ToolUrlBlocked):
+    with pytest.raises(EgressBlocked):
         check_service_url(url, field="base_url")
 
 
 def test_a_blank_service_url_has_no_host(enforced):
-    with pytest.raises(ToolUrlBlocked) as e:
+    with pytest.raises(EgressBlocked) as e:
         check_service_url("   ", field="base_url")
     assert e.value.reason == "the URL has no host"
 
@@ -365,10 +365,10 @@ def test_a_failure_entry_expires_after_5_s_while_a_success_is_still_served(
     dns = _Resolver(monkeypatch, PUBLIC_IP)
     check_service_url("https://ok.example.com", field="base_url")
     dns.address = None
-    with pytest.raises(ToolUrlBlocked):
+    with pytest.raises(EgressBlocked):
         check_service_url("https://flaky.example.com", field="base_url")
     now[0] += 4
-    with pytest.raises(ToolUrlBlocked):  # a burst within 5 s does not look up again
+    with pytest.raises(EgressBlocked):  # a burst within 5 s does not look up again
         check_service_url("https://flaky.example.com", field="base_url")
     assert dns.lookups == 2
     dns.address = PUBLIC_IP

@@ -2,7 +2,7 @@
 
 Two entry points. ``guard_egress()`` (async, for tool URLs): it takes the mode decision (``URL_GUARD_ENFORCE``, egress_flag.py), resolves
 the host off the event loop and returns an ``EgressTarget`` whose client is ready to use: pinned to the validated
-address, redirects off, no env settings. Every refusal is a ``ToolUrlBlocked``, in both modes. Callers only choose
+address, redirects off, no env settings. Every refusal is an ``EgressBlocked``, in both modes. Callers only choose
 the wording (field, hint) and map the refusal to their own result shape.
 ``check_service_url()`` is the synchronous entry point for the service URLs a tenant configures (model providers,
 embeddings, STT/TTS); it also admits ws and wss. Its lookups go through a short-lived cache that an async caller fills
@@ -62,7 +62,7 @@ _UNRESOLVED = (
 Resolution = tuple[str, ...] | None
 
 
-class ToolUrlBlocked(ValueError):
+class EgressBlocked(ValueError):
     """A URL the guard refuses, in the VOZ-AC-B0-28 shape: stable code, what, where, reason, hint.
 
     With the guard off (``enforced`` False) it carries the legacy DEPLOYMENT_MODE check's refusal and its message
@@ -84,6 +84,10 @@ class ToolUrlBlocked(ValueError):
             if enforced
             else reason
         )
+
+
+# The name the tool callers (custom tools, transfer resolver, MCP, tool management) import; the same class.
+ToolUrlBlocked = EgressBlocked
 
 
 def _is_internal_address(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -178,8 +182,8 @@ def _url_addresses(
 ) -> tuple[str, tuple[str, ...]]:
     """Parse the URL the way the request will, and return its host with every address that host maps to."""
 
-    def blocked(host: str, reason: str) -> ToolUrlBlocked:
-        return ToolUrlBlocked(host, reason, field=field, hint=hint)
+    def blocked(host: str, reason: str) -> EgressBlocked:
+        return EgressBlocked(host, reason, field=field, hint=hint)
 
     if not url:
         raise blocked("(none)", "the URL has no host")
@@ -232,20 +236,20 @@ def _check_url(
             try:
                 validate_user_configured_service_url(url, field_name=field)
             except ValueError as e:
-                raise ToolUrlBlocked(
+                raise EgressBlocked(
                     "(not checked)", str(e), field=field, hint=hint, enforced=False
                 ) from e
         return None
     host, addresses = _url_addresses(url, field, hint, schemes, resolve)
     if not addresses:
-        raise ToolUrlBlocked(
+        raise EgressBlocked(
             host, "the host name has no address", field=field, hint=hint
         )
     for address in addresses:
         ip = _ip_literal(address)
         if ip is None or _is_internal_address(ip):  # unreadable is not vouched for
             logger.warning(f"Egress guard blocked '{host}': it maps to {address}")
-            raise ToolUrlBlocked(
+            raise EgressBlocked(
                 host,
                 "the host maps to a private, loopback, link-local or otherwise internal address",
                 field=field,
@@ -435,7 +439,7 @@ def service_config_urls(*service_configs: Any) -> list[str]:
 
 def _prewarm_one(url: str) -> None:
     # A refused URL is not this step's to report: the synchronous check that follows refuses it from the cache.
-    with contextlib.suppress(ToolUrlBlocked):
+    with contextlib.suppress(EgressBlocked):
         check_service_url(url, field="url")
 
 
@@ -453,7 +457,7 @@ async def prewarm_service_urls(urls: Iterable[str]) -> None:
 async def guard_egress(
     url: str, *, field: str, hint: str, legacy_check: bool = True
 ) -> EgressTarget:
-    """Guard ``url`` and return where its request goes; raises ToolUrlBlocked (both modes). See check_tool_url."""
+    """Guard ``url`` and return where its request goes; raises EgressBlocked (both modes). See check_tool_url."""
     address = await asyncio.to_thread(
         check_tool_url, url, field=field, hint=hint, legacy_check=legacy_check
     )
