@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from api.schemas.organization_preferences import OrganizationPreferences
-from api.services.security.egress_guard import _service_resolutions
+from api.services.security.egress_guard import reset_service_resolutions
 from api.services.workflow.dto import (
     AgentNodeData,
     EdgeDataDTO,
@@ -754,7 +754,7 @@ EGRESS_PUBLIC_IP = "93.184.216.34"
 @pytest.fixture
 def public_dns(monkeypatch):
     """No real DNS: every name resolves to one public address unless the test says otherwise."""
-    _service_resolutions.clear()  # answers cached under another resolver must not leak in
+    reset_service_resolutions()  # answers cached under another resolver must not leak in
     monkeypatch.setattr(
         "socket.getaddrinfo",
         lambda *a, **k: [(socket.AF_INET, 1, 6, "", (EGRESS_PUBLIC_IP, 443))],
@@ -769,6 +769,6 @@ def enforced(monkeypatch):
     """
     monkeypatch.setenv("URL_GUARD_ENFORCE", "true")
     monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "oss")
-    _service_resolutions.clear()
+    reset_service_resolutions()
     yield
-    _service_resolutions.clear()
+    reset_service_resolutions()

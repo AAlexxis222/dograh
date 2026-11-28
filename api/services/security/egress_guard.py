@@ -128,13 +128,15 @@ class _ResolutionCache:
     It lets the synchronous service URL check read an answer a thread fetched off the event loop. A failure is kept
     too, for a shorter TTL, so the check that follows a prewarm refuses it again without a second lookup on the loop. It stores answers,
     never verdicts: every address is judged again on each check, and an expired entry is looked up again.
+    The defaults are the service URL check's settings.
     """
 
     def __init__(
         self,
-        ttl: float,
-        failure_ttl: float,
-        size: int,
+        *,
+        ttl: float = _RESOLUTION_TTL_SECONDS,
+        failure_ttl: float = _FAILED_RESOLUTION_TTL_SECONDS,
+        size: int = _RESOLUTION_CACHE_SIZE,
         clock: Callable[[], float] = time.monotonic,
     ):
         self._ttl = ttl
@@ -168,9 +170,12 @@ class _ResolutionCache:
             self._entries.clear()
 
 
-_service_resolutions = _ResolutionCache(
-    _RESOLUTION_TTL_SECONDS, _FAILED_RESOLUTION_TTL_SECONDS, _RESOLUTION_CACHE_SIZE
-)
+_service_resolutions = _ResolutionCache()
+
+
+def reset_service_resolutions() -> None:
+    """Forget every service host answer the check has cached (a test starts from an empty cache)."""
+    _service_resolutions.clear()
 
 
 def _url_addresses(

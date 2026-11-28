@@ -27,6 +27,7 @@ from api.services.security import egress_guard
 from api.services.security.egress_guard import (
     EgressBlocked,
     EgressTarget,
+    _ResolutionCache,
     check_service_url,
     check_tool_url,
 )
@@ -266,30 +267,39 @@ class _Resolver:
         return [(socket.AF_INET, 1, 6, "", (self.address, port))]
 
 
-def _clock(monkeypatch):
-    now = [1000.0]
-    monkeypatch.setattr(egress_guard._service_resolutions, "_clock", lambda: now[0])
-    return now
+class _Clock:
+    """A monotonic clock the test moves by hand."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
-def test_a_host_that_turns_internal_is_refused_once_its_entry_expires(
-    enforced, monkeypatch
+def _cache(**settings) -> tuple[_ResolutionCache, _Clock]:
+    """A cache of the test's own on a hand-moved clock; ``settings`` override the service check's defaults."""
+    clock = _Clock()
+    return _ResolutionCache(clock=clock, **settings), clock
+
+
+def test_a_host_that_turns_internal_is_answered_anew_once_its_entry_expires(
+    monkeypatch,
 ):
-    now = _clock(monkeypatch)
+    cache, clock = _cache()
     dns = _Resolver(monkeypatch, PUBLIC_IP)
-    check_service_url("https://llm.example.com/v1", field="base_url")
+    assert cache.resolve("llm.example.com", 443) == (PUBLIC_IP,)
     dns.address = "10.0.0.10"
-    now[0] += egress_guard._RESOLUTION_TTL_SECONDS - 1
-    check_service_url("https://llm.example.com/v1", field="base_url")  # cached answer
+    clock.now += 59
+    assert cache.resolve("llm.example.com", 443) == (PUBLIC_IP,)  # cached answer
     assert dns.lookups == 1
-    now[0] += 2
-    with pytest.raises(EgressBlocked, match="internal address"):
-        check_service_url("https://llm.example.com/v1", field="base_url")
+    clock.now += 2
+    # The new answer, not a cached verdict: the check judges it and refuses the internal address.
+    assert cache.resolve("llm.example.com", 443) == ("10.0.0.10",)
     assert dns.lookups == 2
 
 
 def test_a_failed_lookup_is_cached_and_refused_again(enforced, monkeypatch):
-    _clock(monkeypatch)
     dns = _Resolver(monkeypatch, None)
     for _ in range(2):
         with pytest.raises(EgressBlocked) as e:
@@ -301,13 +311,16 @@ def test_a_failed_lookup_is_cached_and_refused_again(enforced, monkeypatch):
     assert dns.lookups == 1
 
 
-def test_the_cache_keeps_at_most_its_bound(enforced, monkeypatch):
-    _Resolver(monkeypatch, PUBLIC_IP)
-    for i in range(egress_guard._RESOLUTION_CACHE_SIZE + 1):
-        check_service_url(f"https://h{i}.example.com", field="base_url")
-    entries = egress_guard._service_resolutions._entries
-    assert len(entries) == egress_guard._RESOLUTION_CACHE_SIZE
-    assert ("h0.example.com", 443) not in entries  # the least recently used went
+def test_the_cache_keeps_at_most_its_bound(monkeypatch):
+    cache, _ = _cache(size=2)
+    dns = _Resolver(monkeypatch, PUBLIC_IP)
+    for host in ("h0.example.com", "h1.example.com", "h2.example.com"):
+        cache.resolve(host, 443)
+    cache.resolve("h1.example.com", 443)
+    cache.resolve("h2.example.com", 443)
+    assert dns.lookups == 3  # the two most recent are still held
+    cache.resolve("h0.example.com", 443)
+    assert dns.lookups == 4  # the least recently used went
 
 
 async def test_prewarm_swallows_a_refusal_and_the_check_reports_it(
@@ -324,8 +337,7 @@ async def test_prewarm_with_the_guard_off_resolves_nothing(monkeypatch):
     monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
     dns = _Resolver(monkeypatch, PUBLIC_IP)
     await egress_guard.prewarm_service_urls(["https://llm.example.com/v1"])
-    assert dns.lookups == 0
-    assert egress_guard._service_resolutions._entries == {}
+    assert dns.lookups == 0  # and with no lookup, nothing was cached
 
 
 # --- the guard judges the URL the client will use (review r1, bf601ab39259, aa5d2aac9673) ---
@@ -359,22 +371,19 @@ def test_a_blank_service_url_has_no_host(enforced):
 
 
 def test_a_failure_entry_expires_after_5_s_while_a_success_is_still_served(
-    enforced, monkeypatch
+    monkeypatch,
 ):
-    now = _clock(monkeypatch)
+    cache, clock = _cache()
     dns = _Resolver(monkeypatch, PUBLIC_IP)
-    check_service_url("https://ok.example.com", field="base_url")
+    cache.resolve("ok.example.com", 443)
     dns.address = None
-    with pytest.raises(EgressBlocked):
-        check_service_url("https://flaky.example.com", field="base_url")
-    now[0] += 4
-    with pytest.raises(EgressBlocked):  # a burst within 5 s does not look up again
-        check_service_url("https://flaky.example.com", field="base_url")
+    assert cache.resolve("flaky.example.com", 443) is None
+    clock.now += 4
+    # A burst within 5 s does not look up again.
+    assert cache.resolve("flaky.example.com", 443) is None
     assert dns.lookups == 2
     dns.address = PUBLIC_IP
-    now[0] += 2  # 6 s after the failure: the failure expired, the success did not
-    check_service_url("https://flaky.example.com", field="base_url")
-    check_service_url("https://ok.example.com", field="base_url")
-    assert (
-        dns.lookups == 3
-    )  # red today: failures live 60 s, the flaky host stays refused
+    clock.now += 2  # 6 s after the failure: the failure expired, the success did not
+    assert cache.resolve("flaky.example.com", 443) == (PUBLIC_IP,)
+    assert cache.resolve("ok.example.com", 443) == (PUBLIC_IP,)
+    assert dns.lookups == 3  # with failures kept 60 s, the flaky host stays unresolved
