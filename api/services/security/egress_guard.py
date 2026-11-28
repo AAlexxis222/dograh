@@ -113,7 +113,12 @@ def _ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | No
 
 
 def _resolve(ascii_host: str, port: int) -> Resolution:
-    """Every address the name maps to, or None when it cannot be resolved. Blocking."""
+    """Every address the name maps to, or None when it cannot be resolved. Blocking, so never on an event loop:
+    the cache raises its miss first, so this catches any other path (a tool URL checked on the loop)."""
+    if _on_event_loop():
+        raise RuntimeError(
+            "blocking DNS lookup on the event loop: run this check in a worker thread"
+        )
     try:
         infos = socket.getaddrinfo(ascii_host, port, type=socket.SOCK_STREAM)
     # UnicodeError: a label the IDNA codec refuses (too long, empty) fails before any lookup.

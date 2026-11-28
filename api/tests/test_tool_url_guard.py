@@ -1,5 +1,6 @@
 """VOZ-N0-28: the tool URL guard (custom tools, transfer resolver, MCP) is enforced by its own flag (VOZ-AC-B5-91, VOZ-AC-B0-30)."""
 
+import asyncio
 import json
 import socket
 from types import SimpleNamespace
@@ -868,3 +869,17 @@ async def test_pre_call_fetch_flag_off_sends_the_request_as_today(monkeypatch):
     # The client today's code built: timeout 10, redirects off (httpx's default), no pinned transport.
     (kw,) = wire.clients
     assert kw == {"follow_redirects": False, "timeout": 10}
+
+
+# --- a DNS lookup on the event loop is a programming error (review r3, RUL-r3-11) ---
+
+
+async def test_a_url_check_run_on_the_event_loop_fails_loudly_instead_of_blocking(
+    enforced,
+):
+    with pytest.raises(RuntimeError, match="blocking DNS lookup on the event loop"):
+        check_tool_url("https://api.example.com/")
+    # The supported form: off the loop, as guard_egress runs it.
+    assert (
+        await asyncio.to_thread(check_tool_url, "https://api.example.com/") == PUBLIC_IP
+    )
