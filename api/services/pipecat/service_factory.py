@@ -24,6 +24,13 @@ from api.errors.failure import (
     classify_exception,
     log_failure,
 )
+from api.services.configuration.client_urls import (
+    config_client_urls,
+    deepgram_client_url,
+    elevenlabs_realtime_stt_host,
+    elevenlabs_websocket_url,
+    service_client_url,
+)
 from api.services.configuration.options import (
     DEEPGRAM_DEFAULT_BASE_URL,
     DEEPGRAM_FLUX_MODELS,
@@ -83,7 +90,6 @@ from api.services.security.egress_guard import (
     EgressTarget,
     check_service_url,
     prewarm_service_urls,
-    service_config_urls,
 )
 from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAISTTSettings
 from pipecat.services.aws.llm import AWSBedrockLLMService, AWSBedrockLLMSettings
@@ -283,41 +289,6 @@ def _resolve_elevenlabs_stt_language(
         return language_code
 
 
-def _elevenlabs_websocket_url(base_url: str) -> str:
-    """Normalize an ElevenLabs API base URL for WebSocket clients."""
-    base_url = base_url.strip()
-    parsed = urlparse(base_url)
-    if not parsed.netloc:
-        return base_url.rstrip("/")
-
-    websocket_scheme = {
-        "http": "ws",
-        "https": "wss",
-    }.get(parsed.scheme, parsed.scheme)
-    return urlunparse(
-        parsed._replace(
-            scheme=websocket_scheme,
-            path=parsed.path.rstrip("/"),
-        )
-    )
-
-
-def _elevenlabs_realtime_stt_host(base_url: str) -> str:
-    """Return the host/path prefix Pipecat's ElevenLabs realtime STT expects.
-
-    Pipecat's realtime STT service builds
-    ``wss://{host}/v1/speech-to-text/realtime`` internally, so remove the scheme
-    from the same normalized WebSocket URL used by ElevenLabs TTS. Preserve
-    netloc (including optional ports) and any path prefix used by BYOK proxies.
-    """
-    websocket_url = _elevenlabs_websocket_url(base_url)
-    parsed = urlparse(websocket_url)
-    if parsed.netloc:
-        path = parsed.path
-        return f"{parsed.netloc}{path}" if path else parsed.netloc
-    return websocket_url
-
-
 def stt_uses_external_turns(user_config) -> bool:
     if user_config.stt.provider == ServiceProviders.DEEPGRAM.value:
         return user_config.stt.model in DEEPGRAM_FLUX_MODELS
@@ -352,11 +323,11 @@ async def prewarm_config_service_urls(user_config):
     where it obtains it.
     """
     await prewarm_service_urls(
-        service_config_urls(
-            *(
-                getattr(user_config, section, None)
-                for section in ("llm", "stt", "tts", "realtime")
-            )
+        config_client_urls(
+            {
+                role: getattr(user_config, role, None)
+                for role in ("llm", "stt", "tts", "realtime")
+            }
         )
     )
     return user_config
@@ -552,14 +523,10 @@ def _deepgram_base_url(service_config) -> str:
     base_url = (getattr(service_config, "base_url", None) or "").strip()
     if not base_url:
         return DEEPGRAM_DEFAULT_BASE_URL
-    # Deepgram documents the regional switch as "replace api.deepgram.com with
-    # api.eu.deepgram.com", so operators reasonably type a bare host. The URL
-    # validator - and the SaaS SSRF checks behind it - need a scheme, so assume
-    # TLS rather than reject a value that is obviously well intentioned.
-    if "://" not in base_url:
-        base_url = f"https://{base_url}"
+    # A bare host gets https (deepgram_client_url); the check judges that URL.
+    base_url = deepgram_client_url(base_url)
     _validate_deepgram_url(base_url, "base_url")
-    return base_url.rstrip("/")
+    return base_url
 
 
 def _endpoint_host(url: str) -> str | None:
@@ -1131,8 +1098,14 @@ def create_stt_service(
         language_code = getattr(user_config.stt, "language", None)
         pipecat_language = _resolve_elevenlabs_stt_language(language_code)
 
-        _validate_runtime_service_url(user_config.stt.base_url, "base_url")
-        elevenlabs_host = _elevenlabs_realtime_stt_host(user_config.stt.base_url)
+        elevenlabs_host = elevenlabs_realtime_stt_host(user_config.stt.base_url)
+        # The client connects to wss://{host}: that is the URL the guard judges.
+        _validate_runtime_service_url(
+            service_client_url(
+                user_config.stt.provider, "stt", user_config.stt.base_url
+            ),
+            "base_url",
+        )
 
         plan = tuning_for(tuning, "stt", ServiceProviders.ELEVENLABS.value)
         # CommitStrategy is a StrEnum whose values are the lowercase wire
@@ -1283,8 +1256,8 @@ def create_tts_service(
         # ElevenLabs TTS consumes the full normalized WebSocket URL. Realtime
         # STT uses the same normalization before adapting it to Pipecat's
         # scheme-less base_url contract.
-        _validate_runtime_service_url(user_config.tts.base_url, "base_url")
-        elevenlabs_url = _elevenlabs_websocket_url(user_config.tts.base_url)
+        elevenlabs_url = elevenlabs_websocket_url(user_config.tts.base_url)
+        _validate_runtime_service_url(elevenlabs_url, "base_url")
         plan = tuning_for(tuning, "tts", ServiceProviders.ELEVENLABS.value)
         settings = build_settings(
             ElevenLabsTTSSettings,

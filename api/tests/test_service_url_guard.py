@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from secrets import token_hex
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import httpx
 import httpx2
@@ -16,6 +17,9 @@ from loguru import logger
 
 from api.services.configuration.check_validity import UserConfigurationValidator
 from api.services.configuration.registry import (
+    DeepgramSTTConfiguration,
+    ElevenlabsSTTConfiguration,
+    ElevenlabsTTSConfiguration,
     OpenAILLMService,
     ServiceProviders,
     SpeachesLLMConfiguration,
@@ -26,7 +30,12 @@ from api.services.gen_ai.embedding.azure_openai_service import (
     AzureOpenAIEmbeddingService,
 )
 from api.services.gen_ai.embedding.openai_service import OpenAIEmbeddingService
-from api.services.pipecat.service_factory import create_llm_service_from_provider
+from api.services.pipecat.audio_config import AudioConfig
+from api.services.pipecat.service_factory import (
+    create_llm_service_from_provider,
+    create_stt_service,
+    create_tts_service,
+)
 from api.services.security import egress_guard
 from api.services.security.egress_guard import (
     EgressBlocked,
@@ -39,6 +48,7 @@ from api.services.security.egress_guard import (
 PUBLIC_IP = "93.184.216.34"  # what conftest's public_dns resolves every name to
 IMDS = "http://169.254.169.254/latest/meta-data/"
 KEY = token_hex(12)  # generated per run
+AUDIO = AudioConfig(transport_in_sample_rate=16000, transport_out_sample_rate=16000)
 
 pytestmark = pytest.mark.usefixtures("public_dns")
 
@@ -414,22 +424,80 @@ async def test_prewarm_with_the_guard_off_resolves_nothing(monkeypatch):
     assert dns.lookups == 0  # and with no lookup, nothing was cached
 
 
-# --- the guard judges the URL the client will use (review r1, bf601ab39259, aa5d2aac9673) ---
+# --- the guard judges the exact URL the client uses (review r1 bf601ab39259, aa5d2aac9673; r2 9f7d8d355b63) ---
 
 
 @pytest.mark.parametrize(
-    "url, host",
+    "config, role",
     [
+        # Deepgram's documented regional switch: its client gets https://api.eu.deepgram.com.
+        (DeepgramSTTConfiguration(api_key=KEY, base_url="api.eu.deepgram.com"), "stt"),
+        # Pipecat's ElevenLabs STT builds wss://{host}/... from the bare host.
         (
-            "api.eu.deepgram.com",
-            "api.eu.deepgram.com",
-        ),  # Deepgram's documented regional switch
-        ("api.eu.residency.elevenlabs.io", "api.eu.residency.elevenlabs.io"),
-        (" https://api.elevenlabs.io ", "api.elevenlabs.io"),
+            ElevenlabsSTTConfiguration(
+                api_key=KEY, base_url="api.eu.residency.elevenlabs.io"
+            ),
+            "stt",
+        ),
+        (
+            ElevenlabsTTSConfiguration(
+                api_key=KEY, voice="v", base_url=" https://api.elevenlabs.io "
+            ),
+            "tts",
+        ),
     ],
 )
-def test_a_bare_or_padded_service_host_is_checked_as_https(enforced, url, host):
-    assert check_service_url(url, field="base_url") == EgressTarget(host, PUBLIC_IP)
+def test_a_bare_or_padded_value_the_runtime_accepts_is_saved(
+    enforced, monkeypatch, config, role
+):
+    monkeypatch.setattr(
+        UserConfigurationValidator, "_check_deepgram_api_key", lambda *a: True
+    )
+    assert UserConfigurationValidator()._validate_service(config, role) == []
+
+
+def test_a_bare_elevenlabs_stt_host_builds_in_a_cell(enforced):
+    user_config = SimpleNamespace(
+        stt=SimpleNamespace(
+            provider=ServiceProviders.ELEVENLABS.value,
+            api_key=KEY,
+            model="scribe_v2_realtime",
+            language="en",
+            base_url="api.eu.residency.elevenlabs.io",
+        )
+    )
+    with patch(
+        "api.services.pipecat.service_factory.ElevenLabsRealtimeSTTService"
+    ) as stt_service:
+        create_stt_service(user_config, AUDIO)
+    assert stt_service.call_args.kwargs["base_url"] == "api.eu.residency.elevenlabs.io"
+
+
+def test_a_padded_elevenlabs_tts_url_builds_in_a_cell(enforced):
+    user_config = SimpleNamespace(
+        tts=SimpleNamespace(
+            provider=ServiceProviders.ELEVENLABS.value,
+            api_key=KEY,
+            model="eleven_flash_v2_5",
+            voice="test-voice",
+            speed=1.0,
+            base_url=" https://api.elevenlabs.io ",
+        )
+    )
+    with patch(
+        "api.services.pipecat.service_factory.ElevenLabsTTSService"
+    ) as tts_service:
+        create_tts_service(user_config, AUDIO)
+    assert tts_service.call_args.kwargs["url"] == "wss://api.elevenlabs.io"
+
+
+def test_a_bare_speaches_host_is_refused_at_call_start_too(enforced):
+    user_config = SimpleNamespace(
+        stt=SpeachesSTTConfiguration(base_url="speaches.example.com/v1")
+    )
+    with pytest.raises(HTTPException) as e:
+        create_stt_service(user_config, AUDIO)
+    assert "scheme '' is not one of" in e.value.detail
 
 
 def test_a_bare_host_is_refused_at_save_when_the_client_takes_it_as_is(enforced):
@@ -447,10 +515,9 @@ def test_a_bare_internal_host_is_still_refused(enforced, url):
         check_service_url(url, field="base_url")
 
 
-def test_a_blank_service_url_has_no_host(enforced):
-    with pytest.raises(EgressBlocked) as e:
+def test_a_blank_service_url_is_refused(enforced):
+    with pytest.raises(EgressBlocked):
         check_service_url("   ", field="base_url")
-    assert e.value.reason == "the URL has no host"
 
 
 def test_a_failure_entry_expires_after_5_s_while_a_success_is_still_served(

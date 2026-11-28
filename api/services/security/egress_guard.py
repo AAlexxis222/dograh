@@ -48,8 +48,6 @@ _SERVICE_HINT = (
 )
 _TOOL_SCHEMES = ("http", "https")
 _SERVICE_SCHEMES = ("http", "https", "ws", "wss")
-# The fields of a service config section that hold a URL the tenant set.
-SERVICE_URL_FIELDS = ("base_url", "endpoint")
 # How long a service host's DNS answer is reused, and how many hosts are kept.
 _RESOLUTION_TTL_SECONDS = 60.0
 # A failure is kept only long enough to cover the burst of checks that follows a prewarm, so a resolver hiccup
@@ -490,11 +488,10 @@ def check_service_url(url: str | None, *, field: str) -> EgressTarget:
 
     Same rules as ``check_tool_url`` with ws and wss admitted, for the providers that connect by websocket. It may
     wait for DNS unless the host's answer is cached (``prewarm_service_urls``); on an event loop that wait is bounded
-    (``_ResolutionCache``). Guard off: the DEPLOYMENT_MODE check runs and the
-    target is empty. Enforced, a bare host or a padded value is judged as the client will use it (``_as_client_url``).
+    (``_ResolutionCache``). Guard off: the DEPLOYMENT_MODE check runs and the target is empty. ``url`` is the exact
+    string the client receives: a caller whose client normalises the stored value passes the normalised one
+    (``api.services.configuration.client_urls``).
     """
-    if url_guard_enforced():
-        url = _as_client_url(url)
     address = _check_url(
         url,
         field=field,
@@ -504,26 +501,6 @@ def check_service_url(url: str | None, *, field: str) -> EgressTarget:
         resolve=_service_resolutions.resolve,
     )
     return _egress_target(url, address)
-
-
-def _as_client_url(url: str | None) -> str:
-    """The URL a service client connects to: surrounding blanks dropped and, with no scheme, https assumed (what
-    the factory's Deepgram and ElevenLabs normalisers do), so the validator and the factory judge the same URL."""
-    url = (url or "").strip()
-    if url and "://" not in url:
-        return f"https://{url}"
-    return url
-
-
-def service_config_urls(*service_configs: Any) -> list[str]:
-    """The URLs (``SERVICE_URL_FIELDS``) the tenant set in these config sections; a None section is skipped."""
-    return [
-        url
-        for config in service_configs
-        if config is not None
-        for field in SERVICE_URL_FIELDS
-        if isinstance(url := getattr(config, field, None), str) and url
-    ]
 
 
 def _prewarm_one(url: str) -> None:

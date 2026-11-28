@@ -12,6 +12,11 @@ from groq import Groq
 from api.schemas.ai_model_configuration import (
     EffectiveAIModelConfiguration,
 )
+from api.services.configuration.client_urls import (
+    SERVICE_URL_FIELDS,
+    config_client_urls,
+    service_client_url,
+)
 from api.services.configuration.registry import (
     HOPPER_API_BASE_URL,
     ServiceConfig,
@@ -19,11 +24,9 @@ from api.services.configuration.registry import (
 )
 from api.services.mps_service_key_client import mps_service_key_client
 from api.services.security.egress_guard import (
-    SERVICE_URL_FIELDS,
     EgressTarget,
     check_service_url,
     prewarm_service_urls,
-    service_config_urls,
 )
 
 AuthContext = TypedDict(
@@ -114,12 +117,18 @@ class UserConfigurationValidator:
 
         # The URL checks below are synchronous: resolve the hosts of the sections they validate off the event loop.
         validated_sections = (
-            [configuration.llm, configuration.realtime]
+            {"llm": configuration.llm, "realtime": configuration.realtime}
             if configuration.is_realtime
-            else [configuration.llm, configuration.stt, configuration.tts]
+            else {
+                "llm": configuration.llm,
+                "stt": configuration.stt,
+                "tts": configuration.tts,
+            }
         )
         await prewarm_service_urls(
-            service_config_urls(*validated_sections, configuration.embeddings)
+            config_client_urls(
+                {**validated_sections, "embeddings": configuration.embeddings}
+            )
         )
 
         status_list.extend(self._validate_service(configuration.llm, "llm"))
@@ -158,13 +167,17 @@ class UserConfigurationValidator:
 
         provider = service_config.provider
 
-        # Where each checked URL may connect: the key check below uses the same address.
+        # Where each checked URL may connect: the key check below uses the same address. The check judges the URL
+        # the runtime's client will use, so a value is saved exactly when a call can use it.
         targets: dict[str, EgressTarget] = {}
         for url_field in SERVICE_URL_FIELDS:
             url = getattr(service_config, url_field, None)
             if url:
                 try:
-                    targets[url_field] = check_service_url(url, field=url_field)
+                    targets[url_field] = check_service_url(
+                        service_client_url(provider, service_name, url),
+                        field=url_field,
+                    )
                 except ValueError as e:
                     return [{"model": service_name, "message": str(e)}]
 
