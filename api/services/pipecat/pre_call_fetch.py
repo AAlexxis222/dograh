@@ -140,11 +140,9 @@ async def execute_pre_call_fetch(
     logger.info(f"Pre-call fetch: POST {redact_failure_message(url)}")
 
     try:
-        # The tenant sets this URL: the guard decides where the request may go (this path never had the
-        # DEPLOYMENT_MODE check, so with the guard off it connects as before).
-        target = await guard_egress(
-            url, field="pre_call_fetch_url", hint=_URL_HINT, legacy_check=False
-        )
+        # The tenant sets this URL: the guard decides where the request may go. With the guard off the
+        # DEPLOYMENT_MODE check runs, as for custom tools and the transfer resolver (in OSS mode it lets it through).
+        target = await guard_egress(url, field="pre_call_fetch_url", hint=_URL_HINT)
         async with target.httpx_client(
             timeout=PRE_CALL_FETCH_TIMEOUT_SECONDS
         ) as client:
