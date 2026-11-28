@@ -64,6 +64,9 @@ def test_atlascloud_api_key_validation_uses_atlascloud_base_url(monkeypatch):
     assert captured == {
         "api_key": "atlas-key",
         "base_url": "https://api.atlascloud.ai/v1",
+        # One bounded attempt (review r2, 71e822e75122).
+        "timeout": 10.0,
+        "max_retries": 0,
     }
 
 

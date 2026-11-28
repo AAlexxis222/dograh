@@ -51,6 +51,9 @@ _OPENAI_COMPATIBLE_PROVIDER_BASE_URLS = {
     ServiceProviders.HOPPER.value: HOPPER_API_BASE_URL,
 }
 
+# The bound of a key check that connects to a URL the tenant set (the same as the fixed-host checks below).
+_KEY_CHECK_TIMEOUT_SECONDS = 10.0
+
 
 class UserConfigurationValidator:
     def __init__(self):
@@ -292,7 +295,13 @@ class UserConfigurationValidator:
         target: Optional[EgressTarget] = None,
     ) -> bool:
         provider_name = _OPENAI_COMPATIBLE_PROVIDER_NAMES.get(model, "OpenAI")
-        client_kwargs: dict[str, Any] = {"api_key": api_key}
+        # It runs on the event loop of the async validate() the routes await, against a URL the tenant may set:
+        # one bounded attempt instead of the SDK's 600 s read timeout and two retries.
+        client_kwargs: dict[str, Any] = {
+            "api_key": api_key,
+            "timeout": _KEY_CHECK_TIMEOUT_SECONDS,
+            "max_retries": 0,
+        }
         base_url = (
             getattr(service_config, "base_url", None) if service_config else None
         ) or _OPENAI_COMPATIBLE_PROVIDER_BASE_URLS.get(model)

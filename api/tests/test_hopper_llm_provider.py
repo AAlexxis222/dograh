@@ -90,7 +90,12 @@ def test_hopper_api_key_validation_lists_models_at_hopper_endpoint(monkeypatch):
     )
 
     assert is_valid is True
-    assert captured == {"api_key": "sk_hopper_test", "base_url": HOPPER_API_BASE_URL}
+    assert captured == {
+        "api_key": "sk_hopper_test",
+        "base_url": HOPPER_API_BASE_URL,
+        "timeout": 10.0,  # one bounded attempt (review r2, 71e822e75122)
+        "max_retries": 0,
+    }
 
 
 def test_hopper_api_key_validation_reports_hopper_error(monkeypatch):
