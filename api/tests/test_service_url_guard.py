@@ -2,6 +2,7 @@
 
 import socket
 import threading
+import time
 from secrets import token_hex
 from types import SimpleNamespace
 
@@ -210,6 +211,33 @@ async def test_factory_build_after_the_prewarm_resolves_nothing_on_the_event_loo
     create_llm_service(user_config)
     assert threads
     assert threading.get_ident() not in threads
+
+
+async def test_an_on_loop_lookup_that_does_not_answer_is_refused_within_the_bound(
+    enforced, monkeypatch
+):
+    # Review r2 (8cee9264e264, 4e8385aab6c4, 1cedb2e1c0d4): a URL no prewarm covers, here the HuggingFace default
+    # the factory supplies itself, checked on the loop with a resolver that does not answer.
+    gate = threading.Event()
+
+    def hung_getaddrinfo(host, port, *a, **k):
+        gate.wait(4)
+        return [(socket.AF_INET, 1, 6, "", (PUBLIC_IP, port))]
+
+    monkeypatch.setattr("socket.getaddrinfo", hung_getaddrinfo)
+    started = time.monotonic()
+    try:
+        with pytest.raises(HTTPException) as e:  # red today: the loop waits 4 s
+            create_llm_service_from_provider(
+                provider=ServiceProviders.HUGGINGFACE.value,
+                model="meta-llama/Llama-3.1-8B-Instruct",
+                api_key=f"hf_{KEY}",
+            )
+    finally:
+        elapsed = time.monotonic() - started
+        gate.set()
+    assert elapsed < 2.5
+    assert e.value.status_code == 400 and "could not be resolved" in e.value.detail
 
 
 # --- the validator's key check connects where the guard looked ---
