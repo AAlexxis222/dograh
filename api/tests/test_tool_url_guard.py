@@ -840,8 +840,25 @@ async def test_pre_call_fetch_to_a_public_host_is_pinned_to_the_validated_ip(
     assert request.headers["host"] == "crm.example.com"
 
 
+async def test_pre_call_fetch_flag_off_saas_mode_refuses_private_hosts_like_its_siblings(
+    monkeypatch,
+):
+    # Review r2 (55bdc622d291): custom tools and the transfer resolver run the legacy check with the flag off.
+    monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
+    monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "saas")
+    wire = Wire()
+    wire.patch(monkeypatch)
+    result, failures = await _pre_call_fetch(monkeypatch, IMDS)
+    assert wire.requests == []  # red today: the POST reaches 169.254.169.254
+    assert result == {}
+    (failure,) = failures
+    assert failure.error_owner == "user"
+    assert "must resolve to a public IP address" in failure.internal_message
+
+
 async def test_pre_call_fetch_flag_off_sends_the_request_as_today(monkeypatch):
     monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
+    monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "oss")
     wire = Wire()
     wire.patch(monkeypatch)
     result, failures = await _pre_call_fetch(monkeypatch, IMDS)
