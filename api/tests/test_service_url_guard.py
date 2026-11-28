@@ -1,5 +1,7 @@
 """VOZ-N0-41: service URLs honour URL_GUARD_ENFORCE (VOZ-AC-B5-91, VOZ-AC-B0-30)."""
 
+import asyncio
+import contextlib
 import socket
 import threading
 import time
@@ -203,6 +205,95 @@ async def test_validator_resolves_no_service_host_on_the_event_loop(
     await UserConfigurationValidator().validate(configuration)
     assert threads  # the hosts were checked
     assert threading.get_ident() not in threads  # red today: all three on the loop
+
+
+class _LoopWatch:
+    """The longest time, in seconds, the event loop went without running a ticker task of the test."""
+
+    def __init__(self):
+        self.longest = 0.0
+        self._last = time.monotonic()
+        self._ticker = None
+
+    async def _tick(self):
+        while True:
+            await asyncio.sleep(0.01)
+            self._note()
+
+    def _note(self):
+        now = time.monotonic()
+        self.longest = max(self.longest, now - self._last)
+        self._last = now
+
+    async def __aenter__(self):
+        self._ticker = asyncio.create_task(self._tick())
+        await asyncio.sleep(0.02)
+        self.longest, self._last = 0.0, time.monotonic()
+        return self
+
+    async def __aexit__(self, *exc):
+        self._note()  # a block that ended the body is counted although the ticker did not run after it
+        self._ticker.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._ticker
+
+
+@contextlib.asynccontextmanager
+async def _dripping_server(seconds: float, every: float):
+    """A local HTTP server that answers every request one byte of a response every ``every`` s for ``seconds``."""
+    handlers = set()
+    response = b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{}"
+
+    async def handle(reader, writer):
+        handlers.add(asyncio.current_task())
+        await reader.readuntil(b"\r\n\r\n")
+        for byte in response[: int(seconds / every)]:
+            if writer.is_closing():
+                break
+            writer.write(bytes([byte]))
+            await asyncio.sleep(every)
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    try:
+        yield f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/v1"
+    finally:
+        for handler in handlers:
+            handler.cancel()
+        server.close()
+        server.close_clients()
+        await server.wait_closed()
+
+
+async def test_a_dripping_tenant_server_holds_neither_the_loop_nor_the_save(
+    monkeypatch,
+):
+    # Review r3 (9ec1ad5d6899, 71e822e75122): the key check's timeout bounded each read, not the request, and it
+    # ran on the event loop of the async validate(): a server that sends a byte inside every window held the loop.
+    monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
+    monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "oss")
+    monkeypatch.setattr(
+        "api.services.configuration.check_validity._KEY_CHECK_TIMEOUT_SECONDS", 1.0
+    )
+    async with _dripping_server(seconds=5.0, every=0.3) as base_url:
+        configuration = SimpleNamespace(
+            llm=OpenAILLMService(api_key=KEY, base_url=base_url),
+            stt=None,
+            tts=None,
+            embeddings=None,
+            realtime=None,
+            is_realtime=False,
+        )
+        started = time.monotonic()
+        async with _LoopWatch() as watch:
+            with pytest.raises(ValueError) as e:
+                await UserConfigurationValidator().validate(configuration)
+        elapsed = time.monotonic() - started
+    assert watch.longest < 0.2  # red today: the loop is held while the check reads
+    assert elapsed < 2.5  # red without the request deadline: the check reads for 5 s
+    (llm,) = [status for status in e.value.args[0] if status["model"] == "llm"]
+    assert "did not answer" in llm["message"]
+
 
 
 async def test_factory_build_after_the_prewarm_resolves_nothing_on_the_event_loop(
