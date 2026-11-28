@@ -32,9 +32,9 @@ from api.services.pipecat.recording_router_processor import RecordingRouterProce
 from api.services.pipecat.service_factory import (
     create_llm_service,
     create_tts_service,
-    prewarm_config_service_urls,
 )
 from api.services.pipecat.service_tuning import llm_tuning_applies
+from api.services.security.egress_guard import build_resolving_service_hosts
 from api.services.workflow.agent_runtime import AgentRuntime, new_visit_id
 from api.services.workflow.dto import ReactFlowDTO
 from api.services.workflow.run_creation import definition_to_run
@@ -181,13 +181,14 @@ class AgentRuntimeFactory:
         )
 
         service_tuning = run_configs.get("service_tuning")
-        await prewarm_config_service_urls(user_config)
-        llm = create_llm_service(
+        llm = await build_resolving_service_hosts(
+            create_llm_service,
             user_config,
             correlation_id=self._mps_correlation_id,
             tuning=service_tuning,
         )
-        tts = create_tts_service(
+        tts = await build_resolving_service_hosts(
+            create_tts_service,
             user_config,
             self._audio_config,
             correlation_id=self._mps_correlation_id,
@@ -211,7 +212,8 @@ class AgentRuntimeFactory:
             needs_extraction_llm
             and user_config.llm.provider == ServiceProviders.DOGRAH.value
         ):
-            variable_extraction_llm = create_llm_service(
+            variable_extraction_llm = await build_resolving_service_hosts(
+                create_llm_service,
                 user_config,
                 correlation_id=self._mps_correlation_id,
                 usage_context="variable_extraction",
@@ -219,7 +221,8 @@ class AgentRuntimeFactory:
                 role="extraction",
             )
         elif needs_extraction_llm and not shares_existing_llm:
-            variable_extraction_llm = create_llm_service(
+            variable_extraction_llm = await build_resolving_service_hosts(
+                create_llm_service,
                 user_config,
                 correlation_id=self._mps_correlation_id,
                 tuning=service_tuning,

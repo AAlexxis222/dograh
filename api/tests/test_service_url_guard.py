@@ -5,8 +5,6 @@ import contextlib
 import socket
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeout
 from secrets import token_hex
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,7 +13,6 @@ import httpx
 import httpx2
 import pytest
 from fastapi import HTTPException
-from loguru import logger
 from pipecat.services.huggingface.llm import HuggingFaceLLMService
 
 from api.services.configuration.check_validity import UserConfigurationValidator
@@ -43,7 +40,9 @@ from api.services.security import egress_guard
 from api.services.security.egress_guard import (
     EgressBlocked,
     EgressTarget,
+    ServiceHostUnresolved,
     _ResolutionCache,
+    build_resolving_service_hosts,
     check_service_url,
     check_tool_url,
 )
@@ -348,75 +347,24 @@ async def test_an_async_build_with_a_cold_host_does_not_hold_the_event_loop(
     assert isinstance(llm, HuggingFaceLLMService)
 
 
-async def test_factory_build_after_the_prewarm_resolves_nothing_on_the_event_loop(
+async def test_a_factory_default_host_is_resolved_without_holding_the_loop(
     enforced, monkeypatch
 ):
-    from api.services.pipecat.service_factory import (
-        create_llm_service,
-        prewarm_config_service_urls,
-    )
-
-    threads = _lookup_threads(monkeypatch)
-    user_config = SimpleNamespace(
-        llm=OpenAILLMService(api_key=KEY, base_url="https://llm.example.com/v1"),
-        stt=None,
-        tts=None,
-        realtime=None,
-    )
-    await prewarm_config_service_urls(user_config)
-    create_llm_service(user_config)
-    assert threads
-    assert threading.get_ident() not in threads
-
-
-async def test_an_on_loop_lookup_that_does_not_answer_is_refused_within_the_bound(
-    enforced, monkeypatch
-):
-    # Review r2 (8cee9264e264, 4e8385aab6c4, 1cedb2e1c0d4): a URL no prewarm covers, here the HuggingFace default
-    # the factory supplies itself, checked on the loop with a resolver that does not answer.
-    gate = threading.Event()
-
-    def hung_getaddrinfo(host, port, *a, **k):
-        gate.wait(4)
+    # Review r3 (RUL-r3-12 (4)): the HuggingFace default, which no configuration names, behind a lookup of 1 s.
+    def slow_getaddrinfo(host, port, *a, **k):
+        time.sleep(1.0)
         return [(socket.AF_INET, 1, 6, "", (PUBLIC_IP, port))]
 
-    monkeypatch.setattr("socket.getaddrinfo", hung_getaddrinfo)
-    started = time.monotonic()
-    try:
-        with pytest.raises(HTTPException) as e:  # red today: the loop waits 4 s
-            create_llm_service_from_provider(
-                provider=ServiceProviders.HUGGINGFACE.value,
-                model="meta-llama/Llama-3.1-8B-Instruct",
-                api_key=f"hf_{KEY}",
-            )
-    finally:
-        elapsed = time.monotonic() - started
-        gate.set()
-    assert elapsed < 2.5
-    assert e.value.status_code == 400 and "could not be resolved" in e.value.detail
-
-
-async def test_a_service_built_on_the_loop_without_the_prewarm_is_logged(
-    enforced, monkeypatch
-):
-    # Review r2 (47dd71ea571f): a caller that forgot the prewarm is visible, and its lookup still left the loop.
-    from api.services.pipecat.service_factory import create_llm_service
-
-    threads = _lookup_threads(monkeypatch)
-    user_config = SimpleNamespace(
-        llm=OpenAILLMService(api_key=KEY, base_url="https://llm.example.com/v1"),
-        stt=None,
-        tts=None,
-        realtime=None,
-    )
-    lines = []
-    sink = logger.add(lambda message: lines.append(str(message)), level="WARNING")
-    try:
-        create_llm_service(user_config)
-    finally:
-        logger.remove(sink)
-    assert any("prewarm missing" in ln and "llm.example.com" in ln for ln in lines)
-    assert threads and threading.get_ident() not in threads
+    monkeypatch.setattr("socket.getaddrinfo", slow_getaddrinfo)
+    async with _LoopWatch() as watch:
+        llm = await build_resolving_service_hosts(
+            create_llm_service_from_provider,
+            provider=ServiceProviders.HUGGINGFACE.value,
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            api_key=f"hf_{KEY}",
+        )
+    assert watch.longest < 0.2, f"the event loop was held {watch.longest:.2f} s"
+    assert isinstance(llm, HuggingFaceLLMService)
 
 
 # --- the validator's key check connects where the guard looked ---
@@ -550,23 +498,6 @@ def test_the_cache_keeps_at_most_its_bound(monkeypatch):
     assert dns.lookups == 4  # the least recently used went
 
 
-async def test_prewarm_swallows_a_refusal_and_the_check_reports_it(
-    enforced, monkeypatch
-):
-    dns = _Resolver(monkeypatch, "10.0.0.10")
-    await egress_guard.prewarm_service_urls(["https://llm.example.com/v1"])
-    with pytest.raises(EgressBlocked, match="internal address"):
-        check_service_url("https://llm.example.com/v1", field="base_url")
-    assert dns.lookups == 1
-
-
-async def test_prewarm_with_the_guard_off_resolves_nothing(monkeypatch):
-    monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
-    dns = _Resolver(monkeypatch, PUBLIC_IP)
-    await egress_guard.prewarm_service_urls(["https://llm.example.com/v1"])
-    assert dns.lookups == 0  # and with no lookup, nothing was cached
-
-
 # --- the guard judges the exact URL the client uses (review r1 bf601ab39259, aa5d2aac9673; r2 9f7d8d355b63) ---
 
 
@@ -682,132 +613,91 @@ def test_a_failure_entry_expires_after_5_s_while_a_success_is_still_served(
     assert dns.lookups == 3  # with failures kept 60 s, the flaky host stays unresolved
 
 
-# --- a miss on the event loop: bounded wait, lookups shared in flight (review r2, RUL-r2-1) ---
+# --- a miss on the event loop raises; the wrapper resolves it off the loop (review r3, RUL-r3-10) ---
 
 
-class _Lookup:
-    """A pool lookup the test finishes by hand. Records every bounded wait; ``on_wait`` runs once the wait has
-    decided it timed out, so the test can land the answer between that decision and the cache's reaction."""
-
-    def __init__(self, on_wait):
-        self.waits = []
-        self._on_wait = on_wait
-        self._callbacks = []
-        self._done = False
-        self._value = None
-
-    def add_done_callback(self, callback):
-        if self._done:
-            callback(self)
-        else:
-            self._callbacks.append(callback)
-
-    def result(self, timeout=None):
-        if timeout is None:  # the cache reading a finished lookup
-            return self._value
-        done = self._done
-        self.waits.append(timeout)
-        if self._on_wait:
-            self._on_wait(self)
-        if not done:
-            raise FutureTimeout()
-        return self._value
-
-    def exception(self):
-        return None
-
-    def finish(self, value):
-        self._done, self._value = True, value
-        for callback in self._callbacks:
-            callback(self)
+async def test_an_on_loop_miss_raises_and_looks_nothing_up(monkeypatch):
+    cache, _ = _cache()
+    dns = _Resolver(monkeypatch, PUBLIC_IP)
+    with pytest.raises(ServiceHostUnresolved) as e:
+        cache.resolve("cold.example.com", 443)
+    assert (e.value.host, e.value.port) == ("cold.example.com", 443)
+    assert dns.lookups == 0
+    assert not isinstance(e.value, ValueError)  # no caller may read it as a refusal
 
 
-class _Pool:
-    """Stands in for the lookup pool: hands out lookups the test finishes."""
-
-    def __init__(self):
-        self.lookups = []
-        self.on_wait = None
-
-    def submit(self, fn, *args):
-        lookup = _Lookup(self.on_wait)
-        self.lookups.append(lookup)
-        return lookup
-
-
-def _loop_cache() -> tuple[_ResolutionCache, _Clock, _Pool]:
-    """A cache of the test's own with the service check's settings, a hand-moved clock and a hand-run pool."""
-    clock, pool = _Clock(), _Pool()
-    return _ResolutionCache(clock=clock, pool=pool), clock, pool
-
-
-async def test_an_on_loop_miss_waits_1_s_at_most():
-    cache, _, pool = _loop_cache()
-    assert cache.resolve("slow.example.com", 443) is None
-    (lookup,) = pool.lookups
-    assert lookup.waits == [1.0]
-
-
-async def test_a_timed_out_host_is_refused_for_60_s_unless_its_late_answer_lands():
-    cache, clock, pool = _loop_cache()
-    assert cache.resolve("slow.example.com", 443) is None
-    clock.now += 59
-    assert cache.resolve("slow.example.com", 443) is None
-    (lookup,) = pool.lookups
-    assert len(lookup.waits) == 1  # refused from the cache, no second wait
-    clock.now += 2
-    assert cache.resolve("slow.example.com", 443) is None
-    # Expired: it waits again, on the lookup still in flight, never a second one.
-    assert len(pool.lookups) == 1 and len(lookup.waits) == 2
-    lookup.finish((PUBLIC_IP,))
-    assert cache.resolve("slow.example.com", 443) == (PUBLIC_IP,)
-    assert len(lookup.waits) == 2
-
-
-async def test_an_answer_that_lands_as_the_wait_times_out_is_not_overwritten():
-    cache, _, pool = _loop_cache()
-    pool.on_wait = lambda lookup: lookup.finish((PUBLIC_IP,))
-    assert cache.resolve("slow.example.com", 443) is None  # this check timed out
-    assert cache.resolve("slow.example.com", 443) == (PUBLIC_IP,)
-    assert len(pool.lookups) == 1
-
-
-async def test_clear_drops_the_lookups_in_flight():
-    cache, _, pool = _loop_cache()
-    assert cache.resolve("slow.example.com", 443) is None
-    cache.clear()
-    pool.lookups[0].finish(("10.0.0.10",))  # the dropped lookup's answer is not stored
-    assert cache.resolve("slow.example.com", 443) is None
-    assert len(pool.lookups) == 2  # a fresh lookup, not the dropped one
-
-
-def test_a_miss_off_the_event_loop_resolves_inline(monkeypatch):
-    cache, _, pool = _loop_cache()
+def test_a_miss_off_the_event_loop_resolves_inline_and_is_stored(monkeypatch):
+    cache, _ = _cache()
     dns = _Resolver(monkeypatch, PUBLIC_IP)
     assert cache.resolve("h.example.com", 443) == (PUBLIC_IP,)
-    assert dns.lookups == 1 and pool.lookups == []
+    assert cache.resolve("h.example.com", 443) == (PUBLIC_IP,)
+    assert dns.lookups == 1
 
 
-async def test_hung_lookups_fill_the_pool_and_then_a_fast_host_times_out_too(
+async def test_a_miss_is_resolved_off_the_loop_and_the_build_runs_again(
+    enforced, monkeypatch
+):
+    threads = _lookup_threads(monkeypatch)
+    runs = []
+
+    def builder(url, *, field):
+        runs.append(url)
+        return check_service_url(url, field=field)
+
+    target = await build_resolving_service_hosts(
+        builder, "https://svc.example.com/v1", field="base_url"
+    )
+    assert target == EgressTarget(host="svc.example.com", address=PUBLIC_IP)
+    assert len(runs) == 2  # the miss, then the run that reads the cached answer
+    assert len(threads) == 1 and threading.get_ident() not in threads
+
+
+async def test_a_host_that_failed_to_resolve_is_refused_on_the_run_again(
+    enforced, monkeypatch
+):
+    dns = _Resolver(monkeypatch, None)
+    with pytest.raises(EgressBlocked, match="could not be resolved"):
+        await build_resolving_service_hosts(
+            check_service_url, "https://svc.example.com/v1", field="base_url"
+        )
+    assert dns.lookups == 1  # the failure is read from the cache, not looked up again
+
+
+async def test_the_wrapper_gives_up_after_4_attempts(enforced, monkeypatch):
+    lookups = []
+    # A resolver that never stores: every run misses again.
+    monkeypatch.setattr(
+        egress_guard._service_resolutions,
+        "resolve",
+        lambda host, port: lookups.append((host, port)),
+    )
+    runs = []
+
+    def builder():
+        runs.append(1)
+        raise ServiceHostUnresolved("svc.example.com", 443)
+
+    with pytest.raises(RuntimeError, match="after 4 attempts"):
+        await build_resolving_service_hosts(builder)
+    assert len(runs) == 4 and len(lookups) == 3
+
+
+async def test_with_the_guard_off_the_wrapper_builds_once_and_looks_nothing_up(
     monkeypatch,
 ):
-    # The bound the pool's size buys (egress_guard._LOOKUP_WORKERS): as many hung hosts as workers.
-    gate = threading.Event()
+    monkeypatch.delenv("URL_GUARD_ENFORCE", raising=False)
+    monkeypatch.setattr("api.utils.url_security.DEPLOYMENT_MODE", "oss")
+    dns = _Resolver(monkeypatch, PUBLIC_IP)
+    runs = []
 
-    def getaddrinfo(host, port, *a, **k):
-        if host.startswith("blackhole"):
-            gate.wait(5)
-        return [(socket.AF_INET, 1, 6, "", (PUBLIC_IP, port))]
+    def builder(url, *, field):
+        runs.append(url)
+        return check_service_url(url, field=field)
 
-    monkeypatch.setattr("socket.getaddrinfo", getaddrinfo)
-    pool = ThreadPoolExecutor(max_workers=2)
-    cache = _ResolutionCache(pool=pool, loop_timeout=0.2)
-    try:
-        assert cache.resolve("blackhole-1.example.com", 443) is None
-        assert cache.resolve("blackhole-2.example.com", 443) is None
-        assert cache.resolve("fast.example.com", 443) is None  # queued behind them
-    finally:
-        gate.set()
-        pool.shutdown(wait=True)
-    assert cache.resolve("fast.example.com", 443) == (PUBLIC_IP,)  # its late answer
-    assert egress_guard._LOOKUP_WORKERS == 16
+    assert (
+        await build_resolving_service_hosts(
+            builder, "https://svc.example.com/v1", field="base_url"
+        )
+        == EgressTarget()
+    )
+    assert len(runs) == 1 and dns.lookups == 0

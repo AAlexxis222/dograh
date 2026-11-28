@@ -25,7 +25,6 @@ from api.errors.failure import (
     log_failure,
 )
 from api.services.configuration.client_urls import (
-    config_client_urls,
     deepgram_client_url,
     elevenlabs_realtime_stt_host,
     elevenlabs_websocket_url,
@@ -87,8 +86,8 @@ from api.services.pipecat.service_tuning_specs import (
 from api.services.pipecat.tts_cache.runtime import get_speech_cache
 from api.services.security.egress_guard import (
     EgressTarget,
+    ServiceHostUnresolved,
     check_service_url,
-    prewarm_service_urls,
 )
 from pipecat.services.assemblyai.stt import AssemblyAISTTService, AssemblyAISTTSettings
 from pipecat.services.aws.llm import AWSBedrockLLMService, AWSBedrockLLMSettings
@@ -218,6 +217,8 @@ def _report_service_factory_failures(
             )
             try:
                 service = factory(*args, **kwargs)
+            except ServiceHostUnresolved:
+                raise  # not a failure: build_resolving_service_hosts resolves the host and builds again
             except Exception as exc:
                 log_failure(
                     classify_exception(
@@ -311,25 +312,6 @@ def _validate_runtime_service_url(url: str, field_name: str) -> EgressTarget:
         return check_service_url(url, field=field_name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-async def prewarm_config_service_urls(user_config):
-    """Resolve, off the event loop, the hosts of the service URLs this configuration sets, and return it.
-
-    The create_*_service functions are synchronous and check every URL they build with; awaited before them, this
-    lets that check read the host's answer from the guard's cache instead of waiting (bounded, logged) for a lookup
-    on the loop the live calls share. A section the configuration lacks is skipped. Returning the configuration lets a caller resolve it
-    where it obtains it.
-    """
-    await prewarm_service_urls(
-        config_client_urls(
-            {
-                role: getattr(user_config, role, None)
-                for role in ("llm", "stt", "tts", "realtime")
-            }
-        )
-    )
-    return user_config
 
 
 # Partition prefixes are not always two letters: the European Sovereign Cloud
@@ -613,6 +595,8 @@ def create_stt_service(
         if user_config.stt.model in DEEPGRAM_FLUX_MODELS:
             # Flux connects to a tuned ctor.url instead of the regional host.
             endpoint = plan.ctor.get("url", deepgram_base_url)
+            if "url" in plan.ctor:
+                _validate_deepgram_url(plan.ctor["url"], "stt.deepgram.ctor.url")
 
     logger.info(
         f"Creating STT service: provider={user_config.stt.provider}, "
@@ -658,9 +642,6 @@ def create_stt_service(
                 settings.language_hints = [
                     _as_language(h) for h in settings.language_hints
                 ]
-            if "url" in plan.ctor:
-                _validate_deepgram_url(plan.ctor["url"], "stt.deepgram.ctor.url")
-
             return DeepgramFluxSTTService(
                 api_key=user_config.stt.api_key,
                 settings=settings,

@@ -77,7 +77,6 @@ from api.services.pipecat.service_factory import (
     create_realtime_llm_service,
     create_stt_service,
     create_tts_service,
-    prewarm_config_service_urls,
     stt_uses_external_turns,
 )
 from api.services.pipecat.service_tuning import (
@@ -99,6 +98,7 @@ from api.services.pipecat.worker_runner import (
     run_worker_runner,
 )
 from api.services.pipecat.ws_sender_registry import get_ws_sender
+from api.services.security.egress_guard import build_resolving_service_hosts
 from api.services.telephony import registry as telephony_registry
 from api.services.workflow.answer_classification_service import (
     AnswerClassificationService,
@@ -793,14 +793,12 @@ async def _run_pipeline_impl(
             get_effective_ai_model_configuration_for_workflow,
         )
 
-        user_config = await prewarm_config_service_urls(
-            await get_effective_ai_model_configuration_for_workflow(
-                organization_id=workflow.organization_id,
-                workflow_configurations=run_configs,
-            )
+        user_config = await get_effective_ai_model_configuration_for_workflow(
+            organization_id=workflow.organization_id,
+            workflow_configurations=run_configs,
         )
     else:
-        user_config = await prewarm_config_service_urls(resolved_user_config)
+        user_config = resolved_user_config
 
     workflow_graph = WorkflowGraph(
         ReactFlowDTO.model_validate(run_workflow_json),
@@ -832,29 +830,35 @@ async def _run_pipeline_impl(
     # Create services based on user configuration
     service_tuning = run_configs.get("service_tuning")
     if is_realtime:
-        llm = create_realtime_llm_service(
-            user_config, audio_config, tuning=service_tuning
+        llm = await build_resolving_service_hosts(
+            create_realtime_llm_service,
+            user_config,
+            audio_config,
+            tuning=service_tuning,
         )
         stt = None
         tts = None
         # Realtime services don't implement run_inference, so create a
         # separate text LLM for variable extraction and other out-of-band
         # inference calls.
-        inference_llm = create_llm_service(
+        inference_llm = await build_resolving_service_hosts(
+            create_llm_service,
             user_config,
             correlation_id=mps_correlation_id,
             tuning=service_tuning,
             role="inference",
         )
     else:
-        stt = create_stt_service(
+        stt = await build_resolving_service_hosts(
+            create_stt_service,
             user_config,
             audio_config,
             keyterms=keyterms,
             correlation_id=mps_correlation_id,
             tuning=service_tuning,
         )
-        tts = create_tts_service(
+        tts = await build_resolving_service_hosts(
+            create_tts_service,
             user_config,
             audio_config,
             correlation_id=mps_correlation_id,
@@ -862,8 +866,11 @@ async def _run_pipeline_impl(
             tts_cache_enabled=run_configs.get("tts_cache_enabled") is True,
             tuning=service_tuning,
         )
-        llm = create_llm_service(
-            user_config, correlation_id=mps_correlation_id, tuning=service_tuning
+        llm = await build_resolving_service_hosts(
+            create_llm_service,
+            user_config,
+            correlation_id=mps_correlation_id,
+            tuning=service_tuning,
         )
         inference_llm = None
 
@@ -884,7 +891,8 @@ async def _run_pipeline_impl(
         needs_extraction_llm
         and user_config.llm.provider == ServiceProviders.DOGRAH.value
     ):
-        variable_extraction_llm = create_llm_service(
+        variable_extraction_llm = await build_resolving_service_hosts(
+            create_llm_service,
             user_config,
             correlation_id=mps_correlation_id,
             usage_context="variable_extraction",
@@ -892,7 +900,8 @@ async def _run_pipeline_impl(
             role="extraction",
         )
     elif needs_extraction_llm and not shares_existing_llm:
-        variable_extraction_llm = create_llm_service(
+        variable_extraction_llm = await build_resolving_service_hosts(
+            create_llm_service,
             user_config,
             correlation_id=mps_correlation_id,
             tuning=service_tuning,
@@ -1075,7 +1084,8 @@ async def _run_pipeline_impl(
 
     # The run's frozen snapshot, not the workflow row (which mirrors the draft).
     voicemail_config = run_configs.get("voicemail_detection") or {}
-    answer_supervisor = _create_answer_supervisor(
+    answer_supervisor = await build_resolving_service_hosts(
+        _create_answer_supervisor,
         voicemail_config,
         is_realtime=is_realtime,
         start_node=start_node,

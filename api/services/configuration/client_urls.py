@@ -5,8 +5,6 @@ to its SDK as is. The service URL guard judges the exact string the client uses,
 configuration validator both pass these functions' output to it (``service_client_url``).
 """
 
-from collections.abc import Mapping
-from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 from api.services.configuration.options import DEEPGRAM_DEFAULT_BASE_URL
@@ -74,14 +72,3 @@ def service_client_url(provider: str | None, role: str, url: str) -> str:
             return f"wss://{elevenlabs_realtime_stt_host(url)}"
         return elevenlabs_websocket_url(url)
     return url
-
-
-def config_client_urls(sections: Mapping[str, Any]) -> list[str]:
-    """The client URLs of the URLs the tenant set in these config sections, by role; a None section is skipped."""
-    return [
-        service_client_url(getattr(config, "provider", None), role, url)
-        for role, config in sections.items()
-        if config is not None
-        for field in SERVICE_URL_FIELDS
-        if isinstance(url := getattr(config, field, None), str) and url
-    ]

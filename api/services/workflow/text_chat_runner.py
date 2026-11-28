@@ -47,10 +47,7 @@ from api.services.pipecat.pipeline_metrics_aggregator import (
 )
 from api.services.pipecat.pre_call_fetch import execute_pre_call_fetch
 from api.services.pipecat.recording_audio_cache import create_recording_audio_fetcher
-from api.services.pipecat.service_factory import (
-    create_llm_service,
-    prewarm_config_service_urls,
-)
+from api.services.pipecat.service_factory import create_llm_service
 from api.services.pipecat.service_tuning import llm_tuning_applies
 from api.services.pipecat.tracing_config import (
     build_remote_parent_context,
@@ -61,6 +58,7 @@ from api.services.pipecat.worker_runner import (
     run_pipeline_worker,
     wait_for_pipeline_worker_started,
 )
+from api.services.security.egress_guard import build_resolving_service_hosts
 from api.services.workflow.dto import ReactFlowDTO
 from api.services.workflow.initial_context import merge_external_initial_context
 from api.services.workflow.pipecat_engine import (
@@ -520,11 +518,9 @@ async def execute_text_chat_pending_turn(
         get_effective_ai_model_configuration_for_workflow,
     )
 
-    user_config = await prewarm_config_service_urls(
-        await get_effective_ai_model_configuration_for_workflow(
-            organization_id=workflow.organization_id,
-            workflow_configurations=run_configs,
-        )
+    user_config = await get_effective_ai_model_configuration_for_workflow(
+        organization_id=workflow.organization_id,
+        workflow_configurations=run_configs,
     )
     if user_config.llm is None:
         raise ValueError("Text chat requires an LLM configuration")
@@ -547,8 +543,11 @@ async def execute_text_chat_pending_turn(
     )
 
     service_tuning = run_configs.get("service_tuning")
-    llm = create_llm_service(
-        user_config, correlation_id=mps_correlation_id, tuning=service_tuning
+    llm = await build_resolving_service_hosts(
+        create_llm_service,
+        user_config,
+        correlation_id=mps_correlation_id,
+        tuning=service_tuning,
     )
     inference_llm = llm
     call_dispositions = WorkflowConfigurationDefaults.model_validate(
@@ -567,7 +566,8 @@ async def execute_text_chat_pending_turn(
         needs_extraction_llm
         and user_config.llm.provider == ServiceProviders.DOGRAH.value
     ):
-        variable_extraction_llm = create_llm_service(
+        variable_extraction_llm = await build_resolving_service_hosts(
+            create_llm_service,
             user_config,
             correlation_id=mps_correlation_id,
             usage_context="variable_extraction",
@@ -575,7 +575,8 @@ async def execute_text_chat_pending_turn(
             role="extraction",
         )
     elif needs_extraction_llm and not shares_existing_llm:
-        variable_extraction_llm = create_llm_service(
+        variable_extraction_llm = await build_resolving_service_hosts(
+            create_llm_service,
             user_config,
             correlation_id=mps_correlation_id,
             tuning=service_tuning,
@@ -982,8 +983,8 @@ async def extract_text_chat_final_variables(
         # Reuse the id the conversation already billed against rather than
         # minting a new one for a run that is over.
         correlation_id = initial_context.get(MPS_CORRELATION_ID_CONTEXT_KEY)
-        await prewarm_config_service_urls(user_config)
-        llm = create_llm_service(
+        llm = await build_resolving_service_hosts(
+            create_llm_service,
             user_config,
             correlation_id=correlation_id,
             usage_context="variable_extraction",

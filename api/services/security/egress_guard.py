@@ -5,22 +5,18 @@ the host off the event loop and returns an ``EgressTarget`` whose client is read
 address, redirects off, no env settings. Every refusal is an ``EgressBlocked``, in both modes. Callers only choose
 the wording (field, hint) and map the refusal to their own result shape.
 ``check_service_url()`` is the synchronous entry point for the service URLs a tenant configures (model providers,
-embeddings, STT/TTS); it also admits ws and wss. Its lookups go through a short-lived cache, which bounds how long a
-check on the event loop waits for DNS (``_ResolutionCache``). An async caller fills it off the loop with
-``await prewarm_service_urls(...)`` before it builds the services, so that wait rarely happens.
+embeddings, STT/TTS); it also admits ws and wss. Its lookups go through a short-lived cache. On an event loop a cache
+miss never looks up: it raises ``ServiceHostUnresolved``, and async callers build their services through
+``await build_resolving_service_hosts(builder, ...)``, which resolves the host off the loop and runs the build again.
 """
 
 import asyncio
-import contextlib
-import functools
 import ipaddress
 import socket
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Iterable
-from concurrent.futures import Executor, Future, ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeout
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -50,23 +46,12 @@ _TOOL_SCHEMES = ("http", "https")
 _SERVICE_SCHEMES = ("http", "https", "ws", "wss")
 # How long a service host's DNS answer is reused, and how many hosts are kept.
 _RESOLUTION_TTL_SECONDS = 60.0
-# A failure is kept only long enough to cover the burst of checks that follows a prewarm, so a resolver hiccup
-# does not refuse a host for a full minute.
+# A failure is kept only long enough to cover the build that runs again after the lookup, so a resolver hiccup does
+# not refuse a host for a full minute.
 _FAILED_RESOLUTION_TTL_SECONDS = 5.0
 _RESOLUTION_CACHE_SIZE = 256
-# How long a check on the event loop (live calls share it) waits for a lookup, and how long a host whose lookup
-# outlasted that wait is refused unless its late answer lands first.
-_LOOP_RESOLUTION_TIMEOUT_SECONDS = 1.0
-_TIMED_OUT_RESOLUTION_TTL_SECONDS = 60.0
-# The lookups started from the event loop. Each distinct host holds at most one worker (lookups in flight are
-# shared per host) until its resolver answers or gives up, which takes seconds to tens of seconds for a name
-# whose nameservers never reply. With 16 workers it takes 16 such hosts hung at the same time before a fast
-# host's lookup queues behind them; then it too outlasts the 1 s wait and is refused until its late answer lands.
-# 16 idle threads cost little, and a cell's tenants configure far fewer distinct hosts than that.
-_LOOKUP_WORKERS = 16
-_lookup_pool = ThreadPoolExecutor(
-    max_workers=_LOOKUP_WORKERS, thread_name_prefix="service-url-dns"
-)
+# A build runs once, plus once per host it meets uncached (Deepgram Flux, with two URLs, needs 3).
+_MAX_BUILD_ATTEMPTS = 4
 
 # A failed lookup may be a resolver hiccup: the refusal says so instead of reading like a bad configuration.
 _UNRESOLVED = (
@@ -148,16 +133,30 @@ def _on_event_loop() -> bool:
 _Key = tuple[str, int]
 
 
+class ServiceHostUnresolved(Exception):
+    """A service URL check met, on an event loop, a host the cache has no answer for.
+
+    Not a ValueError: no caller may read it as a refusal. ``build_resolving_service_hosts`` resolves the host off
+    the loop and runs the build again.
+    """
+
+    def __init__(self, host: str, port: int):
+        super().__init__(
+            f"service host '{host}' port {port} is not resolved yet: build the service through "
+            "build_resolving_service_hosts"
+        )
+        self.host = host
+        self.port = port
+
+
 class _ResolutionCache:
     """What DNS answered for a (host, port), reused for a short TTL, LRU-bounded, thread-safe.
 
     It stores answers, never verdicts: every address is judged again on each check, and an expired entry is looked
-    up again. A failure is kept too, for a shorter TTL, so the burst of checks that follows a prewarm refuses it
-    without a second lookup. A miss on a thread with no running event loop resolves inline. A miss on an event loop
-    (the synchronous service builders run there) never blocks it for longer than ``loop_timeout``: the lookup runs
-    on ``pool``, shared by every miss of the same key while it is in flight, and one that outlasts the wait is
-    refused for ``timed_out_ttl`` unless its late answer replaces that entry first. Prewarming keeps such misses
-    rare; each one is logged. The defaults are the service URL check's settings.
+    up again. A failure is kept too, for a shorter TTL, so the build that runs again after the lookup refuses it
+    without a second one. A miss on a thread with no running event loop resolves inline; a miss on an event loop
+    (the synchronous service builders run there) raises ``ServiceHostUnresolved`` at once, with no lookup. The
+    defaults are the service URL check's settings.
     """
 
     def __init__(
@@ -165,90 +164,39 @@ class _ResolutionCache:
         *,
         ttl: float = _RESOLUTION_TTL_SECONDS,
         failure_ttl: float = _FAILED_RESOLUTION_TTL_SECONDS,
-        timed_out_ttl: float = _TIMED_OUT_RESOLUTION_TTL_SECONDS,
         size: int = _RESOLUTION_CACHE_SIZE,
-        loop_timeout: float = _LOOP_RESOLUTION_TIMEOUT_SECONDS,
-        pool: Executor = _lookup_pool,
         clock: Callable[[], float] = time.monotonic,
     ):
         self._ttl = ttl
         self._failure_ttl = failure_ttl
-        self._timed_out_ttl = timed_out_ttl
         self._size = size
-        self._loop_timeout = loop_timeout
-        self._pool = pool
         self._clock = clock
         self._entries: OrderedDict[_Key, tuple[float, Resolution]] = OrderedDict()
-        self._pending: dict[_Key, Future] = {}
         self._lock = threading.Lock()
 
     def resolve(self, ascii_host: str, port: int) -> Resolution:
         key = (ascii_host, port)
-        on_loop = _on_event_loop()
         with self._lock:
             entry = self._entries.get(key)
             if entry is not None and entry[0] > self._clock():
                 self._entries.move_to_end(key)
                 return entry[1]
-            lookup = self._pending_lookup(key) if on_loop else None
-        if lookup is not None:
-            return self._wait_on_loop(key, *lookup)
+        if _on_event_loop():
+            raise ServiceHostUnresolved(ascii_host, port)
         # Outside the lock: lookups of different hosts run in parallel.
         resolution = _resolve(ascii_host, port)
         with self._lock:
-            self._store(key, resolution)
+            ttl = self._failure_ttl if resolution is None else self._ttl
+            self._entries[key] = (self._clock() + ttl, resolution)
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._size:
+                self._entries.popitem(last=False)
         return resolution
 
-    def _pending_lookup(self, key: _Key) -> tuple[Future, bool]:
-        """The lookup in flight for ``key``, started on the pool if there is none. Called under the lock."""
-        pending = self._pending.get(key)
-        if pending is not None:
-            return pending, False
-        pending = self._pool.submit(_resolve, *key)
-        self._pending[key] = pending
-        return pending, True
-
-    def _wait_on_loop(self, key: _Key, pending: Future, started: bool) -> Resolution:
-        if started:
-            # Outside the lock: a lookup that already finished runs its callback here, and the callback locks.
-            pending.add_done_callback(functools.partial(self._settle, key))
-        logger.warning(
-            f"service URL resolved on the event loop; prewarm missing (host '{key[0]}')"
-        )
-        try:
-            return pending.result(timeout=self._loop_timeout)
-        except FutureTimeout:
-            with self._lock:
-                # Only while this lookup is still the one in flight: an answer that landed in between stays.
-                if self._pending.get(key) is pending:
-                    self._store(key, None, self._timed_out_ttl)
-            return None
-
-    def _settle(self, key: _Key, lookup: Future) -> None:
-        """Store a pool lookup's answer, replacing a timed-out entry; not after clear() dropped it."""
-        with self._lock:
-            if self._pending.get(key) is not lookup:
-                return
-            del self._pending[key]
-            if lookup.exception() is None:
-                self._store(key, lookup.result())
-
-    def _store(
-        self, key: _Key, resolution: Resolution, ttl: float | None = None
-    ) -> None:
-        """Called under the lock."""
-        if ttl is None:
-            ttl = self._failure_ttl if resolution is None else self._ttl
-        self._entries[key] = (self._clock() + ttl, resolution)
-        self._entries.move_to_end(key)
-        while len(self._entries) > self._size:
-            self._entries.popitem(last=False)
-
     def clear(self) -> None:
-        """Forget every answer and every lookup in flight (a dropped lookup's answer is not stored)."""
+        """Forget every answer."""
         with self._lock:
             self._entries.clear()
-            self._pending.clear()
 
 
 _service_resolutions = _ResolutionCache()
@@ -459,9 +407,9 @@ def _egress_target(url: str, address: str | None) -> EgressTarget:
 def check_service_url(url: str | None, *, field: str) -> EgressTarget:
     """Guard a service URL (model providers, embeddings, STT/TTS endpoints) a tenant configured.
 
-    Same rules as ``check_tool_url`` with ws and wss admitted, for the providers that connect by websocket. It may
-    wait for DNS unless the host's answer is cached (``prewarm_service_urls``); on an event loop that wait is bounded
-    (``_ResolutionCache``). Guard off: the DEPLOYMENT_MODE check runs and the target is empty. ``url`` is the exact
+    Same rules as ``check_tool_url`` with ws and wss admitted, for the providers that connect by websocket. Off the
+    loop it may wait for DNS unless the host's answer is cached; on an event loop a cache miss raises
+    ``ServiceHostUnresolved`` (async callers build through ``build_resolving_service_hosts``). Guard off: the DEPLOYMENT_MODE check runs and the target is empty. ``url`` is the exact
     string the client receives: a caller whose client normalises the stored value passes the normalised one
     (``api.services.configuration.client_urls``).
     """
@@ -476,21 +424,27 @@ def check_service_url(url: str | None, *, field: str) -> EgressTarget:
     return _egress_target(url, address)
 
 
-def _prewarm_one(url: str) -> None:
-    # A refused URL is not this step's to report: the synchronous check that follows refuses it from the cache.
-    with contextlib.suppress(EgressBlocked):
-        check_service_url(url, field="url")
+async def build_resolving_service_hosts[T](
+    builder: Callable[..., T], /, *args: Any, **kwargs: Any
+) -> T:
+    """Run a synchronous service builder on the event loop; each host its URL checks meet uncached is resolved off
+    the loop, and the builder runs again. Every async caller of a builder that checks service URLs goes through it.
 
-
-async def prewarm_service_urls(urls: Iterable[str]) -> None:
-    """Resolve the hosts of these service URLs off the event loop, so the synchronous ``check_service_url`` calls
-    that follow read the answers from the cache. Async callers await it before they build services; a host it
-    missed costs a bounded, logged wait on the loop. Guard off: nothing to resolve."""
-    if not url_guard_enforced():
-        return
-    await asyncio.gather(
-        *(asyncio.to_thread(_prewarm_one, url) for url in dict.fromkeys(urls))
-    )
+    A builder must check its URLs before it builds anything with side effects (a session, a cache): a re-run repeats
+    what comes before the check. Guard off: no lookup, no miss, one run.
+    """
+    attempt = 1
+    while True:
+        try:
+            return builder(*args, **kwargs)
+        except ServiceHostUnresolved as miss:
+            if attempt == _MAX_BUILD_ATTEMPTS:
+                name = getattr(builder, "__name__", repr(builder))
+                raise RuntimeError(
+                    f"{name} still met an unresolved service host after {attempt} attempts"
+                ) from miss
+            await asyncio.to_thread(_service_resolutions.resolve, miss.host, miss.port)
+        attempt += 1
 
 
 async def guard_egress(
